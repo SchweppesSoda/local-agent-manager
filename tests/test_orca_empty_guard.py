@@ -210,3 +210,20 @@ class OrcaEmptyGuardTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "complete", result)
         with closing(sqlite3.connect(database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM sessions").fetchone(), (0,))
+
+    def test_multiple_pi_records_keep_one_context_after_guard_refresh(self):
+        from tests.test_multi_engine_cli import write_pi_session
+        database = self.base / "cindy.db"
+        create_cindy_database(database, [])
+        identifiers = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+        paths = [write_pi_session(self.base / "pi-agent-home/sessions", identifier, "PRIVATE") for identifier in identifiers]
+        adapter = CindyAdapter(database=database, codex_home=self.base / "codex-home", cindy_root=self.base)
+        service = CleanupService(client_inspector=lambda *_: ())
+        plan_path = self.base / "pi-plan.json"
+        plan = OperationCoordinator(service).plan_operation(client="cindy", record_ids=identifiers,
+            adapters=(adapter,), orca_roots=(self.root,), plan_path=plan_path)
+        self.assertEqual(plan["goal_status"], "ready", plan.get("blockers"))
+        result = OperationCoordinator(service).apply_operation(operation_id=plan["operation_id"], plan_path=plan_path,
+            clients_closed=True, adapters=(adapter,))
+        self.assertEqual(result["goal_status"], "complete", result.get("blockers"))
+        self.assertFalse(any(path.exists() for path in paths))
