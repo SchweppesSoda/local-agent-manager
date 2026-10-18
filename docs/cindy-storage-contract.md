@@ -59,7 +59,10 @@ only projections whose session or lead is selected, and both foreign keys cascad
 when those sessions are deleted. The plan fingerprints the affected cache rows,
 checks them again before writing, and verifies both reference columns are empty
 after deletion. Unrelated projections remain unchanged. Reference-only cleanup
-does not yet enable this trigger generation.
+also qualifies the complete generation: current references update only
+`sdk_session_id`, and history references update only `content` on an unchanged
+`agent_switch` row belonging to the approved session. Neither update activates
+the auto-review triggers; projection revisions and payloads remain unchanged.
 
 On Windows, session cleanup discovers Cindy's bundled SQLite vector extension
 under the per-user installation or the standard Program Files installation roots.

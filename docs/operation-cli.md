@@ -93,6 +93,16 @@ matching approved store; unscoped coverage failure of a required profile blocks
 dispatch. Only bounded product metadata is refreshed, without another native
 planner pass.
 
+A guard-only Orca profile with no journal may qualify a narrower read-only
+absence proof. It requires a valid profile index, every indexed profile's v3
+database, all registered JSON/SQLite recovery copies, and empty session-bearing
+state in profiles, legacy records and hook namespaces. Only the supported plain
+terminal layout is accepted. Unknown domains, bindings, restore files, schema
+changes, unreadable sources or changes between observations keep the original
+blockers. The proof is rebuilt for each required-source check, including apply
+and verify; it never grants Orca mutation capabilities or substitutes for
+`--clients-closed`. Missing journals without that positive evidence stay blocked.
+
 Qualified Orca native deletion uses `larj.operation-plan.v3`. Its target safety
 evidence freezes one managed account home, each complete native cascade, ordinary
 rollout/SQLite/index identities and link counts, required sources, bounded

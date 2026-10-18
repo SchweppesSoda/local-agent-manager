@@ -311,6 +311,13 @@ runtime auth/transport 或 `journal_rows` 聊天内容。journal 的 record JSON
 `launchArgs`/options，reader 仅校验其形状和大小，不输出或执行这些内容；投影不包含
 argv、options、凭据或原始 record JSON。不启动产品、socket、迁移、bridge 或同步 helper。
 
+高层 operation 对仅用于保护、没有 journal 的 profile 另有严格的只读空引用证明：
+验证 profile index、每个 profile 的 v3 数据库及所有已登记 JSON/SQLite 恢复副本，
+并要求会话、恢复任务、自动化及 hooks namespace 中没有会话状态。仅接受已识别的
+普通终端布局；未知 domain、恢复文件、绑定对象、schema 或读取变化均继续阻挡。
+这不会改变上面的静态 inventory 能力，也不会清除运行验证错误。每次 plan/apply/verify
+重新检查，缺 journal 本身不构成空引用证据；客户端关闭仍须独立确认。
+
 数据库及已知侧文件先检查普通文件和目录；SQL 使用 `mode=ro`、`query_only` 及读事务，
 包含当前 WAL 中的引用。SQLite 的内部读锁可能创建或更新 WAL/SHM 侧文件，因此不承诺
 文件系统零写入；不在读取后清理侧文件，也不以 `immutable` 忽略活跃 WAL。

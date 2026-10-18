@@ -988,6 +988,8 @@ def _prepare_cindy_batch(
                 "Cindy history message row is missing"
             )
         message_row = messages[message_id]
+        if message_row["role"] != "agent_switch" or message_row["session_id"] != session_id:
+            raise FrontendReferenceError("Cindy history row is not the authorized agent_switch")
         content = message_row["content"]
         if not isinstance(content, str):
             raise FrontendReferenceError(
@@ -1250,6 +1252,8 @@ def _prepare_cindy_mutation(
         "id",
         message_id,
     )
+    if message_row["role"] != "agent_switch" or message_row["session_id"] != session_id:
+        raise FrontendReferenceError("Cindy history row is not the authorized agent_switch")
     content = message_row["content"]
     if not isinstance(content, str):
         raise FrontendReferenceError("Cindy agent_switch content is not text")
@@ -1408,7 +1412,7 @@ def _validate_schema(
 
 def _guard_cindy_triggers(connection: sqlite3.Connection, table: str) -> None:
     try:
-        guard_cindy_triggers(connection, table)
+        guard_cindy_triggers(connection, table, reference_update=True)
     except CindySchemaError as exc:
         raise FrontendReferenceGuardError(str(exc)) from exc
 

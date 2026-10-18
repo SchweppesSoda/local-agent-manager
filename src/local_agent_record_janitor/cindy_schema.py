@@ -95,7 +95,12 @@ def _guard_auto_review(db: sqlite3.Connection) -> None:
 
 def guard_cindy_triggers(
     db: sqlite3.Connection, table: str, *, session_delete: bool = False,
+    reference_update: bool = False,
 ) -> str | None:
+    if reference_update and table in {"sessions", "messages"} and db.execute(
+        "SELECT 1 FROM sqlite_schema WHERE name='auto_review_projections'"
+    ).fetchone():
+        _guard_auto_review(db)
     rows = db.execute(
         "SELECT name, sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?",
         (table,),
@@ -103,7 +108,10 @@ def guard_cindy_triggers(
     if not rows:
         return None
     observed = {str(row[0]): sql_fingerprint(str(row[1] or "")) for row in rows}
-    if session_delete and observed.keys() & AUTO_REVIEW_TRIGGER_SHA256.keys():
+    # Reference writers only update sdk_session_id or the content of a row
+    # whose unchanged role is agent_switch. The pinned auto-review triggers
+    # cannot fire for those updates; callers must enforce that row boundary.
+    if (session_delete or reference_update) and observed.keys() & AUTO_REVIEW_TRIGGER_SHA256.keys():
         _guard_auto_review(db)
         observed = {name: value for name, value in observed.items() if name not in AUTO_REVIEW_TRIGGER_SHA256}
         if not observed:
