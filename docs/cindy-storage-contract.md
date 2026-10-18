@@ -75,6 +75,9 @@ triggers on the index dependencies block deletion. Reference plans run a set
 guard once per database before returning ready. Apply repeats its exact guards
 under the write transaction. Each business statement must affect exactly one
 approved row; FTS shadow writes do not count as extra business rows.
+The collection guard includes exact authorized soft-deleted rows together with
+all retained references to the selected native IDs. A mixed selection therefore
+keeps both sets under fingerprint checks while still rejecting new live references.
 
 Whole-session deletion still requires `status=deleted` or the exact explicit
 frontend session ID authorization described in [operation-cli.md](operation-cli.md).

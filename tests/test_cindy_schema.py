@@ -10,7 +10,7 @@ from local_agent_record_janitor.cindy_schema import (
     CindySchemaError, FTS_TRIGGER_VERSIONS, guard_cindy_triggers,
 )
 from local_agent_record_janitor.frontend_reference_cleanup import (
-    FrontendReferenceError, execute_frontend_reference_cleanup,
+    FrontendReferenceError, execute_frontend_reference_cleanup, guard_frontend_reference_closure,
 )
 from local_agent_record_janitor.frontend_session_cleanup import (
     FrontendSessionGuardError, build_cindy_session_delete_evidence,
@@ -127,6 +127,7 @@ class CindySchemaTests(unittest.TestCase):
             evidence = [item.details["frontend_reference"] for item in adapter.scan()
                         if item.thread_id in {"keep-native", "old-native"}]
             self.assertEqual(len(evidence), 2)
+            self.assertEqual(guard_frontend_reference_closure(evidence).checked_reference_count, 2)
             with closing(sqlite3.connect(database)) as db:
                 before = db.execute("SELECT * FROM auto_review_projections ORDER BY session_id,lead_id").fetchall()
                 search = db.execute("SELECT * FROM messages_fts WHERE session_id='keep'").fetchall()
@@ -153,6 +154,25 @@ class CindySchemaTests(unittest.TestCase):
                 before = database.read_bytes()
                 with self.assertRaises(FrontendReferenceError):
                     self.clean_reference(root, evidence)
+                self.assertEqual(database.read_bytes(), before)
+
+    def test_soft_deleted_closure_still_rejects_new_live_current_and_history_references(self):
+        for history in (False, True):
+            with self.subTest(history=history), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(strict=True)
+                database = self.auto_review_database(root)
+                evidence = self.evidence(root, database)
+                guard_frontend_reference_closure([evidence])
+                with closing(sqlite3.connect(database)) as db:
+                    if history:
+                        db.execute("INSERT INTO messages(id,session_id,role,content,created_at) VALUES ('new','keep','agent_switch',?,1)",
+                                   ('{"fromAgentKind":"codex","fromSdkSessionId":"old-native","toAgentKind":"pi"}',))
+                    else:
+                        db.execute("UPDATE sessions SET sdk_session_id='old-native' WHERE id='keep'")
+                    db.commit()
+                before = database.read_bytes()
+                with self.assertRaisesRegex(FrontendReferenceError, "collection changed"):
+                    guard_frontend_reference_closure([evidence])
                 self.assertEqual(database.read_bytes(), before)
 
     def test_reference_role_and_owner_are_required_even_with_matching_fingerprint(self):

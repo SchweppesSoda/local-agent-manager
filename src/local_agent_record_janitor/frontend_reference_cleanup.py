@@ -593,13 +593,19 @@ def _guard_cindy_collection(
             "Cindy closure evidence has no native session ID"
         )
     placeholders = ", ".join("?" for _ in native_ids)
+    # Include every exact authorized row, including soft-deleted sessions.
+    # Retained rows outside that set still protect the native IDs. Filtering
+    # solely by live status would compare a subset against the whole approval.
+    session_ids = sorted({str(_mapping(item.get("locator")).get("cindy_session_id")) for item in evidence})
+    session_placeholders = ", ".join("?" for _ in session_ids)
     if query_observer is not None:
         query_observer("cindy:live-current-collection")
     current_rows = connection.execute(
         "SELECT * FROM sessions WHERE sdk_session_id IN ("
         + placeholders
-        + ") AND (status IS NULL OR lower(status) <> 'deleted')",
-        tuple(native_ids),
+        + ") AND (status IS NULL OR lower(status) <> 'deleted' OR id IN ("
+        + session_placeholders + "))",
+        (*native_ids, *session_ids),
     ).fetchall()
     approved_current = {
         (
@@ -650,7 +656,9 @@ def _guard_cindy_collection(
     message_rows = connection.execute(
         "SELECT m.* FROM messages AS m INNER JOIN sessions AS s ON s.id = m.session_id "
         "WHERE m.role = 'agent_switch' "
-        "AND (s.status IS NULL OR lower(s.status) <> 'deleted')"
+        "AND (s.status IS NULL OR lower(s.status) <> 'deleted' OR s.id IN ("
+        + session_placeholders + "))",
+        tuple(session_ids),
     ).fetchall()
     approved_history = {
         (

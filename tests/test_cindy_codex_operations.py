@@ -126,6 +126,22 @@ class CindyCodexOperationTests(unittest.TestCase):
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='new-ui'").fetchone(), ("child",))
 
+    def test_mixed_deleted_and_retained_full_session_closure_completes(self):
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT, content TEXT, role TEXT, created_at INTEGER, rewind_at INTEGER)")
+            db.execute("UPDATE sessions SET status='deleted' WHERE id='ui-delete'")
+            db.execute("UPDATE sessions SET sdk_session_id=NULL WHERE id='ui-child'")
+            db.commit()
+        plan = self.plan(record_ids=("delete", "keep", "ui-delete", "ui-keep"))
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertEqual(self.calls, ["delete", "keep"])
+        self.assertFalse(any(path.exists() for path in self.paths.values()))
+        self.assertEqual((self.official / "state_5.sqlite").read_bytes(), self.official_before)
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT id,sdk_session_id FROM sessions").fetchall(), [("ui-child", None)])
+
     def test_explicit_frontend_id_deletes_active_chat_with_fresh_coordinator(self):
         with closing(sqlite3.connect(self.database)) as db:
             db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT, content TEXT, role TEXT, created_at INTEGER, rewind_at INTEGER)")
