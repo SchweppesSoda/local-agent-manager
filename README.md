@@ -721,7 +721,7 @@ Pi 没有对应的 Codex app-server 删除 API。Pi 上游将会话保存为 `se
 ## 重要限制
 
 - 仅对已验证的客户端、schema 和 runtime 组合提供对应能力；数据库或 session 格式变化可能使来源暂时不可用。各客户端的只读与删除范围见上方支持表及 Adapter 契约。
-- Codex Desktop 的 catalog/全局状态是未公开的宿主实现细节。存在但结构不兼容、发现多个候选 catalog、非 `local` host、原生证据重新出现或快照漂移时一律阻止修改；没有探测到该层不代表 OpenAI 承诺它不存在。
+- Codex Desktop 的 catalog/全局状态是未公开的宿主实现细节。同一 `CODEX_HOME/sqlite` 下的 `codex.db` 与 `codex-dev.db` 可同时盘点，按完整快照清理两库中所选会话的本地引用，不删除或合并数据库。任一已知库不可读或结构不兼容、出现归属不明的额外 catalog、非 `local` host、原生证据重新出现或快照漂移时阻止修改；没有探测到该层不代表 OpenAI 承诺它不存在。
 - Finding 是 adapter 证据格式，不等于删除目标。计划生成器会把它聚合为 Observation，并根据完整当前状态生成 CandidateAction。
 - 兼容期仍读取 adapter 的能力证据，但它们不是 CLI 的唯一分区依据；冲突、活跃引用、范围不明或状态读取失败都会阻止动作。
 - rollout 扫描只读取首行 `session_meta`，不会解析或上传聊天正文。

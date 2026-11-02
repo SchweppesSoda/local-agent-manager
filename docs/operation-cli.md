@@ -524,6 +524,28 @@ them to full IDs before generating an immutable plan. Titles containing known
 automatic-review history wrappers are displayed as `自动审查记录`; other long
 display strings are bounded without changing identity fingerprints.
 
+The same official home may contain both `sqlite/codex.db` and the older
+`sqlite/codex-dev.db`. Discovery includes both supported catalogs; filename or
+modification time never selects one to the exclusion of the other. Local rows
+retain their database identity and aggregate into one thread target. A Desktop
+cleanup plan binds the complete catalog path set, each catalog revision, exact
+local rows and shared JSON references. A new or removed catalog invalidates that
+snapshot; unreadable or incompatible known candidates cannot be hidden by a
+healthy sibling. Additional catalogs of unproven ownership and linked database
+aliases remain blocked.
+
+Desktop residual cleanup deletes each selected local row from every catalog
+where it exists and handles shared JSON references once. It preserves other
+threads, non-local host rows and the database files. All catalogs and shared
+JSON files receive temporary rollback copies before writing. Failure attempts
+restoration of every file whose write was attempted and verifies the restored
+snapshot. A sibling rejected before writing is not overwritten by rollback;
+external drift or incomplete recovery retains its evidence. Separate databases
+and JSON do not share one atomic
+transaction, so closed-client guards, frozen evidence and final verification
+remain required. Single-catalog snapshots retain their existing v1 fingerprints;
+dual-catalog snapshots use v2 fingerprints without rewriting persisted plans.
+
 The lineage graph combines native spawn edges, structured source metadata and
 top-level `parent_thread_id`/`thread_source` fields. Conflicting parents, roles
 and cycles block deletion. An explicitly selected guardian whose parent is

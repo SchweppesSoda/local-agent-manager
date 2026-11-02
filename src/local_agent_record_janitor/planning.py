@@ -1375,7 +1375,10 @@ def _candidate_actions(
                     str(path)
                     for obs in affected_observations
                     if obs.finding_type == "desktop_state_orphan"
-                    if (path := obs.details.get("desktop_database"))
+                    for path in obs.details.get(
+                        "desktop_database_paths", (obs.details.get("desktop_database"),)
+                    )
+                    if isinstance(path, (str, os.PathLike))
                 }
             )
         ),
@@ -1977,8 +1980,19 @@ def _unavailable_reason(
             and catalog_count == 0
             and _as_nonnegative_int(details.get("desktop_global_state_reference_count")) > 0
         )
-        if catalog_count != 1 and not explicit_json_only:
-            return "The target does not map to exactly one local Desktop row."
+        catalog_paths = details.get("desktop_catalog_database_paths")
+        if catalog_paths is None:
+            # Retain the historical single-row observation contract.
+            valid_catalog = catalog_count == 1
+        else:
+            valid_catalog = (
+                isinstance(catalog_paths, (list, tuple))
+                and all(isinstance(path, str) and path for path in catalog_paths)
+                and 0 < catalog_count == len(catalog_paths) == len(set(catalog_paths))
+                and set(catalog_paths).issubset(impact.desktop_database_paths)
+            )
+        if not valid_catalog and not explicit_json_only:
+            return "The target must map to one exact local Desktop row per catalog database."
         return None
     if kind in _UNIMPLEMENTED_REASONS:
         return _UNIMPLEMENTED_REASONS[kind]

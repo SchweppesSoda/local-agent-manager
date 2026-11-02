@@ -83,6 +83,189 @@ class CodexDesktopStateTests(unittest.TestCase):
     def adapter(self) -> NativeIntegrityAdapter:
         return NativeIntegrityAdapter(codex_home=self.codex_home)
 
+    def _second_catalog(self) -> Path:
+        database = self.database.with_name("codex.db")
+        with closing(sqlite3.connect(self.database)) as source:
+            with closing(sqlite3.connect(database)) as target:
+                source.backup(target)
+        return database
+
+    def _database_dump(self, database: Path) -> tuple[str, ...]:
+        with closing(sqlite3.connect(database)) as connection:
+            return tuple(connection.iterdump())
+
+    def test_dual_catalog_inventory_plan_cold_apply_and_verify(self) -> None:
+        second = self._second_catalog()
+        for database in (self.database, second):
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("INSERT INTO local_thread_catalog VALUES ('local','keep','Keep',0)")
+                connection.execute("INSERT INTO local_thread_catalog VALUES ('remote',?,'Remote',0)", (THREAD_ID,))
+                connection.commit()
+        snapshot = read_desktop_state(self.codex_home)
+        self.assertIsNone(snapshot.database)
+        self.assertEqual(set(snapshot.databases), {self.database, second})
+        self.assertEqual(len(snapshot.threads[THREAD_ID].catalog_records), 2)
+        self.assertTrue(snapshot.threads[THREAD_ID].snapshot_fingerprint.startswith("desktop:v2:"))
+        catalog = build_session_catalog((self.adapter(),))
+        self.assertEqual(sum(record.thread_id == THREAD_ID for record in catalog.records), 1)
+        sessions = self.adapter().list_sessions()
+        self.assertEqual({r.database for r in sessions if r.thread_id == THREAD_ID}, {self.database, second})
+        service = CleanupService(client_inspector=lambda *_: ())
+        path = self.codex_home.parent / "dual-plan.json"
+        plan = OperationCoordinator(service).plan_operation(
+            client="native", record_ids=(THREAD_ID,), adapters=(self.adapter(),), plan_path=path)
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        self.assertEqual(len(plan["actions"]), 1)
+        impact = plan["actions"][0]["impact"]
+        self.assertEqual(impact["desktop_catalog_record_count"], 2)
+        self.assertEqual(set(impact["desktop_database_paths"]), {str(self.database), str(second)})
+        self.assertEqual(impact["desktop_global_state_reference_count"], 2)
+        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()), patch(
+            "local_agent_record_janitor.codex_app_server.CodexAppServer.delete_thread",
+            side_effect=AssertionError("Desktop-only cleanup must not dispatch native deletion"),
+        ):
+            result = OperationCoordinator(service).apply_operation(
+                operation_id=plan["operation_id"], plan_path=path, clients_closed=True)
+        self.assertEqual(result["goal_status"], "complete", result)
+        verified = OperationCoordinator(service).verify_operation(operation_id=plan["operation_id"], plan_path=path)
+        self.assertEqual(verified["goal_status"], "complete", verified)
+        for database in (self.database, second):
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT host_id,thread_id FROM local_thread_catalog ORDER BY host_id").fetchall(),
+                    [("local", "keep"), ("remote", THREAD_ID)])
+
+    def test_dual_catalog_disjoint_and_shared_targets_delete_exact_counts(self) -> None:
+        second = self._second_catalog()
+        for database, thread_id in ((self.database, "old-only"), (second, "new-only")):
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("INSERT INTO local_thread_catalog VALUES ('local',?,'Only here',0)", (thread_id,))
+                connection.commit()
+        targets = (THREAD_ID, "old-only", "new-only")
+        states = read_desktop_state(self.codex_home, targets).threads
+        result = execute_desktop_state_cleanup(self.codex_home,
+            {key: states[key].snapshot_fingerprint for key in targets}, client_inspector=lambda *_: ())
+        self.assertEqual(result.deleted_catalog_rows, 4)
+        self.assertEqual(result.removed_global_state_references, 2)
+        self.assertFalse(result.backup_directory.exists())
+        self.assertFalse(any(s.present for s in read_desktop_state(self.codex_home, targets).threads.values()))
+
+    def test_dual_catalog_json_only_cleanup(self) -> None:
+        self._json_only_state()
+        self._second_catalog()
+        state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
+        result = execute_desktop_state_cleanup(self.codex_home,
+            {THREAD_ID: state.snapshot_fingerprint}, client_inspector=lambda *_: ())
+        self.assertEqual(result.deleted_catalog_rows, 0)
+        self.assertEqual(result.removed_global_state_references, 4)
+
+    def test_dual_catalog_failure_restores_all_databases_and_json(self) -> None:
+        from local_agent_record_janitor import codex_desktop_state as desktop
+        second = self._second_catalog()
+        self.state_path.with_suffix(".json.bak").write_bytes(self.state_path.read_bytes())
+        databases_before = {p: self._database_dump(p) for p in (self.database, second)}
+        files_before = {p: p.read_bytes() for p in (self.state_path, self.state_path.with_suffix(".json.bak"))}
+        original_delete = desktop._delete_catalog_rows
+        original_write = desktop._atomic_write_json
+        for failure in ("second_database", "second_json"):
+            with self.subTest(failure=failure):
+                calls = []
+                def delete(database, *args):
+                    calls.append(database)
+                    if failure == "second_database" and database == second:
+                        raise DesktopStateError("injected second database failure")
+                    return original_delete(database, *args)
+                def write(path, value):
+                    if failure == "second_json" and path.suffix == ".bak":
+                        raise OSError("injected second JSON failure")
+                    return original_write(path, value)
+                state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
+                with patch.object(desktop, "_delete_catalog_rows", side_effect=delete), patch.object(
+                    desktop, "_atomic_write_json", side_effect=write
+                ), self.assertRaisesRegex(DesktopStateError, "all changed Desktop files were restored"):
+                    execute_desktop_state_cleanup(self.codex_home,
+                        {THREAD_ID: state.snapshot_fingerprint}, client_inspector=lambda *_: ())
+                self.assertEqual(calls, [self.database, second])
+                for path, expected in databases_before.items():
+                    self.assertEqual(self._database_dump(path), expected)
+                for path, expected in files_before.items():
+                    self.assertEqual(path.read_bytes(), expected)
+
+    def test_dual_catalog_fingerprint_binds_membership_rows_and_revisions(self) -> None:
+        original = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
+        self.assertTrue(original.snapshot_fingerprint.startswith("desktop:v1:"))
+        second = self._second_catalog()
+        with self.assertRaisesRegex(DesktopStateError, "changed after approval"):
+            execute_desktop_state_cleanup(self.codex_home,
+                {THREAD_ID: original.snapshot_fingerprint}, client_inspector=lambda *_: ())
+        baseline = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
+        second_bytes = second.read_bytes()
+        for change in ("remove_database", "row", "revision"):
+            with self.subTest(change=change):
+                if change == "remove_database":
+                    second.unlink()
+                else:
+                    with closing(sqlite3.connect(second)) as connection:
+                        connection.execute("UPDATE local_thread_catalog SET display_title='changed'" if change == "row"
+                            else "UPDATE local_thread_catalog_metadata SET catalog_revision=catalog_revision+1")
+                        connection.commit()
+                with self.assertRaisesRegex(DesktopStateError, "changed after approval"):
+                    execute_desktop_state_cleanup(self.codex_home,
+                        {THREAD_ID: baseline.snapshot_fingerprint}, client_inspector=lambda *_: ())
+                second.write_bytes(second_bytes)
+
+    def test_dual_catalog_rechecks_frozen_rows_inside_write_transaction(self) -> None:
+        from local_agent_record_janitor import codex_desktop_state as desktop
+        second = self._second_catalog()
+        state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
+        before = {p: self._database_dump(p) for p in (self.database, second)}
+        external_change = []
+        original_backup = desktop._create_backup
+        def backup(*args):
+            result = original_backup(*args)
+            with closing(sqlite3.connect(second)) as connection:
+                connection.execute("UPDATE local_thread_catalog SET display_title='changed after backup'")
+                connection.commit()
+            external_change.append(self._database_dump(second))
+            return result
+        with patch.object(desktop, "_create_backup", side_effect=backup), self.assertRaisesRegex(
+            DesktopStateError, "changed before mutation"
+        ):
+            execute_desktop_state_cleanup(self.codex_home,
+                {THREAD_ID: state.snapshot_fingerprint}, client_inspector=lambda *_: ())
+        self.assertEqual(self._database_dump(self.database), before[self.database])
+        self.assertEqual(self._database_dump(second), external_change[0])
+        self.assertTrue(list((self.codex_home / ".local-agent-record-janitor" / "desktop-state-backups").iterdir()))
+
+    def test_good_catalog_cannot_hide_invalid_second_known_catalog(self) -> None:
+        second = self.database.with_name("codex.db")
+        for invalid in ("corrupt", "missing_table", "duplicate_local_rows"):
+            with self.subTest(invalid=invalid):
+                if invalid == "corrupt":
+                    second.write_bytes(b"not a SQLite database")
+                else:
+                    with closing(sqlite3.connect(second)) as connection:
+                        if invalid == "missing_table":
+                            connection.execute("CREATE TABLE unrelated(id INTEGER)")
+                        else:
+                            connection.executescript("CREATE TABLE local_thread_catalog(host_id TEXT,thread_id TEXT);"
+                                "INSERT INTO local_thread_catalog VALUES('local','duplicate'),('local','duplicate');")
+                        connection.commit()
+                with self.assertRaises(DesktopStateError):
+                    read_desktop_state(self.codex_home)
+                second.unlink()
+
+    def test_unknown_additional_catalog_and_linked_pair_remain_blocked(self) -> None:
+        second = self._second_catalog()
+        unknown = second.with_name("unknown.db")
+        second.rename(unknown)
+        with self.assertRaisesRegex(DesktopStateError, "unproven storage identity"):
+            read_desktop_state(self.codex_home)
+        unknown.unlink()
+        os.link(self.database, second)
+        with self.assertRaisesRegex(DesktopStateError, "independent file"):
+            read_desktop_state(self.codex_home)
+
     def test_process_probe_timeout_fails_closed_and_hides_console_window(self) -> None:
         from local_agent_record_janitor import codex_desktop_state as desktop
 

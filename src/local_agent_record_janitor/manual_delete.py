@@ -1622,7 +1622,7 @@ def _frontend_approval_payload(record: Any) -> dict[str, Any]:
             )
         if (
             not isinstance(snapshot_fingerprint, str)
-            or not snapshot_fingerprint.startswith("desktop:v1:")
+            or not snapshot_fingerprint.startswith(("desktop:v1:", "desktop:v2:"))
         ):
             raise ManualDeletePlanError(
                 "Codex Desktop reference is missing its exact state fingerprint"
