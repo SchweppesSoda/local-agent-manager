@@ -202,6 +202,7 @@ class GuiDesktopTarget:
     thread_id: str
     snapshot_fingerprint: str
     global_state_reference_count: int
+    catalog_record_count: int = 1
 
     def approval_payload(self) -> dict[str, Any]:
         return {
@@ -209,7 +210,7 @@ class GuiDesktopTarget:
             "codex_home": canonical_existing_path_key(self.codex_home),
             "thread_id": self.thread_id,
             "snapshot_fingerprint": self.snapshot_fingerprint,
-            "catalog_record_count": 1,
+            "catalog_record_count": self.catalog_record_count,
             "global_state_reference_count": self.global_state_reference_count,
         }
 
@@ -313,6 +314,7 @@ def build_gui_delete_plan(native_plan: ManualDeletePlan) -> GuiDeletePlan:
             "GUI deletion requires a non-empty selected native plan"
         )
     targets: dict[tuple[str, str], GuiDesktopTarget] = {}
+    catalog_databases: dict[tuple[str, str], set[str]] = {}
     for action in native_plan.actions:
         for reference in action.frontend_sessions:
             if str(getattr(reference, "platform", "")).casefold() != (
@@ -350,7 +352,7 @@ def build_gui_delete_plan(native_plan: ManualDeletePlan) -> GuiDeletePlan:
                 )
             if (
                 not isinstance(fingerprint, str)
-                or not fingerprint.startswith("desktop:v1:")
+                or not fingerprint.startswith(("desktop:v1:", "desktop:v2:"))
             ):
                 raise ManualDeletePlanError(
                     "Codex Desktop reference has no exact state fingerprint"
@@ -371,12 +373,20 @@ def build_gui_delete_plan(native_plan: ManualDeletePlan) -> GuiDeletePlan:
                 global_state_reference_count=reference_count,
             )
             key = (canonical_existing_path_key(reference_home), thread_id)
+            database = canonical_existing_path_key(Path(reference.database))
             if key in targets:
-                raise ManualDeletePlanError(
-                    "Codex Desktop inventory contains multiple local catalog "
-                    f"rows for {thread_id}; exact cleanup is unavailable"
-                )
+                previous = targets[key]
+                if (not fingerprint.startswith("desktop:v2:")
+                        or previous.snapshot_fingerprint != fingerprint
+                        or previous.root_action_id != target.root_action_id
+                        or previous.global_state_reference_count != reference_count
+                        or database in catalog_databases[key]):
+                    raise ManualDeletePlanError(
+                        f"Codex Desktop inventory contains conflicting catalog rows for {thread_id}"
+                    )
+                target = replace(previous, catalog_record_count=previous.catalog_record_count + 1)
             targets[key] = target
+            catalog_databases.setdefault(key, set()).add(database)
 
     ordered_targets = tuple(
         sorted(
@@ -705,7 +715,7 @@ def confirmation_summary(plan: GuiDeletePlan) -> str:
             f"合计：{len(plan.actions)} 个根对话，"
             f"{len(total_threads)} 个受影响 thread，"
             f"{len(total_rollouts)} 个已发现 rollout 文件。",
-            f"随后将精确清理 {len(plan.desktop_targets)} 条 Codex Desktop "
+            f"随后将精确清理 {sum(target.catalog_record_count for target in plan.desktop_targets)} 条 Codex Desktop "
             f"目录记录及 {desktop_state_references} 条结构化 UI 引用；"
             "每个物理存储仍使用独立回滚与验证批次。",
             f"仍将保留 {retained_references} 条 Cindy/AionUI 引用；"

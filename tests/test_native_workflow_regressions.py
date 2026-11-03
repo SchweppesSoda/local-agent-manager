@@ -217,6 +217,26 @@ class NativeWorkflowRegressions(unittest.TestCase):
         remaining = build_session_catalog((self.adapter,))
         self.assertEqual({r.thread_id for r in remaining.records}, {"keep", "kept-child"})
 
+    def test_run_clears_both_desktop_catalogs_without_repeating_native_delete(self):
+        self.fixture([("delete", "work", None), ("child", "work", "delete"), ("keep", "work", None)])
+        old = self.home / "sqlite" / "codex-dev.db"
+        new = old.with_name("codex.db")
+        with closing(sqlite3.connect(old)) as source, closing(sqlite3.connect(new)) as target:
+            source.backup(target)
+        calls = []
+        coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
+        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+            result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
+                plan_path=self.root / "dual-run.json", clients_closed=True, app_server_factory=self.server(calls),
+                binary_resolver=lambda _: Path("codex"))
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertEqual(len(result["rounds"]), 2)
+        self.assertEqual(calls, ["delete"])
+        for database in (old, new):
+            with closing(sqlite3.connect(database)) as connection:
+                self.assertEqual(connection.execute("SELECT thread_id FROM local_thread_catalog").fetchall(), [("keep",)])
+        self.assertEqual({r.thread_id for r in build_session_catalog((self.adapter,)).records}, {"keep"})
+
     def test_residual_rounds_retain_new_guard_sources_after_environment_changes(self):
         from local_agent_record_janitor.adapters import OrcaAdapter
         from local_agent_record_janitor.record_identity import canonical_path

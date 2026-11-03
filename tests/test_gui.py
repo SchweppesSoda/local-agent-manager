@@ -260,6 +260,12 @@ class GuiSnapshotTests(unittest.TestCase):
         native_delete.assert_not_called()
 
     def test_real_desktop_writer_completes_compound_gui_deletion(self) -> None:
+        self._assert_real_desktop_writer_completes_compound_gui_deletion()
+
+    def test_real_dual_catalog_writer_completes_compound_gui_deletion(self) -> None:
+        self._assert_real_desktop_writer_completes_compound_gui_deletion(dual=True)
+
+    def _assert_real_desktop_writer_completes_compound_gui_deletion(self, dual: bool = False) -> None:
         thread_id = "019f9873-d075-7940-aa54-f30c5028524f"
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve(strict=True) / "codex-home"
@@ -303,6 +309,12 @@ class GuiSnapshotTests(unittest.TestCase):
                     (thread_id, "Compound GUI target"),
                 )
                 connection.commit()
+            desktop_databases = [desktop_database]
+            if dual:
+                second = desktop_database.with_name("codex.db")
+                with closing(sqlite3.connect(desktop_database)) as source, closing(sqlite3.connect(second)) as target:
+                    source.backup(target)
+                desktop_databases.append(second)
             state_path = home / ".codex-global-state.json"
             state_path.write_text(
                 json.dumps(
@@ -323,6 +335,9 @@ class GuiSnapshotTests(unittest.TestCase):
             snapshot = build_gui_snapshot(catalog)
             row = next(item for item in snapshot.rows if item.thread_id == thread_id)
             plan = snapshot.selected_plan((row.action_id,))
+            self.assertEqual(len(plan.desktop_targets), 1)
+            self.assertEqual(plan.desktop_targets[0].catalog_record_count, len(desktop_databases))
+            self.assertIn(f"{len(desktop_databases)} 条 Codex Desktop", confirmation_summary(plan))
             finding = Finding(
                 platform="native",
                 platform_session_id=thread_id,
@@ -367,18 +382,19 @@ class GuiSnapshotTests(unittest.TestCase):
 
             self.assertTrue(report.ok)
             self.assertEqual(report.results[0].status, "deleted")
-            self.assertEqual(report.desktop_results[0].deleted_catalog_rows, 1)
+            self.assertEqual(report.desktop_results[0].deleted_catalog_rows, len(desktop_databases))
             self.assertEqual(
                 report.desktop_results[0].removed_global_state_references,
                 2,
             )
             self.assertFalse(report.desktop_results[0].backup_directory.exists())
-            with closing(sqlite3.connect(desktop_database)) as connection:
-                count = connection.execute(
-                    "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = ?",
-                    (thread_id,),
-                ).fetchone()[0]
-            self.assertEqual(count, 0)
+            for database in desktop_databases:
+                with closing(sqlite3.connect(database)) as connection:
+                    count = connection.execute(
+                        "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = ?",
+                        (thread_id,),
+                    ).fetchone()[0]
+                self.assertEqual(count, 0)
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(state["projectless-thread-ids"], ["healthy"])
             self.assertIn(thread_id, state["prompt-history"][0])

@@ -58,6 +58,7 @@ class DesktopThreadState:
     catalog_revision: int | None
     state_file_sha256: Mapping[str, str]
     snapshot_fingerprint: str
+    catalog_revisions: Mapping[str, int | None] = field(default_factory=dict)
 
     @property
     def exact_reference_count(self) -> int:
@@ -79,6 +80,8 @@ class DesktopThreadState:
             "catalog_revision": self.catalog_revision,
             "state_file_sha256": dict(self.state_file_sha256),
             "snapshot_fingerprint": self.snapshot_fingerprint,
+            **({"catalog_revisions": dict(self.catalog_revisions)}
+               if len(self.catalog_revisions) > 1 else {}),
         }
 
 
@@ -88,11 +91,13 @@ class DesktopStateSnapshot:
     database: Path | None
     state_paths: tuple[Path, ...]
     threads: Mapping[str, DesktopThreadState]
+    databases: tuple[Path, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "codex_home": str(self.codex_home),
             "database": str(self.database) if self.database is not None else None,
+            "databases": [str(path) for path in self.databases],
             "state_paths": [str(path) for path in self.state_paths],
             "threads": {
                 thread_id: state.to_dict()
@@ -146,19 +151,25 @@ def read_desktop_state(
     """
 
     home = codex_home.expanduser().resolve()
-    database = _discover_catalog_database(home)
+    databases = _discover_catalog_databases(home)
+    # Preserve the legacy single-database field without presenting an arbitrary
+    # member of a multi-database snapshot as the only authoritative catalog.
+    database = databases[0] if len(databases) == 1 else None
     state_paths = _global_state_paths(home)
     requested = {
         value for value in (thread_ids or ()) if isinstance(value, str) and value
     }
 
     catalog_records: list[DesktopCatalogRecord] = []
-    catalog_revision: int | None = None
-    if database is not None:
-        catalog_records, catalog_revision = _read_catalog_records(
-            database,
+    catalog_revisions: dict[str, int | None] = {}
+    for catalog_database in databases:
+        records, revision = _read_catalog_records(
+            catalog_database,
             requested or None,
         )
+        catalog_records.extend(records)
+        catalog_revisions[str(catalog_database)] = revision
+    catalog_revision = catalog_revisions.get(str(database))
 
     target_ids = requested or {record.thread_id for record in catalog_records}
     state_values: dict[Path, Any] = {}
@@ -202,19 +213,28 @@ def read_desktop_state(
                 path: list(items) for path, items in sorted(references.items())
             },
         }
+        if len(databases) > 1:
+            payload.update(
+                schema="codex-desktop-thread-state-v2",
+                databases=[str(path) for path in databases],
+                catalog_revisions=catalog_revisions,
+            )
         states[thread_id] = DesktopThreadState(
             thread_id=thread_id,
             catalog_records=records,
             global_state_references=references,
             catalog_revision=catalog_revision,
             state_file_sha256=state_hashes,
-            snapshot_fingerprint="desktop:v1:" + _sha256_json(payload),
+            snapshot_fingerprint=("desktop:v2:" if len(databases) > 1 else "desktop:v1:")
+            + _sha256_json(payload),
+            catalog_revisions=catalog_revisions,
         )
     return DesktopStateSnapshot(
         codex_home=home,
         database=database,
         state_paths=state_paths,
         threads=states,
+        databases=databases,
     )
 
 
@@ -275,7 +295,7 @@ def execute_desktop_state_cleanup(
         )
 
     snapshot = read_desktop_state(home, targets)
-    if snapshot.database is None:
+    if not snapshot.databases:
         raise DesktopStateError("No compatible Codex Desktop catalog was found")
     for thread_id in targets:
         current = snapshot.threads.get(thread_id)
@@ -301,11 +321,13 @@ def execute_desktop_state_cleanup(
         )
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2 if len(snapshot.databases) > 1 else 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "codex_home": str(home),
-        "database": str(snapshot.database),
-        "database_sha256_before": sha256_file(snapshot.database),
+        "database": str(snapshot.database) if snapshot.database else None,
+        "databases_sha256_before": {
+            str(path): sha256_file(path) for path in snapshot.databases
+        },
         "targets": {
             thread_id: snapshot.threads[thread_id].to_dict()
             for thread_id in targets
@@ -314,16 +336,26 @@ def execute_desktop_state_cleanup(
             str(path): sha256_file(path) for path in snapshot.state_paths
         },
     }
+    if snapshot.database is not None:
+        manifest["database_sha256_before"] = manifest["databases_sha256_before"][str(snapshot.database)]
     backup_id, backup_directory = _create_backup(snapshot, manifest)
     deleted_rows = 0
     removed_references = 0
+    modified_databases: set[Path] = set()
+    modified_state_paths: set[Path] = set()
     try:
-        catalog_targets = tuple(
-            thread_id for thread_id in targets
-            if snapshot.threads[thread_id].catalog_records
-        )
-        if catalog_targets:
-            deleted_rows = _delete_catalog_rows(snapshot.database, catalog_targets)
+        for database in snapshot.databases:
+            expected_records = tuple(
+                record for thread_id in targets
+                for record in snapshot.threads[thread_id].catalog_records
+                if record.database == database
+            )
+            if expected_records:
+                deleted_rows += _delete_catalog_rows(
+                    database, expected_records,
+                    snapshot.threads[targets[0]].catalog_revisions[str(database)],
+                    lambda: modified_databases.add(database),
+                )
         for path in snapshot.state_paths:
             expected_hash = manifest["state_files_before"][str(path)]
             if sha256_file(path) != expected_hash:
@@ -332,10 +364,13 @@ def execute_desktop_state_cleanup(
                 )
             value = _read_json(path)
             cleaned, removed = strip_state_references(value, set(targets))
+            modified_state_paths.add(path)
             _atomic_write_json(path, cleaned)
             removed_references += len(removed)
 
         remaining = read_desktop_state(home, targets)
+        if remaining.databases != snapshot.databases:
+            raise DesktopStateError("Codex Desktop catalog membership changed during cleanup")
         leftovers = {
             thread_id: state.to_dict()
             for thread_id, state in remaining.threads.items()
@@ -347,7 +382,9 @@ def execute_desktop_state_cleanup(
                 + json.dumps(leftovers, ensure_ascii=False)
             )
     except Exception as exc:
-        restore_error = _restore_backup(snapshot, backup_directory)
+        restore_error = _restore_backup(
+            snapshot, backup_directory, modified_databases, modified_state_paths
+        )
         if restore_error is not None:
             raise DesktopStateError(
                 f"Desktop cleanup failed ({exc}); automatic restore also failed "
@@ -863,7 +900,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _discover_catalog_database(codex_home: Path) -> Path | None:
+def _discover_catalog_databases(codex_home: Path) -> tuple[Path, ...]:
     sqlite_root = codex_home / "sqlite"
     try:
         directory_state = sqlite_root.stat()
@@ -873,7 +910,7 @@ def _discover_catalog_database(codex_home: Path) -> Path | None:
             )
         candidates = sorted((path for path in sqlite_root.iterdir() if path.suffix == ".db"), key=lambda path: path.name)
     except FileNotFoundError:
-        return None
+        return ()
     except OSError as exc:
         raise DesktopStateError(
             f"Could not inspect Codex Desktop sqlite directory {sqlite_root}: {exc}"
@@ -892,13 +929,6 @@ def _discover_catalog_database(codex_home: Path) -> Path | None:
                     known_without_catalog.append(path)
         except (OSError, sqlite3.Error) as exc:
             failures.append((path, str(exc)))
-    if len(matches) > 1:
-        raise DesktopStateError(
-            "Multiple Codex Desktop catalogs were found; storage identity is "
-            "ambiguous: " + ", ".join(str(path) for path in matches)
-        )
-    if matches:
-        return matches[0]
     known_failures = [
         (path, message)
         for path, message in failures
@@ -917,7 +947,27 @@ def _discover_catalog_database(codex_home: Path) -> Path | None:
             "local_thread_catalog table is missing: "
             + ", ".join(str(path) for path in known_without_catalog)
         )
-    return None
+    if len(matches) > 1:
+        # Only the known production/legacy pair has a shared local-home
+        # ownership contract. Unknown catalog databases must not become writes.
+        if ({path.name.casefold() for path in matches} != known_names
+                or len(matches) != 2):
+            raise DesktopStateError(
+                "Multiple Codex Desktop catalogs have unproven storage identity: "
+                + ", ".join(str(path) for path in matches)
+            )
+        for path in matches:
+            try:
+                info = path.stat()
+                independent = (path.parent == sqlite_root.resolve()
+                               and stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+            except OSError as exc:
+                raise DesktopStateError(f"Could not inspect Codex Desktop catalog {path}: {exc}") from exc
+            if not independent:
+                raise DesktopStateError(
+                    f"Codex Desktop catalog is not an independent file in its sqlite directory: {path}"
+                )
+    return tuple(matches)
 
 
 def _read_catalog_records(
@@ -965,6 +1015,10 @@ def _read_catalog_records(
                 for row in rows
                 if isinstance(row["thread_id"], str) and row["thread_id"]
             ]
+            if len({record.thread_id for record in records}) != len(records):
+                raise DesktopStateError(
+                    f"Duplicate local Codex Desktop catalog rows in {database}"
+                )
             revision = _read_catalog_revision(connection)
     except DesktopStateError:
         raise
@@ -990,7 +1044,13 @@ def _read_catalog_revision(connection: sqlite3.Connection) -> int | None:
     return int(row["revision"])
 
 
-def _delete_catalog_rows(database: Path, thread_ids: tuple[str, ...]) -> int:
+def _delete_catalog_rows(
+    database: Path,
+    expected_records: tuple[DesktopCatalogRecord, ...],
+    expected_revision: int | None,
+    before_write: Callable[[], None],
+) -> int:
+    thread_ids = tuple(record.thread_id for record in expected_records)
     placeholders = ",".join("?" for _ in thread_ids)
     try:
         with closing(sqlite3.connect(database)) as connection:
@@ -1002,6 +1062,20 @@ def _delete_catalog_rows(database: Path, thread_ids: tuple[str, ...]) -> int:
                 raise DesktopStateError(
                     "Codex Desktop catalog schema changed before mutation"
                 )
+            current_rows = connection.execute(
+                "SELECT * FROM local_thread_catalog "
+                f"WHERE host_id = 'local' AND thread_id IN ({placeholders}) "
+                "ORDER BY thread_id", thread_ids,
+            ).fetchall()
+            expected_rows = [dict(record.row) for record in sorted(
+                expected_records, key=lambda record: record.thread_id
+            )]
+            if ([dict(row) for row in current_rows] != expected_rows
+                    or _read_catalog_revision(connection) != expected_revision):
+                raise DesktopStateError(
+                    f"Codex Desktop catalog changed before mutation: {database}"
+                )
+            before_write()
             cursor = connection.execute(
                 "DELETE FROM local_thread_catalog "
                 f"WHERE host_id = 'local' AND thread_id IN ({placeholders})",
@@ -1036,7 +1110,7 @@ def _create_backup(
     snapshot: DesktopStateSnapshot,
     manifest: dict[str, Any],
 ) -> tuple[str, Path]:
-    assert snapshot.database is not None
+    assert snapshot.databases
     backup_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         + "-"
@@ -1052,9 +1126,10 @@ def _create_backup(
         directory.mkdir(parents=True, exist_ok=False)
         for state_path in snapshot.state_paths:
             shutil.copy2(state_path, directory / state_path.name)
-        with closing(connect_readonly(snapshot.database)) as source:
-            with closing(sqlite3.connect(directory / snapshot.database.name)) as target:
-                source.backup(target)
+        for database in snapshot.databases:
+            with closing(connect_readonly(database)) as source:
+                with closing(sqlite3.connect(directory / database.name)) as target:
+                    source.backup(target)
         manifest["backup_id"] = backup_id
         manifest["backup_directory"] = str(directory)
         manifest_path = directory / "manifest.json"
@@ -1073,18 +1148,37 @@ def _create_backup(
 def _restore_backup(
     snapshot: DesktopStateSnapshot,
     backup_directory: Path,
+    modified_databases: set[Path],
+    modified_state_paths: set[Path],
 ) -> str | None:
-    assert snapshot.database is not None
-    try:
-        backup_database = backup_directory / snapshot.database.name
-        with closing(connect_readonly(backup_database)) as source:
-            with closing(sqlite3.connect(snapshot.database)) as destination:
-                source.backup(destination)
-        for state_path in snapshot.state_paths:
+    assert snapshot.databases
+    errors: list[str] = []
+    for database in snapshot.databases:
+        if database not in modified_databases:
+            continue
+        try:
+            backup_database = backup_directory / database.name
+            with closing(connect_readonly(backup_database)) as source:
+                with closing(sqlite3.connect(database)) as destination:
+                    source.backup(destination)
+        except Exception as exc:
+            errors.append(f"{database}: {exc}")
+    for state_path in snapshot.state_paths:
+        if state_path not in modified_state_paths:
+            continue
+        try:
             shutil.copy2(backup_directory / state_path.name, state_path)
-    except Exception as exc:
-        return str(exc)
-    return None
+        except Exception as exc:
+            errors.append(f"{state_path}: {exc}")
+    if not errors:
+        try:
+            restored = read_desktop_state(snapshot.codex_home, snapshot.threads)
+            if any(restored.threads[thread_id].snapshot_fingerprint != state.snapshot_fingerprint
+                   for thread_id, state in snapshot.threads.items()):
+                errors.append("restored Desktop snapshot differs from approved state")
+        except Exception as exc:
+            errors.append(f"restore verification: {exc}")
+    return "; ".join(errors) if errors else None
 
 
 def _discard_backup(

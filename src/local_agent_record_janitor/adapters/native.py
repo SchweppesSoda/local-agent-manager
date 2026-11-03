@@ -133,7 +133,7 @@ class NativeIntegrityAdapter(FrontendAdapter):
             raise NativeIntegrityError(
                 f"Could not read Codex Desktop host state: {exc}"
             ) from exc
-        if snapshot.database is None:
+        if not snapshot.databases:
             return []
 
         # Import lazily to keep the adapter/inventory compatibility boundary
@@ -183,7 +183,7 @@ class NativeIntegrityAdapter(FrontendAdapter):
             snapshot = read_desktop_state(
                 self.codex_home, set(snapshot.threads) | set(self.desktop_thread_ids)
             )
-        if snapshot.database is None:
+        if not snapshot.databases:
             return []
 
         findings: list[Finding] = []
@@ -219,7 +219,7 @@ class NativeIntegrityAdapter(FrontendAdapter):
                         "Codex Desktop host state remains after the native "
                         "thread row and rollout were deleted"
                     ),
-                    platform_db=snapshot.database,
+                    platform_db=snapshot.databases[0],
                     codex_home=self.codex_home,
                     rollout=None,
                     codex_indexed=False,
@@ -227,7 +227,9 @@ class NativeIntegrityAdapter(FrontendAdapter):
                     codex_bin_hint=self.codex_bin_hint,
                     details={
                         "finding_type": "desktop_state_orphan",
-                        "desktop_database": str(snapshot.database),
+                        "desktop_database": str(snapshot.databases[0]),
+                        "desktop_database_paths": [str(path) for path in snapshot.databases],
+                        "desktop_catalog_database_paths": [str(record.database) for record in local_records],
                         "desktop_host_id": "local",
                         "desktop_catalog_record_count": len(local_records),
                         "desktop_explicit_json_only": explicit_json_only,
