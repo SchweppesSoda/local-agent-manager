@@ -11,7 +11,10 @@ import stat
 from typing import Any, Callable, Mapping, Sequence
 
 from .discovery import CINDY_PROFILE_NAMES, cindy_codex_candidates, release_version
-from .environment_config import package_version, paseo_runtime_hints, t3_runtime_hints
+from .environment_config import (
+    package_version, paseo_antigravity_backup_metadata, paseo_runtime_hints,
+    t3_acp_managed_release, t3_runtime_hints,
+)
 from .environment_paths import BoundedPathProbe, MAX_DIRECTORY_ENTRIES, MAX_PATH_PROBES, local_path
 
 SCHEMA_VERSION = "larj.environment-inventory.v1"
@@ -30,6 +33,7 @@ _COMMANDS = {
 }
 _SUFFIXES = (".exe", ".com", ".cmd", ".bat", ".ps1", "")
 _ACP_NAMES = ("agy_acp_server.exe", "agy_acp_server.par")
+_T3_PROVIDER_KEY = re.compile(r"[a-f0-9]{64}")
 _STANDALONE = frozenset(("codex", "claude", "pi", "antigravity-cli"))
 _SUGGESTIONS = {
     "multiple_path_candidates": "Compare executable paths in the shell or client that launches this engine.",
@@ -156,6 +160,7 @@ class _Inventory:
         runtime: dict | None = None, configuration: dict | None = None,
         selection: str = "unknown", store_scope: str = "native_profile",
         profile: Path | None = None, enabled: bool | None = None,
+        storage_artifacts: list[dict] | None = None,
     ) -> dict | None:
         status, _ = self.probe.inspect(store, via, directory=True) if store else ("unknown", None)
         if status == "missing" and runtime is None and (
@@ -174,6 +179,8 @@ class _Inventory:
         }
         if enabled is not None:
             row["configured_enabled"] = enabled
+        if storage_artifacts is not None:
+            row["storage_artifacts"] = storage_artifacts
         self.bindings[key] = row
         return row
 
@@ -373,13 +380,74 @@ def _cindy(inv: _Inventory, roaming: Path | None) -> None:
                                                           "settings.json", "cindy_pi_config"))
 
 
+def _antigravity_store_markers(probe: BoundedPathProbe, store: Path | None, label: str) -> list[dict] | None:
+    if store is None or probe.inspect(store, label, directory=True)[0] != "present":
+        return None
+    markers = []
+    for kind, filename, directory in (
+        ("brain", "brain", True),
+        ("conversations", "conversations", True),
+        ("summary_catalog", "conversation_summaries.db", False),
+        ("summary_catalog_wal", "conversation_summaries.db-wal", False),
+        ("summary_catalog_shm", "conversation_summaries.db-shm", False),
+    ):
+        path = store / filename
+        status, _ = probe.inspect(path, label, directory=directory)
+        markers.append({"kind": kind, "path": str(path), "path_status": status})
+    return markers
+
+
+def _t3_antigravity_profiles(inv: _Inventory, parent: Path) -> None:
+    # T3's antigravityAuthSupport.ts hashes the provider instance ID to
+    # derive GEMINI_HOME, then stores ACP data in its antigravity-acp child.
+    # Directory presence cannot establish that a provider is still configured.
+    label = "t3code_antigravity_instance_layout"
+    for profile in inv.probe.children(parent, label):
+        if not _T3_PROVIDER_KEY.fullmatch(profile.name):
+            continue
+        store = profile / "antigravity-acp"
+        if inv.probe.inspect(store, label, directory=True)[0] == "missing":
+            continue
+        inv.binding(
+            "t3code", "antigravity-acp", store, label, selection="layout_hint", profile=profile,
+            configuration=_profile_config(inv.probe, store, "settings.json", label),
+            storage_artifacts=_antigravity_store_markers(inv.probe, store, label),
+        )
+
+
+def _paseo_antigravity_backup(inv: _Inventory, root: Path) -> None:
+    label = "paseo_antigravity_backup"
+    backup = root / "antigravity-provider.bak"
+    status, _ = inv.probe.inspect(backup, label, directory=True)
+    if status == "missing":
+        return
+    config, known = (paseo_antigravity_backup_metadata(backup, inv.probe)
+                     if status == "present" else (None, False))
+    inv.binding(
+        "paseo", "paseo", backup, label, profile=root, configuration=config,
+        store_scope="legacy_plugin_candidate" if known else "unclassified_artifact",
+    )
+
 def _t3_acp(inv: _Inventory, root: Path) -> list[dict]:
     base = root / "tools" / "antigravity-acp"
     layout = "t3_antigravity_acp"
     rows = inv.executables("t3code", "antigravity-acp", base, _ACP_NAMES, layout)
     for platform in _PLATFORM_DIRS:
-        rows.extend(inv.versioned("t3code", "antigravity-acp", base / platform / "versions",
+        platform_root = base / platform
+        rows.extend(inv.versioned("t3code", "antigravity-acp", platform_root / "versions",
                                   _ACP_NAMES, layout, unversioned=True))
+        selected = t3_acp_managed_release(platform_root, inv.probe)
+        if selected is None:
+            continue
+        executable, version = selected
+        row = inv.runtime("t3code", "antigravity-acp", executable, layout)
+        if row is not None:
+            row["version"] = version
+            row["version_source"] = "t3_managed_install_manifest"
+            if row["selection"] == "unknown":
+                row["selection"] = "installer_pointer"
+            if row not in rows:
+                rows.append(row)
     for row in rows:
         path = Path(row["path"])
         helper = path.with_name("localharness_external.exe" if path.suffix == ".exe" else "localharness_external")
@@ -403,10 +471,11 @@ def _t3_tools(inv: _Inventory, root: Path) -> None:
         inv.profile("t3code", "codex", None, "t3code_tools", codex, profile=root,
                     selection="layout_hint", store_scope="unknown")
     acp = _t3_acp(inv, root)
-    inv.profile("t3code", "antigravity-acp", root / "userdata/providers/antigravity",
+    profiles = root / "userdata/providers/antigravity"
+    inv.profile("t3code", "antigravity-acp", profiles,
                 "t3code_antigravity_profiles", acp, selection="layout_hint",
                 store_scope="provider_profiles")
-
+    _t3_antigravity_profiles(inv, profiles)
 
 def _path_runtimes(inv: _Inventory, selected: Sequence[str], value: str,
                    known_roots: Sequence[tuple[str, Path | None]]) -> None:
@@ -508,6 +577,9 @@ def _frontend(inv: _Inventory, client: str, root: Path | None, local: Path | Non
     desktop_name = "Paseo" if client == "paseo" else "T3 Code"
     inv.executables(client, client, _join(local, "Programs/" + desktop_name),
                     (desktop_name + ".exe",), client + "_desktop")
+    if client == "t3code":
+        inv.executables(client, client, _join(local, "Programs/t3code"),
+                        ("T3 Code.exe", "T3 Code (Nightly).exe"), client + "_desktop")
     rows = [row for row in inv.runtimes.values() if row["client"] == client and row["engine"] == client]
     if root is not None:
         hints_reader = paseo_runtime_hints if client == "paseo" else t3_runtime_hints
@@ -515,11 +587,12 @@ def _frontend(inv: _Inventory, client: str, root: Path | None, local: Path | Non
         inv.profile(client, client, root, client + "_profile", rows,
                     configuration=config, store_scope="frontend_profile")
         inv.configure(client, root, config, hints)
-    desktop_profile = _join(roaming, desktop_name)
-    if desktop_profile is not None:
-        inv.binding(client, client, desktop_profile, client + "_desktop_profile",
-                    store_scope="frontend_profile")
-
+    desktop_profiles = (desktop_name, "t3code-v2") if client == "t3code" else (desktop_name,)
+    for name in desktop_profiles:
+        desktop_profile = _join(roaming, name)
+        if desktop_profile is not None:
+            inv.binding(client, client, desktop_profile, client + "_desktop_profile",
+                        store_scope="frontend_profile")
 
 def collect_environment_inventory(
     *, user_home: Path | None = None, appdata: Path | None = None,
@@ -617,8 +690,12 @@ def collect_environment_inventory(
     for client, (store, via, filename) in standalone_profiles.items():
         if client in selected:
             rows = [row for row in inv.runtimes.values() if row["client"] == client and row["engine"] == client]
+            markers = _antigravity_store_markers(probe, store, "antigravity_cli_store") if (
+                client == "antigravity-cli"
+            ) else None
             inv.profile(client, client, store, via, rows,
-                        configuration=_profile_config(probe, store, filename, via))
+                        configuration=_profile_config(probe, store, filename, via),
+                        storage_artifacts=markers)
     if "pi" in selected and (override := root_env.get("PI_CODING_AGENT_SESSION_DIR")):
         session_root = _root(probe, override, "PI_CODING_AGENT_SESSION_DIR", home=home)
         inv.binding("pi", "pi", session_root, "environment_session_root", store_scope="session_directory")
@@ -627,6 +704,8 @@ def collect_environment_inventory(
     if "paseo" in selected:
         paseo, _ = effective("PASEO_HOME", ".paseo")
         _frontend(inv, "paseo", paseo, local, roaming)
+        if paseo is not None:
+            _paseo_antigravity_backup(inv, paseo)
 
     inv.finish_findings(selected, explicit=clients is not None)
     return {

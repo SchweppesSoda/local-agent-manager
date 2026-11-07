@@ -158,6 +158,115 @@ class EnvironmentInventoryTests(unittest.TestCase):
         self.assertIsNone(hints["t3code", "antigravity-acp"]["executable_id"])
         self.assertNotIn("SECRET", json.dumps(result))
 
+
+    def test_antigravity_storage_markers_keep_cli_t3_and_paseo_artifacts_separate(self):
+        agy = self.file("Local/agy/bin/agy.exe")
+        night = self.file("Local/Programs/t3code/T3 Code (Nightly).exe")
+        t3_desktop = self.root / "Roaming/t3code-v2"
+        t3_desktop.mkdir(parents=True)
+        cli = self.root / ".gemini/antigravity-cli"
+        t3_profile = self.root / ".t3/userdata/providers/antigravity" / ("a" * 64)
+        acp = t3_profile / "antigravity-acp"
+        for store in (cli, acp):
+            for child in ("brain/PRIVATE_TITLE", "conversations/PRIVATE_ID.db",
+                          "conversation_summaries.db", "conversation_summaries.db-wal",
+                          "acp_token.json", "settings.json"):
+                self.file((store / child).relative_to(self.root), b"PRIVATE_BODY")
+        backup = self.root / ".paseo/antigravity-provider.bak"
+        self.file((backup / "paseo-plugin.json").relative_to(self.root),
+                  b'{"id":"antigravity-provider","label":"PRIVATE_LABEL"}')
+        self.file((backup / "index.server.ts").relative_to(self.root), b"PRIVATE_SOURCE")
+        self.file(".paseo/config.json", json.dumps({
+            "version": 1, "agents": {"providers": {"antigravity": {"command": [str(agy)]}}},
+        }).encode())
+        scandir = os.scandir
+
+        def no_store_listing(path):
+            if Path(path) in (cli, t3_profile, acp, backup) or any(
+                p in Path(path).parents for p in (cli, t3_profile, backup)
+            ):
+                raise AssertionError("inventory enumerated records or plugin source")
+            return scandir(path)
+
+        with patch.object(frozen_files, "read_file", wraps=frozen_files.read_file) as read, patch.object(
+            os, "scandir", no_store_listing,
+        ):
+            result = self.inventory(clients=("antigravity", "paseo", "t3code"))
+        self.assertEqual({call.args[1] for call in read.call_args_list},
+                         {"config.json", "paseo-plugin.json"})
+        rows = {row["store_path"]: row for row in result["bindings"]}
+        for store in (cli, acp):
+            self.assertEqual(rows[str(store)]["store_scope"], "native_profile")
+            markers = {marker["kind"]: marker["path_status"] for marker in rows[str(store)]["storage_artifacts"]}
+            self.assertEqual(markers["brain"], "present")
+            self.assertEqual(markers["conversations"], "present")
+            self.assertEqual(markers["summary_catalog"], "present")
+            self.assertEqual(markers["summary_catalog_wal"], "present")
+            self.assertEqual(markers["summary_catalog_shm"], "missing")
+        self.assertEqual(rows[str(acp)]["profile_path"], str(t3_profile))
+        self.assertEqual(rows[str(acp)]["selection"], "layout_hint")
+        self.assertIsNone(rows[str(acp)]["executable_id"])
+        self.assertEqual(rows[str(backup)]["store_scope"], "legacy_plugin_candidate")
+        self.assertEqual(rows[str(backup)]["selection"], "unknown")
+        self.assertNotIn("storage_artifacts", rows[str(backup)])
+        self.assertEqual(rows[str(t3_desktop)]["store_scope"], "frontend_profile")
+        self.assertIn(str(night), {row["path"] for row in result["runtimes"]})
+        paseo = next(row for row in result["bindings"] if row["client"] == "paseo"
+                     and row["engine"] == "antigravity-cli")
+        self.assertIsNone(paseo["store_path"])
+        self.assertNotIn("PRIVATE_", json.dumps(result))
+        self.assertNotIn("deletable", json.dumps(result))
+
+    def test_t3_acp_pointer_requires_matching_manifest_and_files(self):
+        platform = ".t3/tools/antigravity-acp/win32-x64"
+        active = "a" * 64
+        retained = "b" * 64
+        self.file(platform + "/active.json", json.dumps({"releaseId": active}).encode())
+        release = platform + "/versions/" + active
+        exe = self.file(release + "/agy_acp_server.exe", b"acp")
+        companion = self.file(release + "/localharness_external.exe", b"helper")
+        other = self.file(platform + "/versions/" + retained + "/agy_acp_server.exe")
+        self.file(platform + "/versions/" + retained + "/localharness_external.exe")
+        self.file(release + "/.install-complete.json", json.dumps({
+            "releaseId": active, "version": "1.4.5", "executable": {"name": exe.name, "bytes": 3},
+            "harness": {"name": companion.name, "bytes": 6},
+        }).encode())
+        rows = {row["path"]: row for row in self.inventory(clients=("t3code",))["runtimes"]}
+        self.assertEqual(rows[str(exe)]["selection"], "installer_pointer")
+        self.assertEqual(rows[str(exe)]["version"], "1.4.5")
+        self.assertEqual(rows[str(exe)]["version_source"], "t3_managed_install_manifest")
+        self.assertEqual(rows[str(other)]["selection"], "unknown")
+        companion.write_bytes(b"changed length")
+        result = self.inventory(clients=("t3code",))
+        self.assertTrue(all(row["selection"] == "unknown" for row in result["runtimes"]))
+        self.assertIn("unverified_installer_pointer", {issue["code"] for issue in result["coverage"]["issues"]})
+
+        self.file(platform + "/active.json", b'{"releaseId":"../PRIVATE_PATH"}')
+        result = self.inventory(clients=("t3code",))
+        self.assertTrue(all(row["selection"] == "unknown" for row in result["runtimes"]))
+        self.assertIn("metadata_schema_unknown", {issue["code"] for issue in result["coverage"]["issues"]})
+        self.assertNotIn("PRIVATE_PATH", json.dumps(result))
+
+    def test_redirected_t3_provider_profile_is_never_descended(self):
+        profile = self.root / ".t3/userdata/providers/antigravity" / ("c" * 64)
+        store = profile / "antigravity-acp"
+        store.mkdir(parents=True)
+        original = Path.lstat
+
+        def observe(path):
+            if profile in path.parents:
+                raise AssertionError("descended through redirected profile")
+            if path == profile:
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x0400)
+            return original(path)
+
+        with patch.object(Path, "lstat", observe):
+            result = self.inventory(clients=("t3code",))
+        row = next(row for row in result["bindings"] if row["store_path"] == str(store))
+        self.assertEqual(row["store_status"], "redirected")
+        self.assertNotIn("storage_artifacts", row)
+        self.assertEqual(result["coverage"]["status"], "partial")
+
     def test_npm_hardlinks_are_distinguished_from_equal_independent_files(self):
         native = self.file(".local/bin/claude.exe")
         version = self.file(".local/share/claude/versions/2.1.319")

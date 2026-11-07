@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -156,3 +157,58 @@ def t3_runtime_hints(
         hints.append((engine, binary, home if engine in ("codex", "claude") else None,
                       enabled if isinstance(enabled, bool) else None))
     return observation, hints
+
+
+# See T3 Code AntigravityInstallation.ts: the pointer names a SHA-256 release
+# directory, and its completion record describes the two installed files.
+_T3_ACP_RELEASE_ID = re.compile(r"[a-f0-9]{64}")
+
+
+def t3_acp_managed_release(platform: Path, probe: BoundedPathProbe) -> tuple[Path, str] | None:
+    label = "t3_antigravity_installer"
+    pointer_path = platform / "active.json"
+    _, pointer = metadata_json(platform, "active.json", probe, label)
+    if pointer is None:
+        return None
+    release_id = pointer.get("releaseId")
+    if not isinstance(release_id, str) or not _T3_ACP_RELEASE_ID.fullmatch(release_id):
+        probe.issue(label, "metadata_schema_unknown", pointer_path)
+        return None
+
+    release = platform / "versions" / release_id
+    _, manifest = metadata_json(release, ".install-complete.json", probe, label)
+    if manifest is not None and manifest.get("releaseId") == release_id:
+        names = ("agy_acp_server.exe", "localharness_external.exe") if platform.name.startswith("win32-") else (
+            "agy_acp_server.par", "localharness_external",
+        )
+        version_text = manifest.get("version")
+        version = release_version(version_text) if isinstance(version_text, str) else None
+        if version is not None and all(
+            _installed_file_matches(release / name, manifest.get(key), probe, label)
+            for key, name in zip(("executable", "harness"), names)
+        ):
+            return release / names[0], version
+
+    probe.issue(label, "unverified_installer_pointer", pointer_path)
+    return None
+
+
+def _installed_file_matches(path: Path, record: Any, probe: BoundedPathProbe, label: str) -> bool:
+    if not isinstance(record, dict) or record.get("name") != path.name:
+        return False
+    expected_size = record.get("bytes")
+    if type(expected_size) is not int or expected_size <= 0:
+        return False
+    _, info = probe.inspect(path, label, directory=False)
+    return info is not None and info.st_size == expected_size
+
+
+def paseo_antigravity_backup_metadata(
+    backup: Path, probe: BoundedPathProbe,
+) -> tuple[dict[str, Any], bool]:
+    """Identify the fixed manifest ID without opening plugin source or state."""
+    observation, manifest = metadata_json(backup, "paseo-plugin.json", probe, "paseo_antigravity_backup")
+    known = manifest is not None and manifest.get("id") == "antigravity-provider"
+    if known:
+        observation["schema_status"] = "known_projection"
+    return observation, known
