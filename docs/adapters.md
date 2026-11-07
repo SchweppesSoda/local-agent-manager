@@ -719,6 +719,80 @@ Windows 执行期间持有全部绑定运行文件及永久 `userdata/server-own
 禁止自动重发，只能通过精确 after 冷验证判定完成。桌面替换采用持久 after 副本及封存目录，
 中断后保留恢复证据。相关依赖、绑定格式与命令见 [T3 Code 完整本地操作](operation-cli.md#t3-code-完整本地操作)。
 
+### Antigravity
+
+| 入口 | 可核实的默认布局 | 归属边界 |
+|---|---|---|
+| 独立 Antigravity CLI | `agy`、`~/.gemini/antigravity-cli/` | 按实际运行路径、用户与数据根区分 |
+| Paseo 内置 Antigravity | Paseo profile 的 agent 注册快照，以及 daemon 启动的 `agy` | Paseo agent ID 与 CLI conversation ID 分开。配置可覆盖命令和启动环境 |
+| T3 Code Antigravity | T3 provider 实例的 `GEMINI_HOME` 及独立 ACP executable | T3 thread ID、ACP session ID、provider 实例和物理目录分别核实 |
+| Antigravity App / IDE | 独立 App / IDE 及其 profile | CLI 的 `Other` 分页可将桌面对话导入为 CLI 副本。导入关联不构成共享物理存储证据 |
+
+**CLI 与 Paseo。** 已核对 Paseo 内置 provider 的命令行采用 `stream-json`，收到
+`conversation_id` 后保留恢复引用，重启以 `--conversation` 恢复。daemon 可以通过
+`agents.providers.antigravity.command` 及 provider 环境覆盖默认选择。前端注册行、
+配置命令、运行进程与 native 根需要分别验证。同一 `agy` 路径可以在不同主机、用户或
+profile 下运行。[Paseo 内置配置](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/public-docs/supported-providers.md#antigravity)
+· [Paseo 启动与恢复](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/plugins/antigravity-provider/server/internal/process.ts#L34-L56)
+· [Paseo 持久引用](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/plugins/antigravity-provider/server/internal/session.ts#L218-L232)
+
+Google CLI 在 1.0.4 加入 SQLite 会话格式。已观察到的布局包括
+`conversations/<id>.db`、SQLite 侧文件、`brain/<id>/` 和 profile 级
+`conversation_summaries.db`。这些名称是布局线索。本项目尚未验证可用于写入的
+schema 和完整关系契约。官方文档定义的 `cache/last_conversations.json`
+是 workspace 到最近会话的选择缓存。将它与会话、共享摘要、父子会话、生成 artifacts
+和原始工作区区分。`settings.json`、`keybindings.json`、`~/.gemini/config/` 中的
+共享配置、认证数据及 runtime 均在会话清理范围之外。
+[CLI 版本记录](https://github.com/google-antigravity/antigravity-cli/blob/099f43f0b0b7a9ffe17b549d80aac1f1ff6e2bb5/CHANGELOG.md#104)
+· [CLI 会话选择与缓存](https://antigravity.google/docs/cli/commands/resume)
+· [CLI 与共享设置](https://antigravity.google/docs/settings?tab=cli)
+
+**T3 Code ACP。** T3 在受管模式下通过
+`<T3 home>/tools/antigravity-acp/<platform>-<arch>/active.json` 选择
+`versions/<releaseId>/` 下由 `.install-complete.json` 记录的 ACP executable 与 `localharness_external`。
+手动 binary 或 PATH 是独立选择。T3 按 provider instance ID 的 SHA-256 在
+`<stateDir>/providers/antigravity/<hash>/` 建立隔离的 `GEMINI_HOME`。
+发行构建的 `stateDir` 通常为 `<T3 home>/userdata`。其中 `antigravity-acp/`
+存放实例数据，`acp_token.json` 是凭据，`settings.json` 是配置。
+`<stateDir>/antigravity-tmp/` 中的运行时解包文件与会话不同。全局 skills
+可能通过符号链接或 Windows junction 暴露在实例内，链接目标仍属于共享设置。
+T3 的下载 runtime 由同一环境的实例共享，登录则按实例隔离。
+[T3 路径与环境](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityAuthSupport.ts#L171-L247)
+· [T3 实例凭据路径](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityAuthSupport.ts#L374-L382)
+· [T3 受管安装](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/AntigravityInstallation.ts#L167-L174)
+· [T3 provider 操作](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/docs/user/providers-antigravity.md)
+
+T3 的临时探测清理会在进程关闭后，以 UUIDv4 和 `.meta` 中的唯一临时 cwd
+证明归属，再移除 `antigravity-acp/conversations/<id>` 对应的
+`.db`、`.db-wal`、`.db-shm`、`.db-journal`、`.meta` 及 `brain/<id>`。
+这是上游对一次性会话的实现证据。普通 thread 的完整影响范围、共享索引、后代或远程
+副本仍需独立确认。Google 新版 CLI 提供的 `agy acp` 是另一个 launch 路径，
+可复用 CLI 凭据。不能据此推导 T3 受管 ACP 或任意自定义 provider 的存储和能力。
+[T3 临时会话清理](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/acp/AntigravitySessionFiles.ts#L5-L41)
+· [Google CLI 的 ACP 模式](https://antigravity.google/docs/ide/extensions/acp/)
+
+**环境发现。** `environment inventory` 的 `storage_artifacts` 只记录固定布局路径
+和文件状态。T3 按观察到的隔离实例分别输出 `native_profile`，该布局线索不把
+实例绑定到某个运行程序。Paseo profile 下的 `antigravity-provider.bak` 若
+manifest 符合已知插件 ID，则记录为 `legacy_plugin_candidate`，其余保持
+`unclassified_artifact`。该分类不证明来源、在用状态、历史记录归属或可删除性。
+
+**记录能力。** Paseo 和 T3 的 Antigravity 记录保留 `unsupported:antigravity`
+引擎身份。`provider_backend_family_hint` 仅指各自内置集成的运行时家族，
+`native_cleanup_status=unsupported` 表明当前缺少 native 清理资格。
+前端隐藏、归档、删除注册行或软删除无法完成 native 清理终验。
+
+Google CLI 的官方 `/resume` 界面支持选定会话删除。操作前核对 CLI 版本与
+picker 显示的快捷键。1.1.13 起改为 `F4`，1.4.8 修正删除时遗漏运行中子代理、
+其历史和工作区的问题。上游记录也显示 annotations、子代理元数据和重建空数据库的
+行为随版本变化。界面确认只支持报告该版本的可见结果，无法证明所有本地副本或远程
+数据均清除。ACP v1 的 `session/delete` 需该实例在 `initialize` 明确声明能力，
+只定义 `session/list` 可见性，允许软删除。janitor 的自动删除在 native schema、
+写入者与完整影响范围都取得证据前保持关闭。
+[Google 删除入口](https://antigravity.google/docs/cli/commands/resume#deleting-a-conversation)
+· [CLI 版本记录](https://github.com/google-antigravity/antigravity-cli/blob/099f43f0b0b7a9ffe17b549d80aac1f1ff6e2bb5/CHANGELOG.md#148)
+· [ACP v1 删除语义](https://agentclientprotocol.com/protocol/v1/session-delete)
+
 ## 既有 Codex Finding adapter
 
 Codex compatibility adapter 将外部平台的删除状态转换为保守的 `Finding`，不能直接

@@ -4,6 +4,8 @@
 
 Use `environment inventory --json` for discovered roots, candidates and bindings, and `environment doctor --json` for findings and coverage. Bounded discovery may miss installation channels, custom paths, remote environments, and running processes. Partial coverage means an observation was unavailable. Read the probe issue and evidence before deciding whether a candidate is missing or whether a repair is needed. A layout hint can help locate a profile. Active selection needs evidence from the actual shell or frontend.
 
+Codex or app sandbox processes may supply a container `LOCALAPPDATA`. Include the reported `roots` in diagnosis. If they differ from the verified target Windows profile, pass its actual `--home`, `--appdata`, and `--local-appdata` values and constrain PATH to that context. Treat an unobserved application under the wrong roots as unknown.
+
 ### Inspect an alternate profile or fixture
 
 If a supplied profile defines the entire scope, pass its actual application-data roots and an empty PATH override. This example uses the default AppData layout within the supplied profile.
