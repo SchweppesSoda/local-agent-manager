@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from local_agent_record_janitor.discovery import (
     choose_codex_binary,
+    discover_cindy_codex,
     discover_cindy_profiles,
     resolve_cindy_profiles,
 )
@@ -193,6 +196,81 @@ class CindyDedicatedStoreDiscoveryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 discover_cindy_profiles(appdata)
 
+
+
+class CindyCodexRuntimeDiscoveryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def binary(self, relative: str) -> Path:
+        candidate = self.root / relative
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.touch()
+        return candidate
+
+    def test_packaged_layout_can_be_the_only_candidate(self) -> None:
+        candidate = self.binary("codex-package/0.166.0/bin/codex.exe")
+        self.assertEqual(discover_cindy_codex(self.root), candidate)
+
+    def test_legacy_layout_can_be_the_only_candidate(self) -> None:
+        candidate = self.binary("codex/0.145.0/codex.exe")
+        self.assertEqual(discover_cindy_codex(self.root), candidate)
+
+    def test_packaged_precedes_legacy_and_selects_numerically(self) -> None:
+        self.binary("codex/9.0.0/codex.exe")
+        self.binary("codex-package/0.9.9/bin/codex")
+        self.binary("codex-package/0.10.0-beta.2/bin/codex")
+        self.binary("codex-package/0.10.0-beta.10/bin/codex")
+        candidate = self.binary("codex-package/0.10.0/bin/codex")
+        self.assertEqual(discover_cindy_codex(self.root), candidate)
+
+    def test_missing_and_wrong_type_candidates_are_not_selected(self) -> None:
+        (self.root / "codex-package/0.166.0/bin/codex.exe").mkdir(parents=True)
+        self.assertIsNone(discover_cindy_codex(self.root))
+
+    def test_unreadable_packaged_layout_does_not_break_legacy_adapter_hint(self) -> None:
+        self.binary("codex-package/0.166.0/bin/codex.exe")
+        legacy = self.binary("codex/0.145.0/codex.exe")
+        original = Path.lstat
+
+        def observe(path: Path):
+            if path == self.root / "codex-package":
+                raise PermissionError("denied")
+            return original(path)
+
+        with patch.object(Path, "lstat", observe):
+            self.assertEqual(discover_cindy_codex(self.root), legacy)
+
+    def test_redirected_packaged_layout_is_not_descended(self) -> None:
+        self.binary("codex-package/0.166.0/bin/codex.exe")
+        legacy = self.binary("codex/0.145.0/codex.exe")
+        package = self.root / "codex-package"
+        original = Path.lstat
+
+        def observe(path: Path):
+            if package in path.parents:
+                raise AssertionError("descended through reparse point")
+            if path == package:
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x0400)
+            return original(path)
+
+        with patch.object(Path, "lstat", observe):
+            self.assertEqual(discover_cindy_codex(self.root), legacy)
+
+    def test_adapter_keeps_explicit_hint_even_if_missing(self) -> None:
+        from local_agent_record_janitor.adapters.cindy import CindyAdapter
+
+        self.binary("codex-package/0.166.0/bin/codex.exe")
+        explicit = self.root / "explicit-missing.exe"
+        with patch(
+            "local_agent_record_janitor.adapters.cindy.discover_cindy_codex",
+            side_effect=AssertionError("discovery should not run"),
+        ):
+            adapter = CindyAdapter(database=self.root / "cindy.db", codex_home=self.root / "codex-home",
+                                   cindy_root=self.root, codex_bin_hint=explicit)
+        self.assertEqual(adapter.codex_bin_hint, explicit)
 
 if __name__ == "__main__":
     unittest.main()
