@@ -56,6 +56,7 @@ from .progress import ProgressReporter
 from .record_identity import RecordClassification
 from .rendering import safe_single_line
 from .execution import ExecutionError
+from .environment_cli import add_environment_commands, run_environment_command
 from .relation_cleanup import RelationCleanupError
 from .legacy_index import (
     LegacyIndexError,
@@ -472,6 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _ChineseArgumentParser(
         prog="local-agent-record-janitor",
         description=(
+            "只读盘点和诊断 Agent 运行环境。"
             "检查前端残留，只读盘点本地 Agent 记录（Codex thread、"
             "Pi Agent/Claude Code session），"
             "并保守清理明确选择且重验证通过的目标。"
@@ -482,6 +484,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         title="命令",
     )
+
+    environment = subparsers.add_parser(
+        "environment",
+        help="只读盘点和诊断 Agent 运行环境",
+        description="检查本机 Agent 运行时、配置和存储路径的证据。",
+    )
+    add_environment_commands(environment)
 
     scan = subparsers.add_parser(
         "scan",
@@ -1742,6 +1751,9 @@ def main(
         )
         output.write("\n")
         return EXIT_ERROR
+
+    if args.command == "environment":
+        return run_environment_command(args, stdout=output, stderr=error_output)
 
     if args.command == "agent":
         from .agent_cli import run_agent_command
