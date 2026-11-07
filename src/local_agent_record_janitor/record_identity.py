@@ -1,7 +1,7 @@
 """Storage, project and frontend identity helpers.
 
 The cleanup code has several intentionally different native stores (Codex,
-Pi and Claude) and several UI namespaces (Cindy, AionUI and Codex Desktop).
+Pi and Claude) and several UI namespaces (Cindy and Codex Desktop).
 This module contains only immutable identity/value helpers used by inventory
 and adapters.  It does not decide whether a mutation is safe and it never
 opens a database or a transcript.
@@ -30,7 +30,6 @@ class ClientName(str, Enum):
 
     CODEX_NATIVE = "native"
     CINDY = "cindy"
-    AIONUI = "aionui"
     CODEX_DESKTOP = "codex-desktop"
     PI = "pi"
     CLAUDE = "claude"
@@ -38,7 +37,6 @@ class ClientName(str, Enum):
     HERDR = "herdr"
     WORKBUDDY = "workbuddy"
     QWENWORK = "qwenwork"
-    QODERWORK = "qoderwork"
     PASEO = "paseo"
     T3CODE = "t3code"
 
@@ -58,7 +56,6 @@ def normalize_client(value: object) -> str:
         "codex-cli": "native",
         "codex-native": "native",
         "desktop": "codex-desktop",
-        "aion-ui": "aionui",
         "claude-code": "claude",
         "claude_code": "claude",
     }
@@ -74,7 +71,6 @@ def normalize_engine(value: object) -> str:
         "codex-native": "codex",
         "claude-code": "claude",
         "cc": "claude",
-        "aion-ui": "aionui",
     }
     return aliases.get(text, text)
 
@@ -450,7 +446,7 @@ class EngineCapability:
     @property
     def mode(self) -> str:
         # A proof blocker must not be hidden by a broad writer declaration.
-        # This is important for an unqualified AionUI native root, where a
+        # This is important for an unqualified frontend native root, where a
         # caller must never obtain a full descriptor.
         if self.blockers:
             return "partial" if any(
@@ -524,53 +520,37 @@ def capability_for(
 
     normalized_client = normalize_client(client)
     normalized_engine = normalize_engine(engine)
+    from .retired_clients import RETIRED_CLIENTS
+
+    if normalized_client in RETIRED_CLIENTS:
+        return EngineCapability(
+            normalized_client, normalized_engine, inventory=False, verify=False,
+            reason="Client support has been removed",
+        )
     if normalized_client == "workbuddy" and normalized_engine == "workbuddy":
         return EngineCapability("workbuddy", "workbuddy", native_delete=True, frontend_reference_delete=True, verify=True,
             reason="Exact supported local sessions or proven local-only pinned references; no remote deletion")
-    if normalized_client in {"qwenwork", "qoderwork"} and normalized_engine == normalized_client:
+    if normalized_client == "qwenwork" and normalized_engine == normalized_client:
         return EngineCapability(normalized_client, normalized_engine, native_delete=True,
             frontend_session_delete=True, verify=True,
             reason="Registered CN schemas, exclusive local SDK files and known UI state; exact plan closure required")
-    if normalized_client in {"cindy", "aionui"} and normalized_engine in {
+    if normalized_client == "cindy" and normalized_engine in {
         "codex", "pi", "claude",
     }:
-        blockers: tuple[Mapping[str, Any], ...] = ()
-        reason = (
-            "Exact frontend reference cleanup is supported; native and "
-            "project-item deletion require a registered writer"
-        )
-        if normalized_client == "cindy":
-            reason = (
-                "Native Codex/Pi/Claude deletion, exact Cindy reference "
-                "cleanup, and terminal/explicitly selected session-row cleanup are supported; "
-                "project-item deletion requires a registered writer"
-            )
-        if normalized_client == "aionui" and normalized_engine in {"pi", "claude"}:
-            blockers = (
-                {
-                    "blocker_code": NATIVE_ROOT_UNVERIFIED,
-                    "scope": "native_root",
-                    "message": (
-                        "AionUI does not uniquely identify the native "
-                        f"{normalized_engine} storage root"
-                    ),
-                },
-            )
-            reason = (
-                "Exact AionUI frontend reference cleanup is supported, but the "
-                f"native {normalized_engine} root is unverified"
-            )
         return EngineCapability(
             normalized_client,
             normalized_engine,
             inventory=True,
-            native_delete=(normalized_client == "cindy"),
-            frontend_session_delete=(normalized_client == "cindy"),
+            native_delete=True,
+            frontend_session_delete=True,
             frontend_reference_delete=True,
             frontend_project_delete=False,
             verify=True,
-            reason=reason,
-            blockers=blockers,
+            reason=(
+                "Native Codex/Pi/Claude deletion, exact Cindy reference "
+                "cleanup, and terminal/explicitly selected session-row cleanup are supported; "
+                "project-item deletion requires a registered writer"
+            ),
         )
     if normalized_client in {"native", "codex-desktop"}:
         return EngineCapability(

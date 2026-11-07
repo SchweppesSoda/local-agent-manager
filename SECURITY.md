@@ -2,7 +2,7 @@
 
 Local Agent Record Janitor / 本地 Agent 记录清理器处理本地聊天记录、数据库和不可
 恢复的删除操作。跨引擎对象称为原生记录：Codex 使用 thread，Pi Agent 与 Claude Code
-使用 session；Cindy/AionUI 数据库行是只读 frontend reference。安全目标首先是
+使用 session；Cindy 数据库行是只读 frontend reference。安全目标首先是
 **避免误删**，其次才是回收残留数据。仓库、发行包和命令统一使用
 `local-agent-record-janitor`，Python 模块统一使用 `local_agent_record_janitor`。
 
@@ -15,7 +15,7 @@ Local Agent Record Janitor / 本地 Agent 记录清理器处理本地聊天记�
 本工具假设：
 
 - 操作者拥有所扫描账户与数据目录的权限；
-- AionUI、Cindy、Codex 二进制和本地数据库不是由攻击者控制的；
+- Cindy、Codex 二进制和本地数据库不是由攻击者控制的；
 - `PATH`、`CODEX_HOME`、`APPDATA`、`LOCALAPPDATA`、`COMSPEC` 等环境变量可信；
 - 本机没有恶意进程在扫描和删除之间替换数据库、rollout 或 Codex 可执行文件。
 - Pi 的 `sessions/` 目录、会话 JSONL 路径和 Pi Agent 进程不受攻击者控制；`--pi-agent-dir`/`--pi-session-dir` 指向操作者预期的本地目录。
@@ -73,7 +73,7 @@ Claude Code 删除也是独立路径。Claude Code 当前没有本地逐 session
 
 执行永久删除前：
 
-1. 完全退出 AionUI、Cindy、Codex Desktop/CLI，以及使用同一 `CODEX_HOME` 的后台进程；删除 Pi/Claude 前也退出可能写入相关 session storage 的客户端和后台进程。
+1. 完全退出 Cindy、Codex Desktop/CLI，以及使用同一 `CODEX_HOME` 的后台进程；删除 Pi/Claude 前也退出可能写入相关 session storage 的客户端和后台进程。
 2. 备份相关前端数据库与完整 `CODEX_HOME`。
 3. 先执行 `scan --json`，检查错误属于哪些保存位置；无法归属的错误会阻止全部动作。
 4. 查看 `clean --json` 中的 Observation、CandidateAction、风险、影响、阻断理由、Codex thread 摘要目录和快照指纹。
@@ -174,7 +174,7 @@ Claude 直接文件删除只允许 `delete --platform claude`，并绑定 `(conf
 - 已知关联任务 thread 仍被活跃 frontend reference 引用时，根 thread 删除被阻止；
 - 每个删除根目标都有精确批准范围：关联任务 thread ID、列表中存在的 thread ID、当前存在的活动/归档 rollout 路径，以及逐文件的身份、来源和 `stat` 状态指纹；
 - app-server 启动后、任何删除请求前捕获的精确范围与已批准范围不一致时，整组发送零个删除请求；
-- 每次 `thread/delete` 前重新扫描全部 live-reference guard；app-server 启动后新出现的 AionUI/Cindy 活跃引用必须停止当前及后续请求；
+- 每次 `thread/delete` 前重新扫描全部 live-reference guard；app-server 启动后新出现的 Cindy 活跃引用必须停止当前及后续请求；
 - 审批元数据指纹同时绑定规范化展示字段和 DB/rollout 的原始身份证据哈希，不能因另一来源仍给出相同父 ID 而忽略 source/thread_source 的丢失；
 - 重复文件、路径错位和残留记录所指子 thread 的 HIGH 整个 thread 删除只允许对同一
   target 的对应 Observation 做窄授权，不得授权关联任务 thread 或其他完整性类别；
@@ -221,7 +221,6 @@ Claude 直接文件删除只允许 `delete --platform claude`，并绑定 `(conf
 
 推荐在前端关闭后复制：
 
-- AionUI 数据目录中的 `aionui-backend.db` 及相关 `-wal`/`-shm`（若存在）；
 - Cindy 的数据库和独立 `codex-home`；
 - 标准 Codex 的完整 `.codex` 目录。
 - Pi 的完整 session root（通常为 `~/.pi/agent/sessions`）；不要以删除为目的复制或暴露 `~/.pi/agent/auth.json`。

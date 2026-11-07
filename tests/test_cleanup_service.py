@@ -56,7 +56,7 @@ class CleanupServiceTests(unittest.TestCase):
         report = ScanReport(
             findings=[
                 self.finding("cindy", "cindy-target"),
-                self.finding("aionui", "aion-target"),
+                self.finding("other-frontend", "other-target"),
             ]
         )
 

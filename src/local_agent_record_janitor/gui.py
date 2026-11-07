@@ -146,7 +146,7 @@ class GuiConversationRow:
             if self.desktop_references
             else ("  - 无",)
         )
-        lines.extend(("", "Cindy/AionUI 引用（仍按独立动作保留）："))
+        lines.extend(("", "Cindy 引用（仍按独立动作保留）："))
         lines.extend(
             (
                 f"  - {reference}"
@@ -718,7 +718,7 @@ def confirmation_summary(plan: GuiDeletePlan) -> str:
             f"随后将精确清理 {sum(target.catalog_record_count for target in plan.desktop_targets)} 条 Codex Desktop "
             f"目录记录及 {desktop_state_references} 条结构化 UI 引用；"
             "每个物理存储仍使用独立回滚与验证批次。",
-            f"仍将保留 {retained_references} 条 Cindy/AionUI 引用；"
+            f"仍将保留 {retained_references} 条 Cindy 引用；"
             "它们不是 Codex Desktop 状态。",
             f"计划指纹：{plan.plan_fingerprint or ''}",
         )
@@ -874,7 +874,7 @@ class _JanitorWindow:
             text=(
                 "只读取记录元数据，不读取聊天正文。勾选后将永久删除原生 thread、"
                 "已批准的级联子 thread、官方管理的内容文件和精确 Codex Desktop "
-                "引用；Cindy/AionUI 引用仍按独立动作处理。"
+                "引用；Cindy 引用仍按独立动作处理。"
             ),
             wraplength=1120,
         ).grid(row=1, column=0, sticky="ew", pady=(4, 10))
@@ -1328,7 +1328,7 @@ class _DeleteConfirmationDialog:
         self.closed_var = tk.BooleanVar(master=dialog, value=False)
         ttk.Checkbutton(
             outer,
-            text="我已完全关闭使用这些 CODEX_HOME 的 Codex/ChatGPT Desktop、Cindy 和 AionUI",
+            text="我已完全关闭使用这些 CODEX_HOME 的 Codex/ChatGPT Desktop、Cindy",
             variable=self.closed_var,
             command=self._update_confirm_state,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 6))
@@ -1479,7 +1479,6 @@ def _frontend_reference_text(reference: Any) -> str:
 
 def _source_label(value: str) -> str:
     labels = {
-        "aionui": "AionUI",
         "cindy": "Cindy",
         "codex-desktop": "Desktop",
         "native": "Codex",

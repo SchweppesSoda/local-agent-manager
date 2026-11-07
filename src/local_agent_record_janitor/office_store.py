@@ -1,4 +1,4 @@
-"""Body-free inventories for QwenWork CN and QoderWork CN.
+"""Body-free inventories for QwenWork CN.
 
 office_cleanup qualifies the complete selected closure at plan time; ordinary
 inventory never opens Chromium storage or reads conversation bodies.
@@ -24,9 +24,8 @@ from .path_identity import is_local_absolute_locator
 from .record_identity import EngineCapability, ProjectKey, RecordClassification, RecordKey, StoreKey, canonical_path
 from .sqlite_utils import connect_readonly
 
-PROFILES = {"qoderwork": ("QoderWork CN", "QoderWork CN Dev", "QoderWork CN Canary"),
-            "qwenwork": ("QwenWorkCN", "QwenWorkCNDev", "QwenWorkCNCanary")}
-SDK_DIRECTORY = {"qoderwork": ".qoderworkcn", "qwenwork": ".qwenworkcn"}
+PROFILES = {"qwenwork": ("QwenWorkCN", "QwenWorkCNDev", "QwenWorkCNCanary")}
+SDK_DIRECTORY = {"qwenwork": ".qwenworkcn"}
 SCHEMAS = json.loads(files(__package__).joinpath("office_schemas.json").read_text(encoding="utf-8"))
 MAX_ROWS = 20000
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")

@@ -91,7 +91,7 @@ class NumberSelectionTests(unittest.TestCase):
         self.assertIn("跳过 TTY 最终确认提示", clean_help)
         self.assertIn("完整稳定 action ID", clean_help)
         purge_help = command_action.choices["purge"].format_help()
-        self.assertIn("原生 Codex、Cindy 和 AionUI", purge_help)
+        self.assertIn("原生 Codex 和 Cindy", purge_help)
         self.assertIn("--clients-closed", purge_help)
 
     def test_module_help_uses_utf8_bytes_on_windows_redirects(self) -> None:
@@ -1390,11 +1390,11 @@ class MainFlowTests(unittest.TestCase):
 
     def test_frontend_scan_problem_uses_platform_fallback_label(self) -> None:
         finding = Finding(
-            platform="aionui",
+            platform="cindy",
             platform_session_id="session",
             thread_id="conversation-full-id",
-            reason="AionUI conversation row is gone but mapping remains",
-            platform_db=Path("aionui.sqlite"),
+            reason="Cindy session is deleted but mapping remains",
+            platform_db=Path("cindy.sqlite"),
             codex_home=Path("codex-home"),
             codex_indexed=True,
         )

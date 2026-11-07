@@ -14,7 +14,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import AionUIAdapter, CindyAdapter, NativeIntegrityAdapter
+from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
 from local_agent_record_janitor.cli import main
 from local_agent_record_janitor.cleanup_service import CleanupService
 from local_agent_record_janitor.operation_coordinator import OperationCoordinator
@@ -119,41 +119,6 @@ def _create_cindy_database(path: Path, rows: list[tuple[str, str, str, str]]) ->
             VALUES (?, ?, ?, 'test', 1, 2, NULL, ?)
             """,
             rows,
-        )
-        connection.commit()
-
-
-def _create_aionui_database(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(path)) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE conversations (id TEXT PRIMARY KEY);
-            CREATE TABLE acp_session (
-                conversation_id TEXT NOT NULL,
-                session_id TEXT,
-                agent_id TEXT,
-                agent_source TEXT,
-                session_status TEXT,
-                last_active_at INTEGER
-            );
-            CREATE TABLE agent_metadata (
-                agent_id TEXT PRIMARY KEY,
-                backend TEXT
-            );
-            """
-        )
-        connection.execute("INSERT INTO conversations (id) VALUES ('aion-pi')")
-        connection.execute(
-            """
-            INSERT INTO acp_session
-                (conversation_id, session_id, agent_id, agent_source,
-                 session_status, last_active_at)
-            VALUES ('aion-pi', 'aion-pi-native', 'pi-agent', 'test', 'deleted', 1)
-            """
-        )
-        connection.execute(
-            "INSERT INTO agent_metadata (agent_id, backend) VALUES ('pi-agent', 'pi')"
         )
         connection.commit()
 
@@ -885,130 +850,6 @@ class ClientInventoryTests(unittest.TestCase):
                 self.assertTrue(context.capability.native_delete)
                 self.assertIn("frontend_reference", context.frontend_sessions[0].details)
 
-    def test_aionui_pi_without_unique_root_is_structured_blocker_and_never_full(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve(strict=True)
-            database = root / "aionui.db"
-            codex_home = root / "shared-codex"
-            codex_home.mkdir()
-            _create_aionui_database(database)
-            adapter = AionUIAdapter(
-                database=database,
-                codex_home=codex_home,
-                codex_bin_hint=root / "codex",
-            )
-            context = build_client_engine_contexts(
-                (adapter,),
-                client="aionui",
-                engines=("pi",),
-                writer_capabilities={
-                    "pi": EngineCapability(
-                        "aionui",
-                        "pi",
-                        native_delete=True,
-                        frontend_session_delete=True,
-                        frontend_reference_delete=True,
-                        frontend_project_delete=True,
-                    )
-                },
-            )[0]
-            self.assertIn(NATIVE_ROOT_UNVERIFIED, context.capability.blocker_codes)
-            self.assertNotEqual(context.capability.mode, "full")
-            self.assertFalse(context.capability.native_delete)
-            self.assertEqual(len(context.targets), 1)
-            self.assertIn(NATIVE_ROOT_UNVERIFIED, context.targets[0].blocker_codes)
-            self.assertNotIn("delete_pi_session", context.targets[0].action_ids)
-            self.assertIn("frontend_reference", context.frontend_sessions[0].details)
-
-    def test_aionui_unreferenced_project_item_is_exact_delete_target(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve(strict=True)
-            database = root / "aionui.db"
-            codex_home = root / "shared-codex"
-            codex_home.mkdir(parents=True)
-            _create_aionui_database(database)
-            with closing(sqlite3.connect(database)) as connection:
-                connection.execute(
-                    "INSERT INTO conversations (id) VALUES (?)",
-                    ("project-only",),
-                )
-                connection.commit()
-            adapter = AionUIAdapter(
-                database=database,
-                codex_home=codex_home,
-                codex_bin_hint=root / "codex",
-            )
-            inventory = build_client_inventory((adapter,), client="aionui")
-            targets = [
-                target
-                for target in inventory.targets
-                if target.classification is RecordClassification.ORPHAN_PROJECT
-            ]
-            self.assertEqual(len(targets), 1)
-            target = targets[0]
-            self.assertIsNotNone(target.project_key)
-            assert target.project_key is not None
-            self.assertEqual(target.project_key.kind, "id")
-            self.assertEqual(target.project_key.value, "project-only")
-            self.assertEqual(len(target.action_ids), 1)
-            self.assertTrue(target.action_ids[0].startswith("delete_project_item:"))
-            self.assertTrue(target.capability.frontend_project_delete)
-            self.assertNotIn("frontend_project_delete_unsupported", target.blocker_codes)
-            self.assertEqual(target.project_row_evidence[0]["conversation_id"], "project-only")
-            context_targets = tuple(
-                target
-                for context in build_client_engine_contexts(
-                    (adapter,),
-                    client="aionui",
-                    inventory=inventory,
-                )
-                for target in context.targets
-                if target.classification is RecordClassification.ORPHAN_PROJECT
-            )
-            self.assertEqual(len(context_targets), 1)
-            self.assertEqual(context_targets[0].action_ids, target.action_ids)
-            self.assertTrue(context_targets[0].capability.frontend_project_delete)
-            self.assertEqual(len(inventory.to_dict()["project_items"]), 2)
-            output = StringIO()
-            with patch("local_agent_record_janitor.codex_desktop_state.inspect_client_ownership",
-                       return_value={"clients_closed": None}) as inspect:
-                status = main(["records", "--client", "aionui", "--project", "project-only",
-                               "--inspect-clients", "--json"], adapters=(adapter,),
-                              stdout=output, stderr=StringIO())
-            self.assertEqual(status, 0, output.getvalue())
-            inspect.assert_called_once_with(adapter.describe_client().owner_process_root,
-                                           owner_client="aionui", engines=("codex",))
-
-    def test_aionui_project_item_without_supported_schema_is_inventory_only(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve(strict=True)
-            database = root / "aionui-unsupported.db"
-            codex_home = root / "shared-codex"
-            codex_home.mkdir(parents=True)
-            with closing(sqlite3.connect(database)) as connection:
-                connection.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY)")
-                connection.execute(
-                    "INSERT INTO conversations (id) VALUES (?)",
-                    ("project-only",),
-                )
-                connection.commit()
-            adapter = AionUIAdapter(
-                database=database,
-                codex_home=codex_home,
-                codex_bin_hint=root / "codex",
-            )
-            inventory = build_client_inventory((adapter,), client="aionui")
-            targets = [
-                target
-                for target in inventory.targets
-                if target.classification is RecordClassification.ORPHAN_PROJECT
-            ]
-            self.assertEqual(len(targets), 1)
-            target = targets[0]
-            self.assertEqual(target.action_ids, ())
-            self.assertFalse(target.capability.frontend_project_delete)
-            self.assertIn("frontend_project_delete_unsupported", target.blocker_codes)
-            self.assertEqual(target.project_row_evidence[0]["conversation_id"], "project-only")
 
     def test_records_client_pi_keeps_native_catalog_contract_without_frontend_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

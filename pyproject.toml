@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [
   { name = "Fang Jun" }
 ]
-keywords = ["codex", "pi", "pi-agent", "claude", "claude-code", "aionui", "cindy", "thread", "session", "record", "local-agent", "consistency", "cleanup"]
+keywords = ["codex", "pi", "pi-agent", "claude", "claude-code", "cindy", "thread", "session", "record", "local-agent", "consistency", "cleanup"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",

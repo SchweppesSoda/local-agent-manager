@@ -26,7 +26,7 @@ Driver
 确认、执行前重验证和删除后验证。GUI 不提供全选。一次明确勾选和确认会额外绑定范围内
 精确 Codex Desktop 快照，并顺序编排 native thread 删除与 Desktop 状态清理；两者仍是
 独立物理修改批次，各自执行客户端归属检查、回滚保护和写后验证，不组成伪事务。
-Cindy/AionUI frontend mutation family 不在该组合授权内，仍明确保留并单独处理。
+Cindy frontend mutation family 不在该组合授权内，仍明确保留并单独处理。
 
 核心类型分工：
 
@@ -81,9 +81,7 @@ mutation family，跨批次不构成事务。新发现的动作须重新生成�
 - Codex SQLite 列表、活动/归档 rollout 首行 metadata 和旧索引；
 - 精确关系边与完整关联任务范围；
 - Codex Desktop 可探测的 local catalog/UI 结构化引用；
-- AionUI/Cindy 当前与历史 frontend reference；AionUI orphan project/conversations
-  row 仅在已探测支持 schema、完整不可变行证据且确认无 `acp_session` 引用时可执行，
-  其他 schema 保持 `inventory_only`；
+- Cindy 当前与历史 frontend reference；
 - Pi/Claude storage-qualified session manifest；
 - 读取失败、进程归属和 identity conflict。
 
@@ -101,8 +99,7 @@ action 生成完整目标、影响范围、schema/行/文件指纹、稳定 ID �
 | 孤立关联任务 thread | 展示完整级联范围后删除 |
 | 只剩无效关系边 | 精确删除一条已批准关系行 |
 | 只剩旧索引/Desktop 状态 | 精确清除残留 |
-| 只剩 Cindy/AionUI 映射 | 精确清除该映射；Cindy `status=deleted` 会话可作为独立批次物理删除 |
-| 只剩 AionUI project/conversations row | 仅在支持 schema、完整不可变行证据且无 `acp_session` 引用时按数据库集合精确删除；其他 schema 报告为 `orphan_project` / `inventory_only` |
+| 只剩 Cindy 映射 | 精确清除该映射；Cindy `status=deleted` 会话可作为独立批次物理删除 |
 | Pi/Claude session | 删除精确文件或 manifest |
 | 同一 ID 位于多个存储 | 每个物理存储分别选择 |
 | 活动引用、读取失败、身份冲突 | 阻止该目标并返回稳定原因 |
@@ -139,12 +136,6 @@ operation 仍可按冻结证据执行只读恢复。
 一个 app-server。若官方 API 已删除 thread 但留下已批准 rollout，只有在路径位于目标
 store、是唯一链接的普通文件、thread ID 与完整指纹仍匹配且已无 index/活动引用时，
 才能作为同一动作的残留清除。任何未知残留使结果成为 `partial` 或 `unknown`。
-
-### AionUI
-
-只删除孤立 `acp_session` 行。当前 schema 使用完整主键；无主键的旧 schema 仅接受
-执行前重新验证的 `rowid + 完整行指纹`。无法唯一定位、schema 漂移、存在 trigger
-或影响行数不是 1 时阻止该条。
 
 ### Cindy
 

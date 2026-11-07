@@ -547,13 +547,16 @@ class CleanupService:
 
 
 def selected_platforms(values: Sequence[str] | None) -> set[str]:
+    from .retired_clients import require_active_client
+    for value in values or ():
+        require_active_client(value)
     normalized = {
         str(value).strip().lower()
         for value in values or ()
         if str(value).strip()
     }
     if not normalized or "all" in normalized:
-        return {"aionui", "cindy", "native"}
+        return {"cindy", "native"}
     return normalized
 
 

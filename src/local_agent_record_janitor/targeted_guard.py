@@ -50,7 +50,7 @@ class TargetedReferenceGuard:
         collections: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
         for row in approved_references:
             platform, database = str(row.get("platform") or ""), row.get("database")
-            if platform not in {"cindy", "aionui"} or not database:
+            if platform != "cindy" or not database:
                 raise TargetedGuardError("approved frontend collection has no supported source")
             key = (platform, canonical_existing_path_key(Path(database)))
             collections.setdefault(key, []).append(row)

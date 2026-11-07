@@ -101,7 +101,7 @@ class LiveFrontendReferenceInvariantTests(unittest.TestCase):
         thread_id: str,
         *,
         live: bool,
-        platform: str = "aionui",
+        platform: str = "other-frontend",
     ) -> FrontendSessionRecord:
         return FrontendSessionRecord(
             platform=platform,
@@ -132,7 +132,7 @@ class LiveFrontendReferenceInvariantTests(unittest.TestCase):
         self.assertIs(build_codex_thread_catalog, build_session_catalog)
         self.assertIs(select_codex_threads, select_managed_conversations)
 
-    def test_live_aionui_root_reference_blocks_delete(self) -> None:
+    def test_live_other_frontend_root_reference_blocks_delete(self) -> None:
         catalog = self.catalog(self.frontend("root-thread", live=True))
         root = next(
             record for record in catalog.records if record.thread_id == "root-thread"
@@ -143,7 +143,7 @@ class LiveFrontendReferenceInvariantTests(unittest.TestCase):
             any("live frontend reference" in blocker.lower() for blocker in root.blockers)
         )
 
-    def test_live_aionui_child_reference_blocks_parent_cascade(self) -> None:
+    def test_live_other_frontend_child_reference_blocks_parent_cascade(self) -> None:
         catalog = self.catalog(self.frontend("child-thread", live=True))
         root = next(
             record for record in catalog.records if record.thread_id == "root-thread"
@@ -184,12 +184,12 @@ class LiveFrontendReferenceInvariantTests(unittest.TestCase):
 
         self.assertFalse(root_action.available)
         self.assertTrue(
-            any("live aionui frontend reference" in reason.lower() for reason in root_action.unavailable_reasons)
+            any("live other-frontend frontend reference" in reason.lower() for reason in root_action.unavailable_reasons)
         )
         with self.assertRaises(ManualDeleteSelectionError):
             plan.with_selected_actions((root_action.action_id,))
 
-    def test_live_aionui_drift_after_approval_sends_zero_delete_requests(self) -> None:
+    def test_live_other_frontend_drift_after_approval_sends_zero_delete_requests(self) -> None:
         approved_catalog = self.catalog(self.frontend("child-thread", live=False))
         live_catalog = self.catalog(self.frontend("child-thread", live=True))
         selected = build_manual_delete_plan(approved_catalog).with_selected_actions(
@@ -217,7 +217,7 @@ class LiveFrontendReferenceInvariantTests(unittest.TestCase):
 
         self.assertEqual(server.deleted_thread_ids, [])
         self.assertEqual(report.results[0].status, "unknown")
-        self.assertIn("live aionui frontend reference", report.results[0].error or "")
+        self.assertIn("live other-frontend frontend reference", report.results[0].error or "")
 
 
 class StoreWideRuntimeInvariantTests(unittest.TestCase):

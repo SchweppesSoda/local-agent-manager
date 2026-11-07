@@ -1,7 +1,7 @@
 # 多引擎本地 Agent 记录清理设计
 
 > 历史说明：本文是多引擎清单与选择性删除的实施基线。0.2.0 已把 Pi/Claude 纳入
-> 统一 CleanupService，并增加独立授权的 AionUI/Cindy 精确引用清理；当前安全边界以
+> 统一 CleanupService，并增加独立授权的 Cindy 精确引用清理；当前安全边界以
 > [design.md](design.md) 为准。
 
 状态：实施基线
@@ -26,7 +26,7 @@ record 管理：
 - 跨引擎对象称为 **local agent record / 原生记录**，不统称 session；
 - Codex 对象称为 **thread**，其协议和稳定 ID 是 `thread/*` 与 `thread_id`；
 - Pi Agent 与 Claude Code 对象称为 **session**；
-- Cindy/AionUI 数据库行称为 **frontend reference/mapping**，它们只描述前端对象到
+- Cindy 数据库行称为 **frontend reference/mapping**，它们只描述前端对象到
   原生记录的引用，不是原生记录副本；
 - `sessions/`、`session_meta`、`sdk_session_id` 等既有文件、协议或外部 schema 名称
   按原名引用，不从其名称推导统一领域模型。
@@ -40,7 +40,7 @@ record 管理：
 Frontend namespace -- frontend reference/mapping --> Native record
 Harness runtime -- operates on --> Native store -- contains --> Native record
 
-Frontend namespace: Cindy/AionUI owner + database + frontend conversation/session ID
+Frontend namespace: Cindy owner + database + frontend conversation/session ID
 Harness runtime:    engine + executable path + version
 Native store:       CODEX_HOME | Pi session_root | Claude config root
 Native record:      Codex thread | Pi session JSONL | Claude session manifest
@@ -61,7 +61,7 @@ Pi:         (session_root, canonical_jsonl_path, header_session_id)
 Claude Code:(claude_config_dir, session_id, transcript_paths[])
 ```
 
-展示层可以同时显示 native、Cindy、AionUI 等来源，但不得用 frontend namespace 或
+展示层可以同时显示 native、Cindy 等来源，但不得用 frontend namespace 或
 来源名称代替后端身份。
 同一个 Claude Code session ID 在多个 project 目录出现时合并为一个目标，计划中保留
 每个精确文件路径；不同 `CLAUDE_CONFIG_DIR` 中的同 ID 永不合并。

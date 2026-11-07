@@ -151,18 +151,15 @@ class OfficeStoreTests(unittest.TestCase):
         self.assertEqual(result["count"], 1)
 
     def test_unknown_missing_and_inconsistent_sources_never_become_empty_success(self):
-        root = self.fixture("qoderwork")
+        root = self.fixture("qwenwork")
         with closing(sqlite3.connect(root / "data" / "agents.db")) as connection:
             connection.execute("ALTER TABLE chats ADD COLUMN unknown_restore text")
             connection.commit()
         for candidate in (root, self.root / "missing"):
-            code, result = self.invoke("records", "--client", "qoderwork", "--qoderwork-root", str(candidate), "--json")
+            code, result = self.invoke("records", "--client", "qwenwork", "--qwenwork-root", str(candidate), "--json")
             self.assertNotEqual(code, 0)
             self.assertEqual(result["goal_status"], "blocked")
             self.assertTrue(result["store_errors"])
-        wrong = self.fixture("qwenwork")
-        with self.assertRaisesRegex(ValueError, "office_schema_unverified"):
-            read_database("qoderwork", wrong)
 
     def test_empty_supported_store_has_registered_writer_but_no_selected_records(self):
         root = self.fixture("qwenwork", empty=True)
@@ -190,16 +187,16 @@ class OfficeStoreTests(unittest.TestCase):
                 self.assertTrue({"office_nudge_references_unresolved", "office_task_run_references_unresolved"} <= messages)
 
     def test_sdk_links_are_not_followed_and_partial_database_metadata_is_retained(self):
-        root = self.fixture("qoderwork")
+        root = self.fixture("qwenwork")
         outside = self.root / "outside"
         outside.mkdir()
-        sdk = self.root / SDK_DIRECTORY["qoderwork"]
+        sdk = self.root / SDK_DIRECTORY["qwenwork"]
         sdk.mkdir()
         try:
             (sdk / "projects").symlink_to(outside, target_is_directory=True)
         except OSError:
             self.skipTest("Host does not permit creating a directory symlink")
-        code, result = self.invoke("records", "--client", "qoderwork", "--qoderwork-root", str(root), "--json")
+        code, result = self.invoke("records", "--client", "qwenwork", "--qwenwork-root", str(root), "--json")
         self.assertNotEqual(code, 0)
         self.assertEqual(result["count"], 1)
         self.assertIn("office_path_redirected", {error["message"] for error in result["store_errors"]})

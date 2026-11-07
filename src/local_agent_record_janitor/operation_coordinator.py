@@ -1582,6 +1582,8 @@ class OperationCoordinator:
 
     @staticmethod
     def _validate_scope(scope: Mapping[str, Any], *, require_selection: bool) -> None:
+        from .retired_clients import require_active_plan
+        require_active_plan(scope)
         if not scope.get("client"):
             raise OperationCoordinatorError("operation requires one client")
         selected = sum(bool(scope.get(name)) for name in ("projects", "all_projects", "record_ids"))
@@ -1733,7 +1735,7 @@ class OperationCoordinator:
             else tuple(self._default_adapters(client, codex_home=codex_home))
         )
         selected = tuple(adapter for adapter in source if self._adapter_matches(adapter, client))
-        if client in {"qwenwork", "qoderwork"}:
+        if client == "qwenwork":
             from .office_cleanup import build_context
             context = build_context(selected, self.service, engines=engines, refresh=True)
             result = (context, selected, None, None, {}, {})
@@ -1828,7 +1830,7 @@ class OperationCoordinator:
             ))
             scan_platforms = ("cindy", "native")
         context = self.service.prepare(scan_adapters, platforms=scan_platforms)
-        if client not in {"cindy", "aionui"}:
+        if client != "cindy":
             result = (context, selected, None, None, {}, {})
             return result if include_action_contexts else result[:5]
         result = self._merge_client_engine_contexts(
@@ -1938,11 +1940,6 @@ class OperationCoordinator:
             adapters,
             client=client,
             engines=engines,
-        )
-        context = self._merge_aionui_project_items(
-            context,
-            inventory,
-            client=client,
         )
         context = self._merge_cindy_terminal_sessions(
             context,
@@ -2422,143 +2419,6 @@ class OperationCoordinator:
             actions=self.service.typed_actions(merged_plan),
         )
 
-    def _merge_aionui_project_items(
-        self,
-        context: Any,
-        inventory: Any,
-        *,
-        client: str,
-    ) -> Any:
-        """Project exact AionUI orphan rows into normal cleanup batches."""
-
-        if client != "aionui":
-            return context
-        from .planning import (
-            ActionImpact,
-            ActionKind,
-            CandidateAction,
-            RiskLevel,
-            ScanStatus,
-            StorageLocation,
-            TargetRef,
-            storage_id_for_path,
-        )
-
-        existing_ids = {
-            str(action.action_id)
-            for action in getattr(context.plan, "actions", ())
-        }
-        actions: list[Any] = []
-        storages = list(getattr(context.plan, "storages", ()))
-        storage_ids = {str(storage.storage_id) for storage in storages}
-        for target in getattr(inventory, "targets", ()):
-            classification = getattr(target.classification, "value", target.classification)
-            if str(classification) != "orphan_project":
-                continue
-            evidence = tuple(
-                dict(item)
-                for item in getattr(target, "project_row_evidence", ())
-                if isinstance(item, Mapping)
-            )
-            if not evidence:
-                continue
-            record_key = getattr(target, "record_key", None)
-            store = getattr(record_key, "store", None)
-            database = getattr(store, "path", None)
-            project_id = getattr(record_key, "record_id", None)
-            if not isinstance(database, Path) or not isinstance(project_id, str):
-                continue
-            database = database.expanduser().absolute()
-            storage_path = database.parent
-            storage_id = storage_id_for_path(storage_path)
-            if storage_id not in storage_ids:
-                storages.append(
-                    StorageLocation(
-                        storage_id=storage_id,
-                        label="AionUI database directory",
-                        path=storage_path,
-                        scan_status=ScanStatus.OK,
-                    )
-                )
-                storage_ids.add(storage_id)
-            action_id = next(
-                (
-                    value
-                    for value in getattr(target, "action_ids", ())
-                    if str(value).startswith("delete_project_item:")
-                ),
-                None,
-            )
-            if not isinstance(action_id, str) or action_id in existing_ids:
-                continue
-            project = getattr(target, "project_key", None)
-            payload: dict[str, Any] = {
-                "project_id": project_id,
-            }
-            if project is not None:
-                if getattr(project, "kind", "") == "path":
-                    payload["project_path"] = project.value
-                if getattr(project, "display_name", None):
-                    payload["project_label"] = project.display_name
-            impact = ActionImpact(
-                frontend_project_database_paths=(str(database),),
-                frontend_project_evidence=evidence,
-                resource_path=str(database),
-                external_storage_root=str(storage_path),
-                external_action_payload=payload,
-            )
-            snapshot = ":".join(
-                (
-                    str(evidence[0].get("schema_fingerprint") or ""),
-                    str(evidence[0].get("row_fingerprint") or ""),
-                )
-            )
-            actions.append(
-                CandidateAction(
-                    action_id=action_id,
-                    kind=ActionKind.DELETE_PROJECT_ITEM,
-                    target=TargetRef(storage_id, project_id),
-                    risk=RiskLevel.REVIEW,
-                    available=bool(target.capability.frontend_project_delete),
-                    unavailable_reason=(
-                        None
-                        if target.capability.frontend_project_delete
-                        else "Exact AionUI project-row writer is unavailable"
-                    ),
-                    impact=impact,
-                    snapshot_fingerprint=snapshot,
-                    requires_explicit_selection=True,
-                    resource_kind="project_item",
-                )
-            )
-            existing_ids.add(action_id)
-        if not actions:
-            return context
-        merged_plan = replace(
-            context.plan,
-            actions=tuple((*getattr(context.plan, "actions", ()), *actions)),
-            storages=tuple(storages),
-        )
-        import hashlib
-        import json
-
-        fingerprint = hashlib.sha256(
-            json.dumps(
-                self._metadata(merged_plan.to_dict()),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        merged_plan = replace(
-            merged_plan,
-            plan_fingerprint="merged:v1:" + fingerprint,
-        )
-        return replace(
-            context,
-            plan=merged_plan,
-            actions=self.service.typed_actions(merged_plan),
-        )
 
     def _merge_cleanup_contexts(self, base: Any, extras: Sequence[Any]) -> Any:
         """Merge metadata/actions while retaining one top-level context."""
@@ -3192,8 +3052,6 @@ class OperationCoordinator:
             appdata=None,
             codex_home=(Path(codex_home).expanduser() if codex_home else None),
             codex_bin=None,
-            aionui_db=None,
-            aionui_codex_home=None,
             cindy_root=None,
             cindy_db=None,
             cindy_codex_home=None,
@@ -3212,7 +3070,7 @@ class OperationCoordinator:
             blockers.extend(self._blocker("action_unavailable", a.unavailable_reason or "Orca closure unavailable")
                             for a in context.plan.actions if not a.available)
             return (tuple(context.plan.actions), []) if not blockers else ((), blockers)
-        if scope.get("client") in {"qwenwork", "qoderwork"}:
+        if scope.get("client") == "qwenwork":
             from .office_cleanup import select_candidates
             return select_candidates(context, scope, self._blocker)
         if scope.get("client") == "workbuddy":
@@ -3568,7 +3426,7 @@ class OperationCoordinator:
         for observation in getattr(context.plan, "observations", ()):
             if str(getattr(observation, "observation_id", "")) in wanted:
                 platform = getattr(observation, "platform", "codex")
-                return "codex" if platform in {"native", "cindy", "aionui"} else normalize_engine(platform)
+                return "codex" if platform in {"native", "cindy"} else normalize_engine(platform)
         return "codex"
 
     def _make_plan_document(
@@ -3854,7 +3712,7 @@ class OperationCoordinator:
 
     @staticmethod
     def _default_engine(client: str) -> str:
-        return {"pi": "pi", "claude": "claude", "workbuddy": "workbuddy", "qwenwork": "qwenwork", "qoderwork": "qoderwork"}.get(client, "codex")
+        return {"pi": "pi", "claude": "claude", "workbuddy": "workbuddy", "qwenwork": "qwenwork"}.get(client, "codex")
 
     @staticmethod
     def _bound_workbuddy_roots(document, requested=()):
@@ -3951,6 +3809,8 @@ class OperationCoordinator:
             raise OperationCoordinatorError("authorized plan hash does not match")
         if operation_id is not None and str(operation_id) != str(document.get("operation_id")):
             raise OperationCoordinatorError("operation ID does not match plan")
+        from .retired_clients import require_active_plan
+        require_active_plan(document)
         validate_guard_sources(document)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(document)
@@ -4011,7 +3871,7 @@ class OperationCoordinator:
             if isinstance(item, Mapping)
         }
         fresh_actions = tuple(getattr(context.plan, "actions", ()))
-        if document.get("scope", {}).get("client") in {"qwenwork", "qoderwork"}:
+        if document.get("scope", {}).get("client") == "qwenwork":
             from .office_cleanup import freeze_actions, operation_scope
             completed = {str(value) for value in skip_child_ids}
             pending_ids = {str(action_id) for batch in document.get("child_batches", ())
@@ -4662,7 +4522,7 @@ class OperationCoordinator:
                     check_operation_root_admission(live.document)
                     for closure in orca_frontends.values():
                         require_closed(closure, client_inspector=self.service.client_inspector)
-                if live.document.get("scope", {}).get("client") in {"qwenwork", "qoderwork"}:
+                if live.document.get("scope", {}).get("client") == "qwenwork":
                     from .mutation_guard import check_operation_root_admission
                     from .office_cleanup import operation_scope
                     check_operation_root_admission(live.document)
@@ -5586,11 +5446,7 @@ class OperationCoordinator:
                     "frontend_reference_evidence", (),
                 ):
                     expected = evidence.get("expected", {})
-                    identity_key = (
-                        "session_id" if evidence.get("platform") == "aionui"
-                        else "native_session_id"
-                    )
-                    native_id = expected.get(identity_key)
+                    native_id = expected.get("native_session_id")
                     if native_id not in manual.affected_thread_ids:
                         raise OperationCoordinatorError(
                             "frontend reference is outside the frozen native cascade"

@@ -46,49 +46,6 @@ def discover_cindy_codex(cindy_root: Path) -> Path | None:
     return _newest_versioned_path(candidates)
 
 
-def discover_aionui_codex(local_appdata: Path | None = None) -> Path | None:
-    root = (local_appdata or default_local_appdata()) / "Programs" / "AionUi" / "resources"
-    if not root.is_dir():
-        return None
-    candidates = list(root.rglob("codex.exe"))
-    return _newest_versioned_path(candidates)
-
-
-def discover_aionui_databases(appdata: Path | None = None) -> tuple[Path, ...]:
-    """Return existing current and legacy AionUI databases, newest layout first."""
-
-    roaming = (appdata or default_appdata()).expanduser()
-    candidates: list[Path] = []
-    seen_roots: set[tuple[int, int]] = set()
-    for brand in ("AionUi", "AionUI"):
-        root = roaming / brand
-        try:
-            root_status = root.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise RuntimeError(f"Could not inspect frontend profile {root}: {exc}") from exc
-        # macOS may use a case-insensitive volume even though normcase is a
-        # no-op. Merge only proven aliases of the directory, preserving the
-        # first spelling and layout order. File hardlinks remain separate:
-        # their SQLite sidecars can belong to different pathnames.
-        if (stat.S_ISDIR(root_status.st_mode) and root_status.st_ino
-                and not getattr(root_status, "st_file_attributes", 0) & 0x400):
-            identity = (root_status.st_dev, root_status.st_ino)
-            if identity in seen_roots:
-                continue
-            seen_roots.add(identity)
-        candidates.extend(
-            (
-                root / "aionui" / "aionui.db",
-                root / "aionui" / "aionui-backend.db",
-                root / "aionui.db",
-                root / "aionui-backend.db",
-            )
-        )
-    return _unique_existing_files(candidates)
-
-
 @dataclass(frozen=True)
 class CindyProfile:
     """Compatibility projection of one Cindy frontend DB namespace.

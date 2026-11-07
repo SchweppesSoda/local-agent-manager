@@ -118,10 +118,10 @@ class GuiSnapshotTests(unittest.TestCase):
     def test_snapshot_notice_keeps_unmapped_and_failure_details_visible(self) -> None:
         home = Path("C:/CodexHome")
         unmapped = FrontendSessionRecord(
-            platform="aionui",
+            platform="cindy",
             platform_session_id="unassigned",
             thread_id=None,
-            database=Path("C:/AionUi/aionui.db"),
+            database=Path("C:/Cindy/cindy.db"),
             codex_home=home,
             status="active",
         )
@@ -147,7 +147,7 @@ class GuiSnapshotTests(unittest.TestCase):
         self.assertEqual(len(plan.desktop_targets), 1)
         self.assertIn("精确清理 1 条 Codex Desktop", text)
         self.assertIn("2 条结构化 UI 引用", text)
-        self.assertIn("仍将保留 0 条 Cindy/AionUI", text)
+        self.assertIn("仍将保留 0 条 Cindy", text)
         self.assertIn(str(plan.plan_fingerprint), text)
 
     def test_overlapping_checked_roots_are_rejected(self) -> None:

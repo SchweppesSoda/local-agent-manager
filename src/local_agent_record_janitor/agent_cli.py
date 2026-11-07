@@ -2005,6 +2005,9 @@ def _load_authorized_plan(
             phase="preflight",
         )
     try:
+        from .retired_clients import require_active_plan
+
+        require_active_plan(value)
         if (
             value.get("document_type") != "agent_cleanup_plan"
             or value.get("mode") != "agent"
@@ -2030,7 +2033,6 @@ def _load_authorized_plan(
             or any(
                 not isinstance(platform, str)
                 or platform not in {
-                    "aionui",
                     "cindy",
                     "native",
                     "pi",
@@ -2204,8 +2206,6 @@ def _args_from_scan_options(plan: Mapping[str, Any]) -> argparse.Namespace:
         "appdata": _optional_path(options.get("appdata")),
         "codex_home": _optional_path(options.get("codex_home")),
         "codex_bin": _optional_path(options.get("codex_bin")),
-        "aionui_db": _optional_path(options.get("aionui_db")),
-        "aionui_codex_home": _optional_path(options.get("aionui_codex_home")),
         "cindy_root": _optional_path(options.get("cindy_root")),
         "cindy_db": _optional_path(options.get("cindy_db")),
         "cindy_codex_home": _optional_path(options.get("cindy_codex_home")),
@@ -2232,8 +2232,6 @@ def _scan_options(args: argparse.Namespace, platforms: Sequence[str]) -> dict[st
                 "appdata",
                 "codex_home",
                 "codex_bin",
-                "aionui_db",
-                "aionui_codex_home",
                 "cindy_root",
                 "cindy_db",
                 "cindy_codex_home",
@@ -2335,7 +2333,7 @@ def _effective_platforms(values: Sequence[str] | None) -> list[str]:
     if not values:
         return ["native"]
     if "all" in values:
-        return ["aionui", "cindy", "native"]
+        return ["cindy", "native"]
     return list(dict.fromkeys(values))
 
 

@@ -13,7 +13,7 @@ class OfficeRuntimeTests(unittest.TestCase):
         rows = [
             {"pid": 100001, "parent": 1, "name": "QwenWorkCN Helper (Renderer)",
              "executable": "/Applications/QwenWorkCN.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper", "command": "helper"},
-            {"pid": 100002, "parent": 1, "name": "QoderWorkCN.AppI", "executable": "/opt/QoderWorkCN.AppImage", "command": "desktop"},
+            {"pid": 100002, "parent": 1, "name": "QwenWorkCN.AppI", "executable": "/opt/QwenWorkCN.AppImage", "command": "desktop"},
             {"pid": 100003, "parent": 1, "name": "qoderclicn", "executable": "/bin/qoderclicn", "command": "qoderclicn --sdk --config-dir C:/synthetic/sdk"},
             {"pid": 100004, "parent": 100003, "name": "helper", "executable": "/bin/helper", "command": "helper"},
             {"pid": 100005, "parent": 1, "name": "powershell.exe", "executable": "C:/Windows/powershell.exe", "command": "read docs mentioning qoder-worker-runtime.mjs"},

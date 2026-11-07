@@ -183,7 +183,7 @@ def discover_vault(root, children):
 
 def freeze(root, *, client, role, children, all_child_ids, agent_owners=None):
     # Roots are explicit and are never inferred from body text or credentials.
-    if role not in {"sdk", "profile"} or client not in {"qwenwork", "qoderwork"}:
+    if role not in {"sdk", "profile"} or client != "qwenwork":
         _fail("file_scope_unverified")
     if role == "sdk":
         paths, owners = discover_sdk(root, client=client, children=children, all_child_ids=all_child_ids, agent_owners=agent_owners)

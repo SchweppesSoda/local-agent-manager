@@ -130,7 +130,7 @@ def refresh_guard_sources(adapters: Iterable[object]) -> tuple[object, ...]:
         from .herdr_bound_adapter import HerdrBoundAdapter
         from .paseo_bound_adapter import PaseoBoundAdapter
         client = describe_adapter(adapter).client
-        if client in {"cindy", "aionui"}:
+        if client == "cindy":
             invalidate = getattr(adapter, "invalidate_frontend_snapshot", None)
             if callable(invalidate):
                 invalidate()

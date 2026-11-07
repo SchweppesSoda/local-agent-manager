@@ -9,9 +9,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import AionUIAdapter, CindyAdapter, NativeIntegrityAdapter
+from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
 from local_agent_record_janitor.discovery import (
-    discover_aionui_databases,
     discover_cindy_profiles,
     resolve_cindy_profiles,
 )
@@ -291,59 +290,6 @@ class SessionCatalogTests(unittest.TestCase):
         self.assertFalse(catalog.records[0].deletable)
 
 
-class CurrentAionSchemaTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary_directory.cleanup)
-        self.root = Path(self.temporary_directory.name).resolve(strict=True)
-        self.database = self.root / "aionui.db"
-        self.home = self.root / "codex-home"
-        self.home.mkdir()
-
-    def _create_current_database(self) -> None:
-        with closing(sqlite3.connect(self.database)) as connection:
-            connection.executescript(
-                """
-                CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT);
-                CREATE TABLE acp_session (
-                    conversation_id TEXT PRIMARY KEY,
-                    agent_backend TEXT NOT NULL,
-                    agent_source TEXT,
-                    agent_id TEXT,
-                    session_id TEXT,
-                    session_status TEXT,
-                    last_active_at INTEGER
-                );
-                CREATE TABLE agent_metadata (id TEXT PRIMARY KEY, backend TEXT);
-                INSERT INTO agent_metadata (id, backend) VALUES ('codex-agent', 'codex');
-                INSERT INTO acp_session (
-                    conversation_id, agent_backend, agent_source, agent_id,
-                    session_id, session_status, last_active_at
-                ) VALUES ('orphan', 'codex', 'builtin', 'codex-agent',
-                          'codex-thread', 'idle', 123);
-                """
-            )
-            connection.commit()
-
-    def test_list_and_existing_scan_support_direct_backend_and_metadata_id(self) -> None:
-        self._create_current_database()
-        rollout = write_rollout(self.home, "codex-thread", originator="aionui-session")
-        create_thread_index(
-            self.home,
-            [{"id": "codex-thread", "rollout_path": str(rollout)}],
-        )
-        adapter = AionUIAdapter(database=self.database, codex_home=self.home)
-
-        sessions = adapter.list_sessions()
-        findings = adapter.scan()
-
-        self.assertEqual(len(sessions), 1)
-        self.assertEqual(sessions[0].backend, "codex")
-        self.assertFalse(sessions[0].is_live)
-        self.assertEqual([finding.thread_id for finding in findings], ["codex-thread"])
-        self.assertTrue(findings[0].details["cleanable"])
-
-
 class LegacyCindyOwnershipTests(unittest.TestCase):
     def test_xdt_maker_originator_is_accepted_for_legacy_cindy_thread(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -370,47 +316,6 @@ class FrontendDiscoveryTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.appdata = Path(self.temporary_directory.name).resolve(strict=True)
 
-    def test_discovers_current_and_old_aion_databases_in_priority_order(self) -> None:
-        root = self.appdata / "AionUi" / "aionui"
-        root.mkdir(parents=True)
-        current = root / "aionui.db"
-        legacy = root / "aionui-backend.db"
-        current.touch()
-        legacy.touch()
-
-        self.assertEqual(discover_aionui_databases(self.appdata), (current, legacy))
-
-    def test_invalid_known_database_path_is_not_treated_as_not_installed(self) -> None:
-        invalid = self.appdata / "AionUi" / "aionui" / "aionui.db"
-        invalid.mkdir(parents=True)
-
-        with self.assertRaises(RuntimeError):
-            discover_aionui_databases(self.appdata)
-
-    def test_distinct_case_sensitive_aion_brand_directories_keep_layout_order(self) -> None:
-        first = self.appdata / "AionUi"
-        second = self.appdata / "AionUI"
-        first.mkdir()
-        if second.exists():
-            self.skipTest("This filesystem cannot create distinct case-only directories")
-        second.mkdir()
-        expected = []
-        for root in (first, second):
-            (root / "aionui").mkdir()
-            for path in (root / "aionui" / "aionui.db", root / "aionui-backend.db"):
-                path.touch()
-                expected.append(path)
-        self.assertEqual(discover_aionui_databases(self.appdata), tuple(expected))
-
-    def test_hardlinked_aion_databases_keep_their_distinct_sqlite_pathnames(self) -> None:
-        root = self.appdata / "AionUi"
-        current = root / "aionui" / "aionui.db"
-        current.parent.mkdir(parents=True)
-        current.touch()
-        legacy = root / "aionui.db"
-        os.link(current, legacy)
-        self.assertTrue(current.samefile(legacy))
-        self.assertEqual(discover_aionui_databases(self.appdata), (current, legacy))
 
     def test_discovers_cindy_profiles_and_excludes_backup_files(self) -> None:
         global_root = self.appdata / "CindyGlobal"

@@ -120,12 +120,13 @@ ACTION_REGISTRY: Mapping[str, ActionCapability] = {
         requires_clients_closed=True,
         verifies_by="approved_frontend_session_rows_and_dependencies_absent",
     ),
+    # Preserve legacy plan decoding without registering its retired writer.
     "delete_project_item": ActionCapability(
         kind="delete_project_item",
-        implemented=True,
-        mutation_family="delete_project_item",
+        implemented=False,
+        mutation_family=None,
         requires_clients_closed=True,
-        verifies_by="approved_project_rows_absent",
+        verifies_by="retired_client_writer",
     ),
     "delete_native_project": ActionCapability(
         kind="delete_native_project",

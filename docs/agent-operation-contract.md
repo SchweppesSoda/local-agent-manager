@@ -24,7 +24,7 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 
 1. Select one exact client and its physical stores. Official Codex/ChatGPT
    Desktop uses `native`/`codex-native` with the official native `CODEX_HOME`,
-   never a Cindy/AionUI substitute. Inventory and reports expose metadata only;
+   never a Cindy substitute. Inventory and reports expose metadata only;
    do not read or expose chat bodies.
 2. Review plan targets, counts, blockers, progress groups and `plan_sha256`.
    Each immutable child batch owns one physical store and mutation family.

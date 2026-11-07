@@ -4,7 +4,7 @@ from pathlib import Path
 import os
 from typing import Any
 
-from .adapters import AionUIAdapter, CindyAdapter, NativeIntegrityAdapter, OrcaAdapter, HerdrAdapter, WorkBuddyAdapter, OfficeAdapter
+from .adapters import CindyAdapter, NativeIntegrityAdapter, OrcaAdapter, HerdrAdapter, WorkBuddyAdapter, OfficeAdapter
 from .herdr_discovery import default_herdr_locators, local_herdr_path
 from .orca_discovery import OrcaDiscoveryError, default_orca_root, local_orca_path, reverse_account_profile
 from .record_identity import canonical_path
@@ -12,7 +12,6 @@ from .cleanup_service import selected_platforms
 from .discovery import (
     default_appdata,
     default_codex_home,
-    discover_aionui_databases,
     resolve_cindy_profiles,
 )
 
@@ -100,8 +99,6 @@ def discover_shared_codex_guards(*, appdata=None):
     for profile in resolve_cindy_profiles(base):
         result.append(CindyAdapter(database=profile.database, codex_home=profile.codex_home,
                                    cindy_root=profile.root))
-    for database in discover_aionui_databases(base):
-        result.append(AionUIAdapter(database=Path(database), codex_home=default_codex_home()))
     return tuple(result)
 
 
@@ -150,25 +147,6 @@ def create_default_adapters(args: Any) -> list[object]:
             adapters.extend(OfficeAdapter(client=client, profile_root=root,
                 sdk_root=getattr(args, client + "_sdk_root", None)) for root in unique.values())
 
-    if "aionui" in selected:
-        aionui_home = args.aionui_codex_home or native_codex_home
-        aionui_databases = (
-            (args.aionui_db,)
-            if args.aionui_db is not None
-            else discover_aionui_databases(appdata)
-        )
-        if not aionui_databases:
-            aionui_databases = (
-                appdata / "AionUi" / "aionui" / "aionui.db",
-            )
-        for aionui_db in aionui_databases:
-            adapters.append(
-                AionUIAdapter(
-                    database=Path(aionui_db),
-                    codex_home=Path(aionui_home),
-                    codex_bin_hint=codex_bin,
-                )
-            )
 
     if "cindy" in selected:
         cindy_profiles = resolve_cindy_profiles(

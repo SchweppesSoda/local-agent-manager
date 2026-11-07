@@ -7,12 +7,14 @@ partitioning, journal recovery, mutation, and verification belong to the
 CLI does not maintain a second scanner or mutation implementation. The
 implemented deletion paths currently cover healthy/native records with a
 frozen frontend closure, Cindy Pi/Claude sessions, exact supported local WorkBuddy and Office sessions, and Cindy frontend sessions
-whose exact row status is `deleted`. AionUI orphan
-project/conversations rows are executable only for the probed supported schema
-with immutable row evidence and zero `acp_session` references; other schemas
-remain `inventory_only`.
+whose exact row status is `deleted`.
 
 ## Commands
+
+Plans containing retired `aionui` or `qoderwork` client identities are rejected
+before storage guards, recovery or mutation, including native-scoped plans with
+retired frontend references. Their old command-line selectors and path options
+are no longer accepted. Supported clients require a fresh plan for their own scope.
 
 The `native` client also supports exact stale local-environment registrations
 through the independent `delete_native_project` family. See
@@ -21,7 +23,7 @@ through the independent `delete_native_project` family. See
 Use one client per operation. A plan/run selects exactly one scope mode:
 
 ```text
-records --client <native|codex-native|cindy|aionui|pi|claude|orca|herdr|workbuddy|qwenwork|qoderwork|paseo|t3code> [--project <selector> ...]
+records --client <native|codex-native|cindy|pi|claude|orca|herdr|workbuddy|qwenwork|paseo|t3code> [--project <selector> ...]
 delete plan --client <client> (--project <selector> ... | --all-projects | --record-id <id> ...)
 delete apply --operation-id <id> [--plan <plan.json>] [--clients-closed]
 delete run --client <client> (--project <selector> ... | --all-projects | --record-id <id> ...)
@@ -252,10 +254,9 @@ sources, the closed-client CJK fallback, and regression fixtures.
 
 ## Office local sessions
 
-`records --client qwenwork|qoderwork` reads independently registered CN database
-schemas and known SDK UUID locations. Repeatable `--qwenwork-root` /
-`--qoderwork-root` select profiles; `--qwenwork-sdk-root` / `--qoderwork-sdk-root`
-select the shared SDK root for that product. IDs stay qualified by client and
+`records --client qwenwork` reads the registered CN database schema and known
+SDK UUID locations. Repeatable `--qwenwork-root` selects profiles;
+`--qwenwork-sdk-root` selects the shared SDK root. IDs stay qualified by client and
 profile. Unknown schemas and inaccessible sources cannot produce empty success.
 
 `inventory_scope=database_metadata_and_known_sdk_paths` describes the body-free
@@ -271,7 +272,7 @@ local-agent-record-janitor delete apply --operation-id '<operation ID from plan>
 local-agent-record-janitor operation verify --operation-id '<operation ID from plan>' --plan office-plan.json --json
 ```
 
-Use `qoderwork` for QoderWork CN. The dependency installer requires Node.js 18
+The dependency installer requires Node.js 18
 or newer and npm; it installs the locked `classic-level` package without install
 scripts. `LARJ_LEVELDB_RUNTIME` can select a dedicated runtime directory.
 Deletion never installs dependencies implicitly. Freeze/apply bind the Node
@@ -290,7 +291,7 @@ Only the registered CN schemas and proven local ownership qualify. Shared SDK
 UUIDs, selected remote mappings, automation/import/fork/ACP recovery references,
 unknown UI formats, changed runtime or store evidence produce targeted blockers.
 Workspace files, generated artifacts, credentials and cloud records are preserved.
-See [the evidence and limits](adapters.md#千问办公与-qoderworkcn-本地会话清理).
+See [the evidence and limits](adapters.md#千问办公cn-本地会话清理).
 
 ## Paseo agent registry metadata
 
@@ -517,13 +518,8 @@ Pi `parentSession` is fork provenance, not a recursive deletion rule. Claude
 subagent files are members of a session manifest. Neither relationship inherits
 Codex's descendant deletion semantics. See [adapter contracts](adapters.md).
 
-An unsupported AionUI backend is still inventoried and reported as
-`inventory_only`/`unsupported`; the operation is not marked deleted. An
-unreadable unrelated store is a warning, while an unreadable target or an
-unprovable shared reference blocks only the affected child batch. AionUI
-orphan project/conversations rows are executable only for the probed supported
-schema with immutable row evidence and zero `acp_session` references; other
-schemas remain `inventory_only`. When
+An unreadable unrelated store is a warning, while an unreadable target or an
+unprovable shared reference blocks only the affected child batch. When
 `remote_delete=false`, residuals are reported only when the adapter provides
 authoritative discovery evidence; otherwise the output states the capability
 boundary without claiming residuals, and nothing is deleted. Stale-index and broken-relation discovery remains in the

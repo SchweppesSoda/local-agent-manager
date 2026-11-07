@@ -31,7 +31,7 @@ class RolloutScanningTests(unittest.TestCase):
         active_path = write_rollout(
             self.codex_home,
             "active-thread",
-            originator="aionui-session",
+            originator="foreign-session",
             source={"subagent": None},
         )
         archived_path = write_rollout(
@@ -46,7 +46,7 @@ class RolloutScanningTests(unittest.TestCase):
 
         self.assertEqual(set(records), {"active-thread", "archived-thread"})
         self.assertEqual(records["active-thread"].path, active_path)
-        self.assertEqual(records["active-thread"].originator, "aionui-session")
+        self.assertEqual(records["active-thread"].originator, "foreign-session")
         self.assertEqual(records["active-thread"].source, {"subagent": None})
         self.assertFalse(records["active-thread"].archived)
         self.assertEqual(records["archived-thread"].path, archived_path)
@@ -86,7 +86,7 @@ class RolloutScanningTests(unittest.TestCase):
         path = write_rollout(
             self.codex_home,
             "fingerprinted",
-            originator="aionui-session",
+            originator="foreign-session",
             source={"nested": {"value": 1}},
         )
         record = find_thread_rollouts(

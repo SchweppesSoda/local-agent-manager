@@ -30,15 +30,12 @@
 | Cindy / Codex | 原生 `thread/delete`、精确 current/history 引用、软删除 session 行 | 正常原生父链保留；独立批次及关闭、范围重验证仍必需 |
 | Cindy / Pi | 精确 JSONL、精确引用、软删除 session 行 | 每个 profile 单独定位；`parentSession` 不级联 |
 | Cindy / Claude | session manifest、精确引用、软删除 session 行 | 共享 root 聚合所有 profile 引用；无 Cindy 归属的独立 session 不纳入 Cindy 删除范围 |
-| AionUI / Codex | 精确 ACP 引用及支持 schema 的孤立 project 行 | 原生写入仍须独立证明归属和 writer；未知 schema 只读 |
-| AionUI / Pi、Claude | 精确 ACP 引用 | 原生 root 未证明，不提供 native writer |
 | native / Codex、Pi、Claude | 对应引擎专用 writer | 无前端行的独立记录正常；每个物理 root 分别批准 |
 | Orca / Codex | journal 引用与已证明 homes 的原生清单；限定 Windows 原生删除 | 静态能力关闭，精确 v3 operation 逐目标资格见下文；未知来源保持 incomplete |
 | Orca / Claude、其他引擎 | 只读引用与来源错误 | 本机 Claude account root 仅用于精确保护，不提供 Orca native catalog/writer |
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
 | WorkBuddy / WorkBuddy | 独立 SQLite、精确会话 artifacts 和 UI 引用 | 仅支持已识别 5.6.2 本地终态范围，Windows writer 覆盖及完整冻结证据；未知副本只读 |
-| 千问办公 / QwenWork CN | 主/子会话元数据及已知 SDK 文件位置 | 已核实 1.2.5 CN schema；草稿/恢复/共享 SDK 范围未闭合，写入和 verify 关闭 |
-| QoderWork CN | 主/子会话元数据及已知 SDK 文件位置 | 已核实 0.9.18 CN schema；不与 Qoder IDE/CLI 混用，写入和 verify 关闭 |
+| 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
 | Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | 默认只读；Windows 显式绑定的 Codex/Pi/Claude、服务端和桌面完整操作见下文，未知 provider 关闭 |
 | T3 Code / Codex、Claude | v1/v2 thread 元数据及 provider 恢复 ID | 默认只读；Windows 显式绑定的 v2 本地记录支持原生依赖、事件/投影、终端及桌面清理，未知 schema 关闭 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
@@ -135,7 +132,7 @@ native catalog 的目标不会据 locator 探测原生存储。
 `inspect_client_ownership()` 和 `--inspect-clients` 使用 descriptor 的真实 owner root，
 不从 native root 补造归属。`probe_complete` 表示枚举/探测成功，`coverage_complete`
 仅在支持的本机 Windows owner、Codex engine 和具备必要 metadata 的已注册进程范围
-内成立；仍不证明任意其他 writer 已停止。collector 当前只枚举 Codex/ChatGPT/AionUI/
+内成立；仍不证明任意其他 writer 已停止。collector 当前只枚举 Codex/ChatGPT/
 Cindy 四类 exe，复用 Cindy 的真实进程树/profile 证据。未知 owner、Pi/Claude runtime、
 非 Windows 或失败返回 unknown；明确的相关运行进程仍可返回 false。输出不含 command
 line。该观察不替代现有关闭 ack，也不修改既有 writer 的关闭检查。
@@ -336,21 +333,18 @@ runtime、WSL/远端及桥接副本不具备全局发现保证。持久化 lease
 writer 已停。当前运行观察不提供全盘 writer 证明，macOS/Linux 和 Orca 产品实机运行
 归属尚未验收。
 
-### 千问办公与 QoderWork：CN 本地会话清理
+### 千问办公：CN 本地会话清理
 
-`OfficeAdapter` 以独立 `qwenwork` / `qoderwork` 客户端和引擎接入公共 records，
-共享盘点与删除基础设施，分别校验整套表、索引、外键和 FTS trigger schema。登记依据为
-2026-10-04 静态解包的官方 Windows 包：QwenWorkCN 1.2.5
-（SHA-256 `95a4a35cb4517fd145913233c171c211d00a84b4f2c84be7685db64fd6afc3c8`）与
-QoderWork CN 0.9.18（`085f668322572cca2c600f9a96e567f2f926f9830a78809966d9cc7c2e99242d`）。
-产品入口见[千问办公](https://help.aliyun.com/zh/qwenwork/desktop-usage)和
-[QoderWork](https://docs.qoder.cn/qoderwork/product-overview/what-is-qoderwork-cn)。
+`OfficeAdapter` 以独立 `qwenwork` 客户端和引擎接入公共 records，
+校验整套表、索引、外键和 FTS trigger schema。登记依据为 2026-10-04 静态解包的
+官方 Windows 包 QwenWorkCN 1.2.5（SHA-256
+`95a4a35cb4517fd145913233c171c211d00a84b4f2c84be7685db64fd6afc3c8`）。
+产品入口见[千问办公](https://help.aliyun.com/zh/qwenwork/desktop-usage)。
 国际版、其他版本和相似产品名不自动继承该资格。
 
-Windows 的数据库分别位于 `%APPDATA%/QwenWorkCN/data/agents.db` 与
-`%APPDATA%/QoderWork CN/data/agents.db`。发现同产品 stable/dev/canary profile 时
-分别列出；`--qwenwork-root` / `--qoderwork-root` 可重复指定。SDK 根分别为
-`~/.qwenworkcn`、`~/.qoderworkcn`，也可通过对应 `--*-sdk-root` 显式指定。
+Windows 数据库位于 `%APPDATA%/QwenWorkCN/data/agents.db`。发现 stable/dev/canary
+profile 时分别列出；`--qwenwork-root` 可重复指定。SDK 根默认为 `~/.qwenworkcn`，
+也可通过 `--qwenwork-sdk-root` 显式指定。
 同产品多个 profile 共享 SDK 根，不能从一个 profile 的会话 ID 推断 SDK 独占归属。
 
 公开记录身份是 `(client, profile, chats.id)`；`sub_chats.session_id` 才是 SDK UUID。

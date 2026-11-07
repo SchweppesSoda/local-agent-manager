@@ -679,7 +679,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 "stale-adapter",
                 "frontend_deleted_reference",
                 rollout=stale,
-                platform="aionui",
+                platform="cindy",
             )
             plan = build_cleanup_plan(
                 [finding],
@@ -731,7 +731,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 "frontend_deleted_reference",
                 indexed=False,
                 rollout=reported,
-                platform="aionui",
+                platform="cindy",
                 details={
                     "ownership_status": "confirmed",
                     "cascade_check_available": True,
@@ -767,7 +767,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "frontend-root",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
                 details={
                     "ownership_status": "confirmed",
                     "cascade_check_available": True,
@@ -820,7 +820,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "uncoded-cascade",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
                 details={
                     "ownership_status": "confirmed",
                     "cascade_check_available": True,
@@ -928,7 +928,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "frontend-root",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
                 details={
                     "ownership_status": "confirmed",
                     "cascade_check_available": False,
@@ -965,7 +965,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "frontend-root",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
                 details={
                     "ownership_status": "confirmed",
                     "cascade_check_available": True,
@@ -1140,7 +1140,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "thread-with-damaged-rollout",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
             )
             descendants = (
                 lambda _home, ids, strict=True: {
@@ -1204,7 +1204,7 @@ class CleanupPlanningTests(unittest.TestCase):
             other_record = RolloutRecord(
                 thread_id="other-thread",
                 path=indexed_path,
-                originator="aionui",
+                originator="cindy",
                 source=None,
                 cwd=None,
                 timestamp=None,
@@ -1214,7 +1214,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "frontend-thread",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
                 details={
                     "ownership_status": "confirmed",
                     "cascade_check_available": True,
@@ -1265,15 +1265,15 @@ class CleanupPlanningTests(unittest.TestCase):
                 home,
                 "shared-thread",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
             )
             second_finding = _finding(
                 home,
                 "shared-thread",
                 "frontend_deleted_reference",
-                platform="aionui",
+                platform="cindy",
             )
-            second_finding.platform_session_id = "aionui-another-residual"
+            second_finding.platform_session_id = "cindy-another-residual"
             readers = _readers(indexed={"shared-thread"})
 
             first_plan = build_cleanup_plan([first_finding], **readers)

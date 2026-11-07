@@ -8,7 +8,6 @@ from contextlib import closing
 from io import StringIO
 from pathlib import Path
 
-from local_agent_record_janitor.adapters.aionui import AionUIAdapter
 from local_agent_record_janitor.adapters.cindy import CindyAdapter
 from local_agent_record_janitor.frontend_reference_cleanup import (
     FrontendReferenceError,
@@ -19,7 +18,7 @@ from local_agent_record_janitor.cli import main
 from local_agent_record_janitor.cleaner import scan_adapters
 from local_agent_record_janitor.planning import build_cleanup_plan
 
-from tests.support import create_aionui_database, create_cindy_database
+from tests.support import create_cindy_database
 
 
 class FrontendReferenceCleanupTests(unittest.TestCase):
@@ -31,12 +30,6 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
         self.codex_home.mkdir()
         self.binary = self.root / "codex.exe"
 
-    def aion_adapter(self, database: Path) -> AionUIAdapter:
-        return AionUIAdapter(
-            database=database,
-            codex_home=self.codex_home,
-            codex_bin_hint=self.binary,
-        )
 
     def cindy_adapter(self, database: Path) -> CindyAdapter:
         return CindyAdapter(
@@ -47,183 +40,13 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
         )
 
     def clean(self, evidence: list[dict[str, object]]) -> object:
-        platform = str(evidence[0].get("platform") or "").casefold()
         return execute_frontend_reference_cleanup(
-            self.root if platform == "cindy" else self.codex_home,
+            self.root,
             evidence,
             client_inspector=lambda _home: (),
-            owner_client="cindy" if platform == "cindy" else None,
+            owner_client="cindy",
         )
 
-    def test_aionui_rowid_delete_preserves_unrelated_rows_and_tables(self) -> None:
-        database = self.root / "aionui.db"
-        create_aionui_database(
-            database,
-            conversations=["live-conversation"],
-            sessions=[
-                {
-                    "conversation_id": "deleted-conversation",
-                    "session_id": "stale-thread",
-                    "agent_id": "codex-agent",
-                    "agent_source": "desktop",
-                    "session_status": "closed",
-                    "last_active_at": 7,
-                },
-                {
-                    "conversation_id": "live-conversation",
-                    "session_id": "unrelated-thread",
-                    "agent_id": "codex-agent",
-                    "agent_source": "desktop",
-                    "session_status": "active",
-                    "last_active_at": 8,
-                },
-            ],
-            metadata=[("codex-agent", "codex")],
-        )
-        finding = self.aion_adapter(database).scan()[0]
-        evidence = finding.details["frontend_reference"]
-        self.assertEqual(evidence["locator"]["kind"], "rowid")
-        with closing(sqlite3.connect(database)) as connection:
-            before_live = connection.execute(
-                "SELECT * FROM acp_session WHERE conversation_id = ?",
-                ("live-conversation",),
-            ).fetchone()
-            before_metadata = connection.execute(
-                "SELECT * FROM agent_metadata"
-            ).fetchall()
-
-        result = self.clean([evidence])
-
-        with closing(sqlite3.connect(database)) as connection:
-            stale_count = connection.execute(
-                "SELECT COUNT(*) FROM acp_session "
-                "WHERE conversation_id = 'deleted-conversation'"
-            ).fetchone()[0]
-            after_live = connection.execute(
-                "SELECT * FROM acp_session WHERE conversation_id = ?",
-                ("live-conversation",),
-            ).fetchone()
-            after_metadata = connection.execute(
-                "SELECT * FROM agent_metadata"
-            ).fetchall()
-        self.assertEqual(stale_count, 0)
-        self.assertEqual(after_live, before_live)
-        self.assertEqual(after_metadata, before_metadata)
-        self.assertEqual(result.deleted_aionui_rows, 1)
-        self.assertEqual(list(self.root.glob(".larj-frontend-*")), [])
-
-    def test_aionui_primary_key_locator_is_supported(self) -> None:
-        database = self.root / "aionui-primary-key.db"
-        with closing(sqlite3.connect(database)) as connection:
-            connection.executescript(
-                """
-                CREATE TABLE conversations (id TEXT PRIMARY KEY);
-                CREATE TABLE acp_session (
-                    conversation_id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    agent_id TEXT,
-                    agent_source TEXT,
-                    session_status TEXT,
-                    last_active_at INTEGER,
-                    agent_backend TEXT
-                );
-                INSERT INTO acp_session VALUES (
-                    'deleted', 'native-id', 'agent', 'desktop',
-                    'closed', 1, 'codex'
-                );
-                """
-            )
-            connection.commit()
-        evidence = self.aion_adapter(database).scan()[0].details[
-            "frontend_reference"
-        ]
-        self.assertEqual(evidence["locator"]["kind"], "primary_key")
-
-        self.clean([evidence])
-
-        with closing(sqlite3.connect(database)) as connection:
-            self.assertEqual(
-                connection.execute(
-                    "SELECT COUNT(*) FROM acp_session"
-                ).fetchone()[0],
-                0,
-            )
-
-    def test_aionui_row_drift_blocks_without_changing_current_state(self) -> None:
-        database = self.root / "aionui-drift.db"
-        create_aionui_database(
-            database,
-            sessions=[
-                {
-                    "conversation_id": "deleted",
-                    "session_id": "native-id",
-                    "agent_id": "agent",
-                    "agent_source": "before",
-                }
-            ],
-            metadata=[("agent", "codex")],
-        )
-        evidence = self.aion_adapter(database).scan()[0].details[
-            "frontend_reference"
-        ]
-        with closing(sqlite3.connect(database)) as connection:
-            connection.execute(
-                "UPDATE acp_session SET agent_source = 'after'"
-            )
-            connection.commit()
-
-        with self.assertRaisesRegex(
-            FrontendReferenceError,
-            "changed after authorization",
-        ):
-            self.clean([evidence])
-
-        with closing(sqlite3.connect(database)) as connection:
-            row = connection.execute(
-                "SELECT session_id, agent_source FROM acp_session"
-            ).fetchone()
-        self.assertEqual(row, ("native-id", "after"))
-
-    def test_aionui_duplicate_mappings_are_one_exact_two_row_action(self) -> None:
-        database = self.root / "aionui-duplicates.db"
-        create_aionui_database(
-            database,
-            sessions=[
-                {
-                    "conversation_id": "deleted-one",
-                    "session_id": "shared-native",
-                    "agent_id": "agent",
-                },
-                {
-                    "conversation_id": "deleted-two",
-                    "session_id": "shared-native",
-                    "agent_id": "agent",
-                },
-            ],
-            metadata=[("agent", "codex")],
-        )
-        adapter = self.aion_adapter(database)
-        plan = build_cleanup_plan(scan_adapters([adapter]))
-        action = next(
-            value
-            for value in plan.actions
-            if value.kind.value == "remove_frontend_reference"
-        )
-        self.assertEqual(action.impact.frontend_residual_count, 2)
-        self.assertEqual(len(action.impact.frontend_reference_evidence), 2)
-
-        result = self.clean(
-            list(action.impact.frontend_reference_evidence)
-        )
-
-        self.assertEqual(result.deleted_aionui_rows, 2)
-        with closing(sqlite3.connect(database)) as connection:
-            self.assertEqual(
-                connection.execute(
-                    "SELECT COUNT(*) FROM acp_session"
-                ).fetchone()[0],
-                0,
-            )
 
     def test_cindy_current_cleanup_changes_only_sdk_session_id(self) -> None:
         database = self.root / "cindy-current.db"
@@ -495,22 +318,22 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
         self.assertEqual(json.loads(cleaned), {"a": 1, "b": [2, 3]})
 
     def test_human_cli_executes_mapping_only_frontend_action(self) -> None:
-        database = self.root / "aionui-cli.db"
-        create_aionui_database(
+        database = self.root / "cindy-cli.db"
+        create_cindy_database(
             database,
-            sessions=[
+            [
                 {
-                    "conversation_id": "deleted",
-                    "session_id": "mapping-only",
-                    "agent_id": "agent",
-                }
+                    'id': 'deleted',
+                    'sdk_session_id': 'mapping-only',
+                    'status': 'deleted',
+                    'agent_kind': 'codex',
+                },
             ],
-            metadata=[("agent", "codex")],
         )
-        adapter = self.aion_adapter(database)
+        adapter = self.cindy_adapter(database)
         preview = StringIO()
         code = main(
-            ["clean", "--platform", "aionui", "--json"],
+            ["clean", "--platform", "cindy", "--json"],
             adapters=[adapter],
             stdout=preview,
             stderr=StringIO(),
@@ -530,7 +353,7 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
             [
                 "clean",
                 "--platform",
-                "aionui",
+                "cindy",
                 "--action-id",
                 action["action_id"],
                 "--plan-fingerprint",
@@ -554,19 +377,19 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
         self.assertEqual(result["result"]["removed_reference_count"], 1)
 
     def test_agent_plan_apply_verifies_mapping_only_frontend_action(self) -> None:
-        database = self.root / "aionui-agent.db"
-        create_aionui_database(
+        database = self.root / "cindy-agent.db"
+        create_cindy_database(
             database,
-            sessions=[
+            [
                 {
-                    "conversation_id": "deleted",
-                    "session_id": "agent-mapping-only",
-                    "agent_id": "agent",
-                }
+                    'id': 'deleted',
+                    'sdk_session_id': 'agent-mapping-only',
+                    'status': 'deleted',
+                    'agent_kind': 'codex',
+                },
             ],
-            metadata=[("agent", "codex")],
         )
-        adapter = self.aion_adapter(database)
+        adapter = self.cindy_adapter(database)
         plan_path = self.root / "frontend-plan.json"
         plan_output = StringIO()
         code = main(
@@ -576,7 +399,7 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
                 "--operation",
                 "purge",
                 "--platform",
-                "aionui",
+                "cindy",
                 "--codex-home",
                 str(self.codex_home),
                 "--out",
@@ -596,7 +419,7 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
         self.assertEqual(
             plan["authorization"]["root_actions"][0]["impact"]
             ["frontend_reference_evidence"][0]["platform"],
-            "aionui",
+            "cindy",
         )
 
         output = StringIO()
@@ -634,19 +457,19 @@ class FrontendReferenceCleanupTests(unittest.TestCase):
     def test_same_native_id_in_two_frontend_databases_is_two_actions(self) -> None:
         databases = [self.root / "one.db", self.root / "two.db"]
         for database in databases:
-            create_aionui_database(
+            create_cindy_database(
                 database,
-                sessions=[
+                [
                     {
-                        "conversation_id": f"deleted-{database.stem}",
-                        "session_id": "shared-native-id",
-                        "agent_id": "agent",
-                    }
+                        'id': f'deleted-{database.stem}',
+                        'sdk_session_id': 'shared-native-id',
+                        'status': 'deleted',
+                        'agent_kind': 'codex',
+                    },
                 ],
-                metadata=[("agent", "codex")],
             )
         report = scan_adapters(
-            [self.aion_adapter(database) for database in databases]
+            [self.cindy_adapter(database) for database in databases]
         )
         plan = build_cleanup_plan(report)
         actions = [

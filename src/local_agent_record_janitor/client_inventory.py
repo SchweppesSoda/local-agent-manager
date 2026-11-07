@@ -7,8 +7,6 @@ No transcript/body is read.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -428,7 +426,7 @@ def build_client_engine_contexts(
     """Build one immutable, engine-scoped context per selected client engine.
 
     Pi and Claude catalogs may be supplied by the existing native builders or
-    obtained from an adapter exposing native_catalog(). AionUI adapters do not
+    obtained from an adapter exposing native_catalog(). Rootless adapters do not
     invent a native root, so their context remains reference-only unless the
     caller supplies an explicitly qualified catalog and writer capability.
     """
@@ -440,7 +438,7 @@ def build_client_engine_contexts(
             adapter_list, client=selected_client, engines=engines
         )
     requested = _normalize_engines(engines)
-    if selected_client in {"workbuddy", "qwenwork", "qoderwork", "paseo", "t3code"}:
+    if selected_client in {"workbuddy", "qwenwork", "paseo", "t3code"}:
         return tuple(ClientEngineContext(inventory=inventory, engine=engine,
             targets=tuple(target for target in inventory.targets if target.engine == engine),
             frontend_sessions=(), native_catalog=None, capability=inventory.capabilities[engine])
@@ -1152,7 +1150,7 @@ def _constrain_capability(
 ) -> EngineCapability:
     """Never turn an unqualified frontend row into a native writer action."""
 
-    if client in {"aionui", "cindy"} and engine in {"codex", "pi", "claude"}:
+    if client == "cindy" and engine in {"codex", "pi", "claude"}:
         verified = _catalog_has_verified_native_root(catalog, engine)
         if not verified and capability.native_delete:
             return replace(capability, native_delete=False, blockers=(
@@ -1160,8 +1158,6 @@ def _constrain_capability(
                 {"blocker_code": NATIVE_ROOT_UNVERIFIED, "scope": "native_root",
                  "message": "No storage-qualified native catalog is available"},
             ))
-        if client == "aionui" and engine in {"pi", "claude"} and not verified:
-            return _capability_for(client, engine)
     return capability
 
 
@@ -1189,7 +1185,7 @@ def build_client_inventory(
     if selected_client == "paseo":
         from .paseo_store import build_inventory
         return build_inventory(tuple(adapters), engines=requested_engines)
-    if selected_client in {"qwenwork", "qoderwork"}:
+    if selected_client == "qwenwork":
         from .office_store import build_inventory
         return build_inventory(tuple(adapters), client=selected_client, engines=requested_engines)
     if selected_client == "workbuddy":
@@ -2147,29 +2143,7 @@ def _project_item_is_orphan(
 
 
 def _project_item_capability(client: str) -> EngineCapability:
-    return _project_item_capability_for(client, supported=False)
-
-
-def _project_item_capability_for(
-    client: str,
-    *,
-    supported: bool,
-) -> EngineCapability:
     capability = _capability_for(client, "codex")
-    if supported:
-        return replace(
-            capability,
-            frontend_project_delete=True,
-            reason=(
-                (capability.reason + "; ") if capability.reason else ""
-            ) + "Exact AionUI conversations project-row writer is registered",
-            blockers=tuple(
-                blocker
-                for blocker in capability.blockers
-                if str(blocker.get("blocker_code") or blocker.get("code"))
-                != "frontend_project_delete_unsupported"
-            ),
-        )
     blocker = {
         "blocker_code": "frontend_project_delete_unsupported",
         "scope": "frontend_project_item",
@@ -2197,23 +2171,8 @@ def _target_from_project_item(
     project = _project_item_project(client, item, project_id)
     if project is None:
         raise ClientInventoryError("A project item has no project identity")
-    evidence = _project_item_evidence(item)
-    supported = bool(
-        evidence
-        and getattr(item, "project_delete_supported", False)
-        and int(getattr(item, "session_reference_count", -1)) == 0
-    )
-    capability = _project_item_capability_for(client, supported=supported)
+    capability = _project_item_capability(client)
     action_ids: tuple[str, ...] = ()
-    if supported:
-        digest = hashlib.sha256(
-            (
-                f"{_path_key(database)}\0{project_id}\0"
-                f"{evidence[0]['schema_fingerprint']}\0"
-                f"{evidence[0]['row_fingerprint']}"
-            ).encode("utf-8")
-        ).hexdigest()[:32]
-        action_ids = (f"delete_project_item:{digest}",)
     return ClientTarget(
         client=client,
         engine="codex",
@@ -2230,43 +2189,12 @@ def _target_from_project_item(
         action_ids=action_ids,
         blocker_codes=capability.blocker_codes,
         blockers=capability.blockers,
-        project_row_evidence=evidence,
     )
-
-
-def _project_item_evidence(item: object) -> tuple[Mapping[str, Any], ...]:
-    database = _path_or_none(getattr(item, "database", None))
-    project_id = _first_object_string(item, "project_id", "id")
-    conversation_id = _first_object_string(item, "conversation_id") or project_id
-    schema_hash = _first_object_string(item, "schema_fingerprint")
-    row_hash = _first_object_string(item, "row_fingerprint")
-    if (
-        database is None
-        or project_id is None
-        or conversation_id is None
-        or not schema_hash
-        or not row_hash
-    ):
-        return ()
-    return ({
-        "database": str(database.absolute()),
-        "table": "conversations",
-        "id": conversation_id,
-        "conversation_id": conversation_id,
-        "schema_fingerprint": schema_hash,
-        "row_fingerprint": row_hash,
-        "expected_zero_acp_session_refs": True,
-        "expected_acp_session_refs": 0,
-    },)
 
 
 def _target_from_record(client: str, record: ManagedConversation) -> ClientTarget:
     engine = _record_engine(record)
-    unverified_aion_native = (
-        client == "aionui"
-        and engine in {"pi", "claude"}
-    )
-    native_present = bool(record.artifact_present) and not unverified_aion_native
+    native_present = bool(record.artifact_present)
     record_key = (
         RecordKey(StoreKey(engine, record.codex_home), record.thread_id)
         if native_present
