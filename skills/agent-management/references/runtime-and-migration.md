@@ -4,7 +4,26 @@
 
 Use `environment inventory --json` for discovered roots, candidates and bindings, and `environment doctor --json` for findings and coverage. Bounded discovery may miss installation channels, custom paths, remote environments, and running processes. Partial coverage means an observation was unavailable. Read the probe issue and evidence before deciding whether a candidate is missing or whether a repair is needed. A layout hint can help locate a profile. Active selection needs evidence from the actual shell or frontend.
 
-When janitor coverage is insufficient or the command is unavailable, inspect the exact target with native read-only tools. In PowerShell, check `Get-Command <name> -All` for command selection and `Get-Item -LiteralPath <path>` for an identified file or launcher. Check the package source, desktop launch settings, provider configuration, and documented diagnostics as needed. Inspect only the targeted nonsecret configuration fields. Record a path, version/source, and binding without printing auth data, whole config files, or unredacted process arguments.
+### Inspect an alternate profile or fixture
+
+If a supplied profile defines the entire scope, pass its actual application-data roots and an empty PATH override. This example uses the default AppData layout within the supplied profile.
+
+```powershell
+$profileRoot = 'D:\path\to\profile'
+local-agent-record-janitor environment inventory --json `
+    --home $profileRoot `
+    --appdata (Join-Path $profileRoot 'AppData/Roaming') `
+    --local-appdata (Join-Path $profileRoot 'AppData/Local') `
+    --path-value=
+```
+
+`--path-value=` passes an empty value even in shells that drop empty native arguments. If PATH inspection is requested for the alternate profile, pass the explicit in-scope directory list as `--path-value`. The current shell's PATH belongs to the current launch context.
+
+If the janitor is unavailable or a probe is inconclusive, keep fallback inspection within the supplied scope. Use known candidate locations, exact-path filesystem metadata, and documented nonsecret fields under the supplied roots. Current-host command resolution, running processes, package managers, and registry entries are evidence for a live-host task when that context is in scope. Record unproven selection as unknown.
+
+### Inspect a live launch context
+
+When janitor coverage is insufficient or the command is unavailable, inspect the exact target with native read-only tools. In the intended PowerShell session, check `Get-Command <name> -All` for command selection and `Get-Item -LiteralPath <path>` for an identified file or launcher. Check the package source, desktop launch settings, provider configuration, and documented diagnostics as needed. Inspect only the targeted nonsecret configuration fields. Record a path, version/source, and binding without printing auth data, whole config files, or unredacted process arguments.
 
 A standalone Antigravity CLI, an Antigravity desktop installation, and T3 Code's Antigravity ACP launcher can coexist. Resolve each from its own launch context and settings. Apply the same check to PATH Codex, a Desktop-bundled Codex, and an independently configured frontend runtime.
 
