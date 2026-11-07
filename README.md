@@ -1,9 +1,43 @@
 # Local Agent Record Janitor / 本地 Agent 记录清理器
 
 `local-agent-record-janitor` 是本项目统一使用的仓库名、发行包名和 CLI 命令；Python
-模块名统一为 `local_agent_record_janitor`。它是一个本地、保守的多引擎 Agent 记录检查
-和清理工具：处理 Codex thread、Pi Agent、Claude Code 和 WorkBuddy session，也能精确清除
+模块名统一为 `local_agent_record_janitor`。它提供本地 Agent 环境盘点、诊断和多引擎记录
+清理：处理 Codex thread、Pi Agent、Claude Code 和 WorkBuddy session，也能精确清除
 Cindy 中已经失效的 frontend reference；前端映射不是另一份 native record。
+
+## Agent 环境管理
+
+`environment inventory` 盘点已支持布局中的 Agent 程序、客户端和数据根候选，
+`environment doctor` 解释发现的问题及证据缺口。两者只读，不启动发现的程序，不读取
+登录凭据或聊天正文，也不授权清理目录。
+
+```powershell
+local-agent-record-janitor environment inventory --json
+local-agent-record-janitor environment doctor --client cindy --client t3code --json
+# 另一套用户目录或临时测试目录可显式指定，路径不固定到本机用户名：
+local-agent-record-janitor environment inventory --home 'D:\profiles\example' --appdata 'D:\profiles\example\AppData\Roaming' --local-appdata 'D:\profiles\example\AppData\Local' --path-value= --json
+```
+
+环境清单区分独立 CLI、桌面内置程序、Cindy 托管引擎和 T3 ACP。路径中的版本号是版本
+线索，不是程序执行结果；目录存在不证明当前客户端正在使用它，同一账号也不证明数据
+目录共享。覆盖范围和读取错误单独报告，具体字段和边界见
+[Agent 管理设计](docs/design.md#agent-环境与记录的分工)。
+
+`inventory` 成功生成报告返回 `0`，报告中的 coverage 仍可能不完整。`doctor` 按发现
+报告 `error`、`attention`、`inconclusive` 或 `no_issues_observed`；`error` 返回 `1`，
+其余返回 `0`。顶层探测失败返回 `1`，参数错误返回 `2`。没有发现问题只描述本次有界
+观察，不证明所有安装、登录状态或客户端连接均正常。
+
+仓库提供一个 [agent-management skill](skills/agent-management/SKILL.md)，统一处理环境
+诊断、Agent 安装升级、路径修复、配置迁移和记录清理。环境维护按实际安装渠道与客户端
+接口执行；记录删除继续使用下文的 `records/delete/operation`。`environment doctor`
+与旧 `agent doctor` 的目标存储检查不同。通用 Windows 清理和普通软件维护独立维护，
+不包含在本项目的删除命令中。
+
+安装 skill 时将完整 `skills/agent-management` 目录复制到当前 Codex skills 目录；保留
+仓库安装，以便调用 CLI 和读取与该版本相匹配的操作契约。重新加载技能后即可使用。
+
+## 记录清理
 
 ### 命名迁移
 

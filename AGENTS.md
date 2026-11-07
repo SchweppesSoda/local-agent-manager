@@ -1,7 +1,9 @@
 # local-agent-record-janitor maintenance
 
-This repository implements record cleanup. Editing its code/documentation is
-distinct from executing deletion against a user's live stores.
+This repository implements local Agent environment inventory, diagnostics,
+management workflows, and record cleanup. Generic Windows disk/software
+maintenance is maintained separately. Editing code/documentation is distinct
+from changing live software/configuration or deleting a user's live stores.
 
 ## Source work
 
@@ -14,6 +16,9 @@ distinct from executing deletion against a user's live stores.
 - Documentation needs link/diff checks. Code changes use relevant existing
   tests with temporary stores; shared deletion/authorization changes need the
   corresponding protocol regression coverage. Never use live cleanup as a test.
+- Environment inventory stays metadata-only and does not authorize record or
+  runtime deletion. Keep installation evidence, active runtime selection, native
+  store identity, and authentication state distinct. Inject host facts in tests.
 - Report commit, validation and unresolved limits. Push/release/live cleanup
   follows the user's existing authorization; prepare local work before asking
   for any missing external or destructive authorization.

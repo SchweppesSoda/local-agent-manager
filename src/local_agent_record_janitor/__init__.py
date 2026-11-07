@@ -1,4 +1,4 @@
-"""Audit and safely clean storage-qualified local agent records.
+"""Inventory local Agent environments and safely clean storage-qualified records.
 
 Codex records are threads; Pi Agent and Claude Code records are sessions.
 Cindy rows are frontend references to native records; exact stale
