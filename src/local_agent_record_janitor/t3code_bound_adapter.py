@@ -15,6 +15,7 @@ from .sqlite_utils import connect_readonly
 from contextlib import closing
 
 SCHEMA = "larj.t3code-bindings.v1"
+_NATIVE_ENGINES = frozenset(("codex", "claude"))
 
 
 def validate_manifest(value):
@@ -32,7 +33,7 @@ def validate_manifest(value):
     seen = set()
     for item in value["native_stores"]:
         if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "codex_binary"}
-                or not {"thread_id", "engine", "root"} <= item.keys() or item["engine"] not in {"codex", "claude"}):
+                or not {"thread_id", "engine", "root"} <= item.keys() or item["engine"] not in _NATIVE_ENGINES):
             fail("binding_store_invalid")
         identifier(item["thread_id"])
         if item["thread_id"] in seen:
@@ -76,7 +77,14 @@ def history_references(root):
         # A replayable native handle can also occur in a run, handoff or
         # command payload. Inspect every qualified per-thread JSON payload.
         for table in THREAD_TABLES:
-            if "payload_json" not in {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}:
+            columns = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
+            if "provider" in columns:
+                # Provider rows can exist without any projected native handle.
+                provider = "COALESCE(NULLIF(driver, ''), provider)" if "driver" in columns else "provider"
+                observed = rows(db, f"SELECT DISTINCT {provider} AS provider FROM {table} WHERE {provider} IS NOT NULL")
+                if any(engine(row["provider"]) not in _NATIVE_ENGINES for row in observed):
+                    fail("provider_cleanup_unsupported")
+            if "payload_json" not in columns:
                 continue
             if db.execute(f'''SELECT 1 FROM {table} AS t,json_tree(t.payload_json) AS j WHERE
                     (j.key='nativeThreadRef' AND j.type NOT IN ('object','null')) OR
@@ -135,6 +143,8 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         history = history_references(self.profile_root)
         strong = {(r["thread_id"], r["native_id"]) for r in history if r["strength"] == "strong"}
         for row in history:
+            if row["driver"] is not None and engine(row["driver"]) not in _NATIVE_ENGINES:
+                fail("historical_provider_cleanup_unsupported")
             if row["strength"] == "bare":
                 # Run attempts and handoff delivery carry bare historical IDs.
                 # They need a same-thread strong provider reference, not a guess.

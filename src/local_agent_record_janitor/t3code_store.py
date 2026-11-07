@@ -161,8 +161,11 @@ def read_database(root):
 
 
 def capability(value):
-    return EngineCapability("t3code", value, verify=False,
-        reason="T3 Code metadata; native homes and full local restoration closure require qualification")
+    reason = "T3 Code metadata; native homes and full local restoration closure require qualification"
+    if value == "unsupported:antigravity":
+        reason = ("T3 Code exposes Antigravity-labelled thread metadata. Native ownership and "
+                  "storage schema are unverified. Full local cleanup is unsupported.")
+    return EngineCapability("t3code", value, verify=False, reason=reason)
 
 
 class T3CodeAdapter:
@@ -247,9 +250,22 @@ def build_inventory(adapters, *, engines=()):
             continue
         resources.append((canonical_path(adapter.profile_root / RELATIVE), "t3code_database_metadata"))
         store = StoreKey("t3code", adapter.profile_root, kind="t3code_database")
+        antigravity_threads = {
+            row["thread_id"] for row in data["providers"] if (row["driver"] or row["provider"]) == "antigravity"
+        }
+        antigravity_threads.update(
+            row["thread_id"] for row in data["legacy_providers"] if row["provider_name"] == "antigravity"
+        )
         for identifier_, copies in data["threads"].items():
             references = tuple(r for r in snapshot.references if r.frontend_id == identifier_)
             backends = {r.engine for r in references} or {engine(r["default_provider"]) for r in copies if r.get("default_provider")} or {"unknown"}
+            has_antigravity_label = identifier_ in antigravity_threads or any(
+                row.get("default_provider") == "antigravity" for row in copies
+            )
+            if has_antigravity_label:
+                # The provider is visible even when it recorded no native ID.
+                backends.discard("unknown")
+                backends.add("unsupported:antigravity")
             paths = {r["worktree_path"] or data["projects"][r["project_id"]]["workspace_root"] for r in copies}
             cwd = next(iter(paths)) if len(paths) == 1 else None
             project = ProjectKey.from_path("t3code", cwd) if cwd and is_local_absolute_locator(cwd) else None
@@ -259,17 +275,24 @@ def build_inventory(adapters, *, engines=()):
                 if engines and backend not in engines:
                     continue
                 names.add(backend)
+                metadata = {
+                    "scope": "database_metadata", "version": CONTRACT["version"], "upstream_commit": CONTRACT["upstream_commit"],
+                    "snapshots": copies, "message_count": sum(r["count"] for r in data["message_counts"] if r["thread_id"] == identifier_),
+                    "legacy_message_count": sum(r["count"] for r in data["legacy_message_counts"] if r["thread_id"] == identifier_),
+                    "scheduled_task_count": sum(r["thread_id"] == identifier_ for r in data["schedules"]),
+                    "peer_environment_count": data["peer_count"],
+                    "coverage": {"native_root_verified": False, "full_record_closure": False, "remote_delete": False},
+                }
+                if backend == "unsupported:antigravity" and has_antigravity_label:
+                    # The built-in driver's family is a hint, independent of
+                    # the thread's configured binary and actual launch.
+                    metadata["provider_backend_family_hint"] = "antigravity-acp"
+                    metadata["native_cleanup_status"] = "unsupported"
                 targets.append(ClientTarget("t3code", backend, RecordKey(store, identifier_, kind="t3code_thread"),
                     project, None, (identifier_,), RecordClassification.UNVERIFIED, capability(backend),
                     references=references, frontend_binding_keys=tuple(r.binding_key for r in references),
                     is_subagent=any(r.get("parent_relationship") == "subagent" for r in copies), lineage_status="unknown",
-                    blocker_codes=("t3code_full_cleanup_unverified",), record_metadata={
-                        "scope": "database_metadata", "version": CONTRACT["version"], "upstream_commit": CONTRACT["upstream_commit"],
-                        "snapshots": copies, "message_count": sum(r["count"] for r in data["message_counts"] if r["thread_id"] == identifier_),
-                        "legacy_message_count": sum(r["count"] for r in data["legacy_message_counts"] if r["thread_id"] == identifier_),
-                        "scheduled_task_count": sum(r["thread_id"] == identifier_ for r in data["schedules"]),
-                        "peer_environment_count": data["peer_count"],
-                        "coverage": {"native_root_verified": False, "full_record_closure": False, "remote_delete": False}}))
+                    blocker_codes=("t3code_full_cleanup_unverified",), record_metadata=metadata))
     names = tuple(engines) or tuple(sorted(names))
     return ClientInventory(client="t3code", engines=names, projects=tuple(projects.values()), records=(),
         frontend_sessions=(), unmapped_frontend_sessions=(), targets=tuple(targets), capabilities={e: capability(e) for e in names},

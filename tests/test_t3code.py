@@ -64,6 +64,91 @@ class T3CodeTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("t3code_schema_unverified", {e["message"] for e in value["errors"]})
 
+    def test_antigravity_plan_run_and_forged_bindings_preserve_mixed_profile(self):
+        add_thread(self.db, "selected", native="selected-native")
+        add_thread(self.db, "keeper", native="shared-id")
+        insert(self.db, V2 + "provider_threads", provider_thread_id="antigravity-no-handle",
+            thread_id="selected", provider="antigravity", driver="antigravity",
+            provider_instance_id="antigravity", status="closed", payload_json="{}")
+        self.db.commit()
+        code, inventory = self.invoke("records", "--client", "t3code", "--json")
+        self.assertEqual(code, 0, inventory)
+        selected = {row["engine"]: row for row in inventory["targets"] if row["record_id"] == "selected"}
+        self.assertEqual(set(selected), {"unsupported:antigravity", "codex"})
+        antigravity = selected["unsupported:antigravity"]
+        self.assertEqual(antigravity["record_metadata"]["provider_backend_family_hint"], "antigravity-acp")
+        self.assertEqual(antigravity["record_metadata"]["native_cleanup_status"], "unsupported")
+        self.assertNotIn("provider_backend_family_hint", selected["codex"]["record_metadata"])
+        self.assertFalse(antigravity["record_metadata"]["coverage"]["native_root_verified"])
+        self.assertFalse(antigravity["record_metadata"]["coverage"]["full_record_closure"])
+        self.assertEqual(antigravity["capability"]["mode"], "inventory_only")
+        self.assertFalse(antigravity["capability"]["native_delete"])
+        self.assertFalse(antigravity["capability"]["frontend_session_delete"])
+        self.assertFalse(antigravity["capability"]["verify"])
+        self.assertTrue(all(ref.get("native_record") is None for ref in antigravity["references"]))
+
+        native_root = self.home / "userdata" / "providers" / "antigravity" / "fixture"
+        native_root.mkdir(parents=True)
+        native = native_root / "session-data.bin"
+        native.write_text(PRIVATE, encoding="utf-8")
+        environment_id = self.home / "userdata" / "environment-id"
+        environment_id.write_text("env_fixture", encoding="utf-8")
+        runtime = self.root / "synthetic-t3.exe"
+        runtime.touch()
+        before = {path: path.read_bytes() for path in (self.home / store.RELATIVE, native, environment_id)}
+        base = ("--client", "t3code", "--t3code-root", str(self.home), "--record-id", "selected", "--json")
+
+        with patch("local_agent_record_janitor.cleanup_service.CleanupService.execute",
+                   side_effect=AssertionError("Unexpected cleanup writer")) as execute:
+            for verb in ("plan", "run"):
+                options = ("--clients-closed",) if verb == "run" else ()
+                code, result = self.invoke("delete", verb, *base, *options, "--engine", "unsupported:antigravity",
+                    "--out", str(self.root / f"{verb}.json"))
+                self.assertNotEqual(code, 0, result)
+                self.assertEqual(result["goal_status"], "blocked", result)
+                self.assertEqual(result["actions"], [])
+                self.assertFalse(result.get("mutation_started", False))
+
+            manifest = {"schema_version": "larj.t3code-bindings.v1", "profile_root": str(self.home),
+                "environment_id": "env_fixture", "runtime_binaries": [str(runtime)], "desktop_profiles": [],
+                "native_stores": [{"thread_id": "keeper", "engine": "codex", "root": str(native_root)}]}
+            for engine, message in (
+                ("antigravity", "t3code_binding_store_invalid"),
+                ("codex", "t3code_provider_cleanup_unsupported"),
+            ):
+                with self.subTest(forged_engine=engine):
+                    forged = {**manifest, "native_stores": [*manifest["native_stores"],
+                        {"thread_id": "selected", "engine": engine, "root": str(native_root)}]}
+                    bindings = self.root / f"forged-{engine}.json"
+                    bindings.write_text(json.dumps(forged), encoding="utf-8")
+                    code, result = self.invoke("delete", "run", *base, "--clients-closed",
+                        "--engine", "codex", "--t3code-bindings", str(bindings))
+                    self.assertNotEqual(code, 0, result)
+                    self.assertEqual(result["goal_status"], "blocked", result)
+                    self.assertFalse(result["mutation_started"])
+                    self.assertIn(message, {row["message"] for row in result["blockers"]})
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+            # The provider can survive only in historical JSON, with a typed
+            # driver and no native ID in its handle.
+            self.db.execute(f"DELETE FROM {V2}provider_threads WHERE provider_thread_id='antigravity-no-handle'")
+            insert(self.db, "orchestration_v2_events", event_id="historical-antigravity", thread_id="selected",
+                event_type="provider.thread", payload_json=json.dumps({
+                    "nativeThreadRef": {"driver": "antigravity", "nativeId": None, "strength": "none"},
+                }))
+            self.db.commit()
+            before = {path: path.read_bytes() for path in before}
+            code, result = self.invoke("delete", "plan", *base, "--engine", "codex",
+                "--t3code-bindings", str(self.root / "forged-codex.json"))
+            self.assertNotEqual(code, 0, result)
+            self.assertEqual(result["goal_status"], "blocked", result)
+            self.assertFalse(result["mutation_started"])
+            self.assertIn("t3code_historical_provider_cleanup_unsupported",
+                {row["message"] for row in result["blockers"]})
+            execute.assert_not_called()
+        self.writer.assert_not_called()
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
     def test_profiles_are_independent_and_default_is_selected_only(self):
         add_thread(self.db)
         other = self.root / "other"

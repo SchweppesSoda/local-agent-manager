@@ -314,8 +314,11 @@ class PaseoAdapter:
 
 
 def _capability(engine):
-    return EngineCapability("paseo", engine, verify=False,
-        reason="Paseo registry metadata only; native roots, daemon writers and deletion effects are unverified")
+    reason = "Paseo registry metadata only; native roots, daemon writers and deletion effects are unverified"
+    if engine == "unsupported:antigravity":
+        reason = ("Paseo exposes Antigravity-labelled registry metadata. Native ownership and "
+                  "storage schema are unverified. Full local cleanup is unsupported.")
+    return EngineCapability("paseo", engine, verify=False, reason=reason)
 
 
 def build_inventory(adapters, *, engines=()):
@@ -360,20 +363,26 @@ def build_inventory(adapters, *, engines=()):
                 blockers = ["paseo_native_roots_and_writer_coverage_unverified"]
                 if len(copies) > 1:
                     blockers.append("paseo_duplicate_agent_snapshots")
+                metadata = {
+                    "scope": "persisted_agent_registry", "upstream_commit": UPSTREAM_COMMIT,
+                    "supported_upstream_commits": list(SUPPORTED_COMMITS),
+                    "snapshot_count": len(copies), "snapshots": rows,
+                    "coverage": {"native_root_verified": False, "writer_coverage_complete": False,
+                        "saved_status_is_live_probe": False, "native_transcripts_read": False,
+                        "full_record_closure": False, "remote_delete": False,
+                        "unscanned_stores": ["schedules", "projects_and_workspaces", "provider_histories",
+                                             "daemon_memory", "client_caches"]},
+                }
+                if any(row["provider"] == "antigravity" for row in rows):
+                    # The built-in provider's family is a hint. A custom provider
+                    # or command override may use a different launch implementation.
+                    metadata["provider_backend_family_hint"] = "antigravity-cli"
+                    metadata["native_cleanup_status"] = "unsupported"
                 targets.append(ClientTarget("paseo", engine, RecordKey(store, identifier, kind="paseo_agent"),
                     project, None, (identifier,), RecordClassification.UNVERIFIED, _capability(engine),
                     references=refs, frontend_binding_keys=tuple(ref.binding_key for ref in refs),
                     is_subagent=any(row["parent_agent_id"] for row in copies), lineage_status="unknown",
-                    blocker_codes=tuple(blockers), record_metadata={
-                        "scope": "persisted_agent_registry", "upstream_commit": UPSTREAM_COMMIT,
-                        "supported_upstream_commits": list(SUPPORTED_COMMITS),
-                        "snapshot_count": len(copies), "snapshots": rows,
-                        "coverage": {"native_root_verified": False, "writer_coverage_complete": False,
-                            "saved_status_is_live_probe": False, "native_transcripts_read": False,
-                            "full_record_closure": False, "remote_delete": False,
-                            "unscanned_stores": ["schedules", "projects_and_workspaces", "provider_histories",
-                                                 "daemon_memory", "client_caches"]},
-                    }))
+                    blocker_codes=tuple(blockers), record_metadata=metadata))
     names = tuple(engines) or tuple(dict.fromkeys(observed_engines))
     return ClientInventory(client="paseo", engines=names, projects=tuple(projects.values()), records=(),
         frontend_sessions=(), unmapped_frontend_sessions=(), targets=tuple(targets),
