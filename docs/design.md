@@ -42,6 +42,31 @@ Cindy 的运行时发现同时识别旧 `codex/<version>/codex` 布局与
 `codex-package/<version>/bin/codex` 托管包布局；Windows 使用对应 `.exe` 文件。
 自动发现仅提供运行候选，显式程序路径保持优先。候选选择不授予清理旧版本的权限。
 
+### Windows 启动环境与 PATH 诊断
+
+CLI 已安装且 Windows 用户 PATH 已注册，仍可能无法被某个客户端启动。常驻启动器
+保留旧环境时，其后启动的客户端和服务端可能继续继承旧 PATH。T3 由 uTools 启动的
+排障案例说明：当前 Codex 任务内 `Get-Command codex` 成功，不证明 T3 的命令解析成功。
+父子关系也不能单独证明环境相同，启动器可以显式提供不同的环境块。
+[Windows 环境继承说明](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)
+
+诊断分别记录安装来源、持久用户/系统 PATH、当前检查进程环境、目标启动器/客户端/
+服务端环境，以及 frontend 显式命令覆盖。缺失安装证据、命令未注册、进程环境过期或
+被覆盖、显式 `binaryPath` 和独立/桌面捆绑 CLI 选择差异，不能合并为“CLI 未安装”。
+目标进程不可读时保留未知；使用 PID、启动时间和执行路径限定一次进程观察。
+
+当前 `environment inventory/doctor` 只读取调用进程或显式传入的 PATH，不自动读取
+持久 PATH、其他进程环境或继承链。Python API 的 `process_executables` 也仅表示外部
+提供的执行路径观察。上述进一步诊断与刷新由
+[Agent 技能操作流程](../skills/agent-management/references/runtime-and-migration.md#windows-path-inheritance)
+完成，不能声称 CLI 已实现自动过期环境检测。
+
+刷新范围覆盖实际启动链。先检查进行中的任务，优先正常退出；窗口关闭不等于托盘
+启动器退出。用目标用户的已验证环境重新启动后，检查新进程的实际选择。临时绝对路径
+覆盖与用户要求的最终配置分开；目标为恢复默认命令时，验证后撤回临时覆盖，同时保留
+原来的数据根和账号模式。命令解析、Provider 连接、认证、模型发现与实际生成分层验收。
+本机 PID、版本、模型数量和用户名路径属于当次观察，不写成永久匹配规则。
+
 ### 环境维护工作流
 
 安装或升级先确定安装来源、实际消费者、稳定命令入口以及现有数据根；卸载引擎前检查

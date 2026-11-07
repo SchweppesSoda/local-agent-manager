@@ -23,6 +23,9 @@ local-agent-record-janitor environment inventory --home 'D:\profiles\example' --
 目录共享。覆盖范围和读取错误单独报告，具体字段和边界见
 [Agent 管理设计](docs/design.md#agent-环境与记录的分工)。
 
+客户端提示找不到已安装 CLI 时，按 [Windows PATH 继承排查](skills/agent-management/references/runtime-and-migration.md#windows-path-inheritance)
+核对启动器、客户端与服务端；当前环境命令不会自动读取其他进程的 PATH。
+
 `inventory` 成功生成报告返回 `0`，报告中的 coverage 仍可能不完整。`doctor` 按发现
 报告 `error`、`attention`、`inconclusive` 或 `no_issues_observed`；`error` 返回 `1`，
 其余返回 `0`。顶层探测失败返回 `1`，参数错误返回 `2`。没有发现问题只描述本次有界

@@ -29,9 +29,44 @@ When janitor coverage is insufficient or the command is unavailable, inspect the
 
 A standalone Antigravity CLI, an Antigravity desktop installation, and T3 Code's Antigravity ACP launcher can coexist. Resolve each from its own launch context and settings. Apply the same check to PATH Codex, a Desktop-bundled Codex, and an independently configured frontend runtime.
 
+### Windows PATH inheritance
+
+Use this route when a frontend reports it cannot start an installed command, particularly after installation or a PATH change. Windows normally gives a child a copy of its parent's environment. A persistent PATH update does not establish that a running launcher refreshed its own environment. [Windows environment model](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)
+
+Keep four evidence sources separate: the actual installation, persistent user/machine PATH, this task's process environment, and the target launcher/client/server environments. The current `environment inventory/doctor` commands inspect the supplied or calling process's PATH; they do not read persistent PATH or another process's environment. The Python API's optional `process_executables` observations establish executable paths only.
+
+For the affected host and account:
+
+1. Identify the intended executable and its installation channel. Keep a standalone CLI separate from a Desktop-bundled CLI, even when both answer the same command name. Inspect the frontend's effective command or `binaryPath` and data-root setting independently. An explicit command override can make PATH irrelevant to that launch.
+2. Inspect just the persistent PATH values and the current shell's command selection. For example, `[Environment]::GetEnvironmentVariable('Path', 'User')` and the `Machine` variant read persistent settings on Windows; `$env:Path` and `Get-Command codex -All` describe this PowerShell context. Compare relevant entries and ordering without logging unrelated environment variables. [Environment variable scopes](https://learn.microsoft.com/en-us/dotnet/api/system.environment.getenvironmentvariable)
+3. Identify the actual launcher, frontend, and backend service using executable paths, PIDs, parent relationships, and start times. Recheck process identity if it exits or restarts; a reused PID is not the same observation. A launcher such as uTools may remain in the tray after its window closes. A separately managed service may not inherit from the visible frontend.
+4. Use available read-only process inspection to compare the relevant PATH entries in each identified process. Keep a copied environment in memory and project only the fields needed for diagnosis; do not dump the complete block or process arguments. If target environment access is unavailable, report it as unknown. Parent relationships alone do not prove identical environments because a launcher can supply an explicit block.
+
+Choose the finding supported by the evidence:
+
+| Observation | Diagnosis and next step |
+|---|---|
+| No verified installation candidate within the inspected scope | Installation remains unconfirmed; resolve coverage and the intended install channel. |
+| Intended executable exists, but its directory is absent from persistent PATH and no explicit selection applies | Check command registration or the chosen frontend setting. |
+| The directory is registered but absent from the target process PATH, with the same account and launch scope established | The target has stale or overridden environment state; inspect the launcher chain to distinguish inheritance from an intentional override. |
+| The frontend explicitly selects another executable | Inspect that override; changing PATH alone may not affect it. |
+| The target resolves a Desktop-bundled CLI while another context resolves the standalone CLI | Report the two selections and their version evidence; this does not authorize removing either installation. |
+
+An absolute-path override can test command lookup when configuration changes are in scope. Label it as a temporary diagnostic or an intentional final setting. If the user's goal is normal PATH lookup, restore the product's default command semantics after refreshing the launch environment; in T3 this can mean removing the temporary `binaryPath` field. Preserve the chosen data root and account mode. A launch failure by itself does not justify changing `CODEX_HOME`, reinstalling, or resetting authentication.
+
+### Refresh the affected launch chain
+
+Before restarting a launcher or client, check its active tasks and unsaved state. Use its normal exit action, including tray exit when needed, and verify the relevant background processes stopped. Reopening a window or relaunching a client from the same stale launcher does not establish a refresh. If normal exit requires the user, request that specific action; do not substitute a forced process-tree termination without authorization for its state-loss risk.
+
+Start the affected launcher and client from a verified environment for the intended user. For a programmatic refresh, Windows `CreateEnvironmentBlock` with the appropriate user token and `bInherit=FALSE` can construct a block without inheriting this task's stale or sandbox environment; a null token provides system variables only. Check API success and user profile availability, pass the block with the required Unicode handling, and release it with `DestroyEnvironmentBlock`. Preserve deliberately configured app-specific overrides when they are part of the intended launch. This supplies a new process's environment; it does not rewrite existing processes. [CreateEnvironmentBlock contract](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createenvironmentblock)
+
+Verify the new launcher, frontend, and server identities and their relevant PATH entries. When a version probe is appropriate, use the trusted command in the observed target environment and working directory, record the resolved executable, version and exit code, and keep inherited secrets out of output. This probe still needs the frontend's own provider check to establish connection. Report executable resolution, provider readiness, authentication, model discovery, and actual generation as separate results; a ready provider and a model list do not establish generation success.
+
 ## Repair selection and configuration
 
 Identify the executable and data root the user wants, then locate the setting that actually selects them. A frontend command override, an inherited process PATH, user or machine PATH, and a profile-root override affect different launch contexts. Change the narrowest scope that satisfies the request. Preserve unrelated entries, order, environment expansion, and config keys. Refresh the affected shell or app and re-resolve the executable in that context. Treat a changed selection and a successful provider startup as separate results.
+
+For Windows launch failures after an installation or PATH update, use the [inheritance diagnosis](#windows-path-inheritance) and [launch-chain refresh](#refresh-the-affected-launch-chain) above before deciding which setting needs changing.
 
 ## Migrate the selected state
 
