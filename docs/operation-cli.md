@@ -314,6 +314,13 @@ contacted. Without an explicit binding, mutation and verification capabilities a
 and cold status/verify remain blocked without dispatching a native writer. See
 [Paseo boundaries](adapters.md#paseoagent-注册记录只读盘点).
 
+For `antigravity`, inventory retains `unsupported:antigravity` and reports a
+`provider_backend_family_hint` plus `native_cleanup_status=unsupported` in record
+metadata. The hint describes the built-in provider family; custom implementations
+and effective native homes still require evidence. It does not enable deletion or
+make a serialized provider handle a native record ID. See
+[Antigravity ownership and cleanup boundaries](adapters.md#antigravity).
+
 ### Paseo 完整本地操作
 
 Windows 上显式绑定后，可沿用标准 `delete plan/apply` 与 `operation status/verify`。
@@ -359,6 +366,15 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 先用 `records --client t3code --json` 获取元数据，或用可重复的 `--t3code-root` 指定
 实际 T3 home（包含 `userdata` 的目录，不是 Electron 桌面 profile）。默认使用
 `T3CODE_HOME` 或 `~/.t3`。普通 inventory 不执行删除，也不推断原生 provider 根目录。
+
+Antigravity 记录仍使用 `unsupported:antigravity`；元数据的
+`provider_backend_family_hint=antigravity-acp` 只描述内置实现线索，
+`native_cleanup_status=unsupported` 明确表示原生存储和完整删除范围尚未支持。
+T3 的托管运行时、隔离配置、会话文件和前端数据库不能互相替代；参见
+[Antigravity 边界](adapters.md#antigravity)。
+
+混合 profile 中没有原生 ID 的 Antigravity provider 仍然可见；将默认 provider 改成
+Codex 或提供 Codex 绑定，不能绕过未支持 provider 的完整清理资格检查。
 
 Windows 的显式绑定文件使用以下格式；`environment_id` 必须来自该 profile 的
 `userdata/environment-id`，`native_stores` 必须覆盖所有已观察 thread。示例路径和 ID

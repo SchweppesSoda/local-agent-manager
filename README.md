@@ -34,6 +34,10 @@ local-agent-record-janitor environment inventory --home 'D:\profiles\example' --
 与旧 `agent doctor` 的目标存储检查不同。通用 Windows 清理和普通软件维护独立维护，
 不包含在本项目的删除命令中。
 
+Antigravity 的独立 CLI、T3 ACP、桌面程序和 Paseo 插件残留分别识别。前端记录中的
+provider 名称不能证明原生数据归属；未验证的原生格式和完整删除范围继续阻挡。
+具体来源、目录层次与技能操作方法见 [Antigravity 边界](docs/adapters.md#antigravity)。
+
 安装 skill 时将完整 `skills/agent-management` 目录复制到当前 Codex skills 目录；保留
 仓库安装，以便调用 CLI 和读取与该版本相匹配的操作契约。重新加载技能后即可使用。
 
