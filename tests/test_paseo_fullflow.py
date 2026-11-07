@@ -90,6 +90,40 @@ class PaseoFilesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schedule_has_unselected_runs"):
             files.freeze(self.root, [AGENT])
 
+    def test_current_creation_claim_and_completed_send_receipts(self):
+        key = files._request_digest(["agent", "synthetic-key"])
+        creation = {"fingerprint": "a" * 64, "inFlight": None, "snapshot": {
+            "kind": "agent", "idempotencyKey": "synthetic-key", "revision": 1, "phase": "completed",
+            "workspaceId": None, "agentId": AGENT, "error": None,
+            "agent": {k: v for k, v in agent(AGENT, NATIVE, self.root).items() if k not in {"config", "lastStatus"}}}}
+        write(self.root / "creations" / (key + ".json"), creation)
+        claim = self.root / "creations" / (files._request_digest(["agent", AGENT]) + ".claim")
+        claim.write_text(key, encoding="utf-8")
+        receipt = self.root / "agent-requests" / ("b" * 64 + ".json")
+        write(receipt, {"fingerprint": "c" * 64, "state": "completed", "agentId": AGENT})
+        keeper = self.root / "agent-requests" / ("d" * 64 + ".json")
+        write(keeper, {"fingerprint": "e" * 64, "state": "completed", "agentId": KEEP})
+        before = keeper.read_bytes()
+        evidence = files.freeze(self.root, [AGENT])
+        files.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(files.remaining(evidence), 0)
+        self.assertFalse(claim.exists())
+        self.assertFalse(receipt.exists())
+        self.assertFalse((self.root / "creations" / (key + ".json")).exists())
+        self.assertEqual(keeper.read_bytes(), before)
+
+    def test_incomplete_receipt_and_unqualified_creation_reference_block(self):
+        receipt = self.root / "agent-requests" / ("b" * 64 + ".json")
+        write(receipt, {"fingerprint": "c" * 64, "state": "pending", "agentId": AGENT})
+        with self.assertRaisesRegex(ValueError, "request_outcome_unknown"):
+            files.freeze(self.root, [AGENT])
+        snapshot = {k: v for k, v in agent(AGENT, NATIVE, self.root).items() if k not in {"config", "lastStatus"}}
+        snapshot["newResumeField"] = {"nativeId": OTHER}
+        with self.assertRaisesRegex(ValueError, "schema_unverified"):
+            files._creation({"fingerprint": "a" * 64, "inFlight": None, "snapshot": {
+                "kind": "agent", "idempotencyKey": "key", "revision": 1, "phase": "completed",
+                "workspaceId": None, "agentId": AGENT, "error": None, "agent": snapshot}})
+
     def test_partial_file_apply_resumes_without_repeating_completed_deletes(self):
         write(self.root / "agents/project/copy.json", agent(AGENT, NATIVE, self.root))
         write(self.root / "schedules/kept.json", schedule("kept"))
@@ -191,6 +225,13 @@ class PaseoFullflowTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "blocked", result)
         self.assertFalse(result["modified"])
         self.assertTrue((self.root / "agents" / (AGENT + ".json")).exists())
+
+    def test_launch_environment_cannot_override_bound_native_home(self):
+        value = agent(AGENT, NATIVE, self.base)
+        value.update(resumeOnStartup=True, launchEnv={"CODEX_HOME": str(self.base / "another-home")})
+        write(self.root / "agents" / (AGENT + ".json"), value)
+        with self.assertRaisesRegex(ValueError, "launch_environment_binding_conflict"):
+            self.adapter.snapshot_references(refresh=True)
 
     def test_frozen_scope_must_match_present_server_references(self):
         evidence = paseo_cleanup.evidence_from_document(self.plan())

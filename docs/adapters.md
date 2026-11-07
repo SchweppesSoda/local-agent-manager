@@ -40,6 +40,7 @@
 | 千问办公 / QwenWork CN | 主/子会话元数据及已知 SDK 文件位置 | 已核实 1.2.5 CN schema；草稿/恢复/共享 SDK 范围未闭合，写入和 verify 关闭 |
 | QoderWork CN | 主/子会话元数据及已知 SDK 文件位置 | 已核实 0.9.18 CN schema；不与 Qoder IDE/CLI 混用，写入和 verify 关闭 |
 | Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | 默认只读；Windows 显式绑定的 Codex/Pi/Claude、服务端和桌面完整操作见下文，未知 provider 关闭 |
+| T3 Code / Codex、Claude | v1/v2 thread 元数据及 provider 恢复 ID | 默认只读；Windows 显式绑定的 v2 本地记录支持原生依赖、事件/投影、终端及桌面清理，未知 schema 关闭 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
 
 兼容回归使用[固定 v1 样本](../tests/fixtures/operation_v1.json)及
@@ -593,7 +594,9 @@ after，原生批次已完成而前端尚未开始时可冷继续。实际 Codex
 ### Paseo：agent 注册记录只读盘点
 
 固定依据为上游 `0.11.0-beta.3`、commit
-[`05b074764dd1be4b7b04c7ab403ebeb88393aee3`](https://github.com/getpaseo/paseo/tree/05b074764dd1be4b7b04c7ab403ebeb88393aee3)。
+[`05b074764dd1be4b7b04c7ab403ebeb88393aee3`](https://github.com/getpaseo/paseo/tree/05b074764dd1be4b7b04c7ab403ebeb88393aee3)，
+以及 `0.15.3`、commit
+[`d91ae138cb931447635e94296023414a58bedcc5`](https://github.com/getpaseo/paseo/tree/d91ae138cb931447635e94296023414a58bedcc5)。
 `paseo` 是独立客户端身份；记录 ID 属于 Paseo profile，不能替代提供者的 native ID。
 仅选中该客户端或显式传入 `--paseo-root` 才发现其根目录，默认 `PASEO_HOME` 或
 `~/.paseo`，不扫描其他主机或连接 daemon。相同物理 profile 的已证明路径别名合并，
@@ -614,6 +617,8 @@ archivedAt、internal、daemon owner ID、固定 parent-agent 标签、恢复 ID
 推断 native root。未知 provider 原名保留在元数据中，引擎投影为 `unsupported:*`；
 未知或对象类型的 nativeHandle 只报告存在与未解析状态。JSON 中的 title、任意 labels、
 config、provider metadata、runtime extra 和 lastError 不进入输出；原生转录不读取。
+`resumeOnStartup` 投影为布尔值，`launchEnv` 仅报告是否存在，不输出变量值；未知 provider
+使用 JSON 等不透明 sessionId 时只报告存在，不把私有内容当作 ID 输出。
 同 profile 重复 agent ID 保留每个快照与引用，并报告冲突，不采用上游缓存的最后覆盖值。
 
 默认无绑定 adapter 的删除与 verify 标志关闭，`delete plan/run/apply`、`operation status/verify`
@@ -638,12 +643,17 @@ Codex/Pi/Claude 根目录，以及全部相关本机桌面 profile 与运行文�
 固定 parent-agent 标签的后代一起列入计划。cwd 不授予存储归属；未选 agent 共享同一
 原生记录、未知 provider、冲突恢复句柄或不完整清单阻挡计划。普通 provider metadata
 作为所属记录的一部分清理，不从配置内容推断路径或权限。
+若 `launchEnv` 覆盖了对应引擎的存储环境变量，其值必须与显式绑定一致。
 
 原生批次复用既有引擎写入器及其他客户端的引用保护。全部原生依赖缺失后，前端批次清理
 已冻结的平铺/项目注册 JSON 和严格匹配上游原子写入命名的副本。选中 agent 专属调度可
 删除；其他调度只将已结束且属于选中 agent 的 run 的 `agentId/output/error` 置空，
 保留执行次数、状态、时间与其他 run。运行中的相关任务、专属调度包含未选历史 run、
 旧 `agent-timelines` 或未知嵌套 schema 均阻挡。
+`0.15.3` 的 `agent-requests` 已完成回执、`creations` 已完成 agent 创建快照及其
+SHA-256 claim 一并冻结和移除；创建快照中的原生恢复引用必须已被注册记录覆盖。
+pending 回执、未完成/结果未知的创建、workspace 创建和不能证明归属的 claim 阻挡；
+不会通过移除回执把未知执行结果解释为成功。更新 helper 后应重新生成计划。
 
 绑定桌面使用 `paseo://app`：IndexedDB v1 `paseo-replica-row-store` 的精确
 `[serverId, kind, agentId]` agent/timeline 行、v5 canonical 文本草稿和 v2 workspace
@@ -667,6 +677,53 @@ cache、autoIncrement object store、不安全数值或未知 schema 不提供�
 macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平台资格。
 
 绑定格式与依赖准备见 [完整本地操作](operation-cli.md#paseo-完整本地操作)。
+
+### T3 Code：本机数据库与完整清理
+
+依据 `0.1.8-nightly.20261107.4301`、commit
+[`4cb6945dc60ed03f567dc5daafd083e52308e82b`](https://github.com/pingdotgg/t3code/tree/4cb6945dc60ed03f567dc5daafd083e52308e82b)。
+`--client t3code` 或显式 `--t3code-root` 才发现其存储，默认 `T3CODE_HOME`，否则
+`~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持当前固定
+schema 的 v1/v2 元数据投影。SQLite 只读事务保留 WAL 可见性；文件/侧文件禁止链接、
+reparse 与硬链接，单文件上限 512 MiB，元数据查询上限 20,000 行并有限时。
+
+报告包含 profile、thread/project ID、cwd、provider、时间、归档/删除标记、消息计数和
+原生恢复 ID，不读取消息正文、标题、token 或完整事件 payload。不同 profile 的同 ID
+保持独立，T3 thread ID 不等于 provider native ID。未知 schema、孤立投影、无效 ID 或
+不完整扫描不会输出“零记录成功”。普通盘点范围为 `database_metadata`；不证明 writer
+已关闭，也不授予 native delete 或完整 verify 能力。
+
+`--t3code-bindings` 为整个 profile 的每个已观察 thread 明确绑定 Codex home 或 Claude
+config dir，同时绑定 `environment-id`、所有相关本机桌面 profile 和实际运行文件。
+完整删除目前限定 v2，且原生引用必须为 `strong`；历史事件和其他 per-thread payload
+中的 `nativeThreadRef` 也检查，不能只删除当前投影。v1 恢复记录、provider 切换造成的
+多引擎历史、弱引用、缺失原生归属、peer 环境及未选 thread 共享 native ID 会阻挡。
+计划列出所选 thread 的后代和实际原生依赖，不以 cwd 或相似 ID 猜测归属。
+
+上游的 `thread.deleted` 是事件/软删除，不能用它证明本机历史消失。这里先复用既有
+Codex/Claude writer 与跨客户端保护，再事务删除对应 command receipts、effects、events、
+runtime 与 projection 行；FTS 触发器同步移除搜索数据。模拟副本预先计算 before/after
+逻辑摘要，原库核对 schema、完整性、外键、行数和批准摘要后提交，冷读再验。
+未选中的 JSON 恢复关系、跨选择边界的 handoff/subagent、共享 provider session、
+scheduled task、待执行 effect 或额外恢复数据库阻挡。未选 thread、project、凭据与设置保留。
+
+终端历史只移除命名能证明归属的文件，涵盖 legacy、base64url 和 SHA-256 命名；保留
+其他 thread 文件及摘要，无法归属的终端文件阻挡。非空附件、browser-artifacts、backups 或 snapshots 目录目前阻挡。
+显式桌面 profile 的 `t3code://app` Local Storage 在私有副本上使用固定 ClassicLevel 3
+改写并冷读，支持 composer v9、terminal v4、right-panel v14、diff-panel v2、closed-view
+v2 及 ui-state v1。按 `environmentId:threadId` 精确匹配；远程同 ID 与未选记录保留。
+旧 renderer 状态、未知版本、外部附件、browser 恢复快照或未选布局中的 side-chat 引用阻挡。
+prompt-stash 中的共享线程上下文只检查，不自动删除共享用户内容。
+
+Windows 执行期间持有全部绑定运行文件及永久 `userdata/server-owner.sqlite` 的同一个
+`BEGIN EXCLUSIVE` 锁，执行前后检查进程枚举；不 unlink 锁文件、不自动停应用。
+此边界限定标准启动路径和声明的本地运行文件，不覆盖自定义 writer、远程或未绑定浏览器。
+`desktop_profiles: []` 仅声明 headless 范围。用户工作区、worktree、浏览器页面内容、诊断日志、
+登录凭据与外部备份不在记录删除范围；这是逻辑记录删除，不承诺介质取证级擦除。
+
+原生完成、前端未开始可通过同一计划冷继续；前端 mutation_started 后失败保持 unknown，
+禁止自动重发，只能通过精确 after 冷验证判定完成。桌面替换采用持久 after 副本及封存目录，
+中断后保留恢复证据。相关依赖、绑定格式与命令见 [T3 Code 完整本地操作](operation-cli.md#t3-code-完整本地操作)。
 
 ## 既有 Codex Finding adapter
 

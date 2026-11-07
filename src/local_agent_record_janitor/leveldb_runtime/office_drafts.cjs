@@ -151,8 +151,11 @@ function dataKey (raw) {
 
 const uiCleaner = require('./office_ui.cjs')({ decodeString, encodeString, mapEntries, cleanDraft, fail })
 const paseoCleaner = require('./paseo_ui.cjs')({ decodeString, encodeString, mapEntries, fail })
+const t3codeCleaner = require('./t3code_ui.cjs')({ decodeString, encodeString, mapEntries, fail })
 
 async function projection (db, request) {
+  if (request.t3code_environment_id !== undefined && (!ID.test(request.t3code_environment_id) ||
+      request.paseo_server_id !== undefined || JSON.stringify(request.origins) !== '["t3code://app"]')) fail('office_leveldb_t3code_ui_scope_invalid')
   if (request.paseo_server_id !== undefined && (!ID.test(request.paseo_server_id) ||
       JSON.stringify(request.origins) !== '["paseo://app"]')) fail('office_leveldb_paseo_scope_invalid')
   const version = await db.get(Buffer.from('VERSION'))
@@ -167,8 +170,8 @@ async function projection (db, request) {
     if (++count.keys > 20000) fail('office_leveldb_key_budget_exceeded')
     const key = dataKey(rawKey)
     if (!key) continue
-    const cleanValue = request.paseo_server_id === undefined ? uiCleaner(key.name, chatIds, childIds)
-      : paseoCleaner(key.name, chatIds, request.paseo_server_id)
+    const cleanValue = request.t3code_environment_id !== undefined ? t3codeCleaner(key.name, chatIds, request.t3code_environment_id)
+      : request.paseo_server_id === undefined ? uiCleaner(key.name, chatIds, childIds) : paseoCleaner(key.name, chatIds, request.paseo_server_id)
     if (!cleanValue) continue
     if (!request.origins.includes(key.origin)) fail('office_leveldb_draft_origin_unverified')
     // UTF16 and Latin1 names can otherwise denote the same logical DOM key.
@@ -285,7 +288,7 @@ async function run (request, hooks = {}) {
       removed_pairs: before.count.removed_pairs, remaining_pairs: 0,
       after_keys: before.edits.map(edit => ({ key_sha256: sha(edit.key), value_sha256: sha(edit.after), metadata_sha256: sha(edit.afterMeta) })) }
   } catch (error) {
-    const code = /^office_leveldb_[a-z_]+$/.test(error.code || '') ? error.code : 'office_leveldb_engine_failure'
+    const code = /^office_leveldb_[a-z0-9_]+$/.test(error.code || '') ? error.code : 'office_leveldb_engine_failure'
     const safe = new Error(code); safe.code = code; safe.unknown = attempted
     throw safe
   } finally {
@@ -306,7 +309,7 @@ if (require.main === module) {
       const result = await run(JSON.parse(line))
       process.stdout.write(JSON.stringify(result) + '\n')
     } catch (error) {
-      const code = /^office_leveldb_[a-z_]+$/.test(error.code || '') ? error.code : 'office_leveldb_request_invalid'
+      const code = /^office_leveldb_[a-z0-9_]+$/.test(error.code || '') ? error.code : 'office_leveldb_request_invalid'
       process.stdout.write(JSON.stringify({ schema_version: 'larj.office-leveldb-helper.v1', status: 'blocked', blocker_code: code, unknown: error.unknown === true }) + '\n')
       process.exitCode = 1
     }

@@ -121,7 +121,7 @@ def runtime_fingerprint():
     node = node.resolve(strict=True)
     executable, _ = frozen_files.read_file(node.parent, node.name)
     helpers = [frozen_files.read_file(helper.parent, name)[0]
-               for name in ("office_drafts.cjs", "office_ui.cjs", "paseo_ui.cjs", "physical.cjs")]
+               for name in ("office_drafts.cjs", "office_ui.cjs", "paseo_ui.cjs", "t3code_ui.cjs", "physical.cjs")]
     return {"root": str(root), "node": str(node), "executable": executable,
             "code_sha256": hashlib.sha256(_json(manifest)).hexdigest(), "helpers": helpers}
 
@@ -198,7 +198,7 @@ def _call(request, *, timeout=30):
         raise OfficeLevelDBError("office_leveldb_response_invalid", unknown=request["operation"] == "apply") from exc
     if result.returncode or response.get("status") == "blocked":
         code = response.get("blocker_code", "")
-        if not isinstance(code, str) or not re.fullmatch(r"office_leveldb_[a-z_]+", code):
+        if not isinstance(code, str) or not re.fullmatch(r"office_leveldb_[a-z0-9_]+", code):
             code = "office_leveldb_helper_failed"
         raise OfficeLevelDBError(code, unknown=request["operation"] == "apply")
     return response

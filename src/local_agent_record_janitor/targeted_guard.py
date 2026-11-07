@@ -177,7 +177,8 @@ class TargetedReferenceGuard:
                         from .orca_authorization import permits_reference
                         from .herdr_cleanup import permits_reference as herdr_permits_reference
                         from .paseo_cleanup import permits_reference as paseo_permits_reference
-                        if permits_reference(reference, execution=True) or herdr_permits_reference(reference, execution=True) or paseo_permits_reference(reference, execution=True):
+                        from .t3code_cleanup import permits_reference as t3code_permits_reference
+                        if permits_reference(reference, execution=True) or herdr_permits_reference(reference, execution=True) or paseo_permits_reference(reference, execution=True) or t3code_permits_reference(reference, execution=True):
                             continue
                         if (reference.evidence_complete is True and reference.lifecycle is ReferenceLifecycle.DELETED
                                 and reference.kind in {ReferenceKind.CURRENT, ReferenceKind.HISTORY}):
@@ -189,9 +190,11 @@ class TargetedReferenceGuard:
             from .orca_authorization import permits
             from .herdr_cleanup import permits as herdr_permits
             from .paseo_cleanup import permits as paseo_permits
+            from .t3code_cleanup import permits as t3code_permits
             if (not limit.native_delete and not (descriptor.client == "orca" and permits(home, affected, execution=True))
                     and not herdr_permits(descriptor.client, "codex", home, affected, execution=True)
-                    and not paseo_permits(descriptor.client, "codex", home, affected, execution=True)):
+                    and not paseo_permits(descriptor.client, "codex", home, affected, execution=True)
+                    and not t3code_permits(descriptor.client, "codex", home, affected, execution=True)):
                 raise TargetedGuardError(f"client_capability_limit: {descriptor.client}/codex native_delete is unavailable")
         except TargetedGuardError:
             raise

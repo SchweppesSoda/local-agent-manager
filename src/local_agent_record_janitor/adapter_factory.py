@@ -115,6 +115,18 @@ def create_default_adapters(args: Any) -> list[object]:
     codex_bin = args.codex_bin.expanduser() if args.codex_bin else None
     selected = selected_platforms(args.platform)
     adapters: list[object] = []
+    t3code_roots = tuple(getattr(args, "t3code_root", ()) or ())
+    if getattr(args, "t3code_bindings", None) is not None:
+        from .t3code_bound_adapter import T3CodeBoundAdapter, load_manifest
+        adapter = T3CodeBoundAdapter(load_manifest(args.t3code_bindings))
+        if t3code_roots and (len(t3code_roots) != 1 or canonical_path(t3code_roots[0]) != canonical_path(adapter.profile_root)):
+            raise ValueError("t3code_binding_profile_mismatch")
+        adapters.append(adapter)
+    elif "t3code" in selected or str(getattr(args, "client", "")) == "t3code" or t3code_roots:
+        from .t3code_store import T3CodeAdapter, default_root as t3code_default_root
+        roots = t3code_roots or (t3code_default_root(),)
+        unique = {os.path.normcase(os.path.normpath(os.fspath(root))): root for root in roots}
+        adapters.extend(T3CodeAdapter(profile_root=root) for root in unique.values())
     paseo_roots = tuple(getattr(args, "paseo_root", ()) or ())
     if getattr(args, "paseo_bindings", None) is not None:
         from .paseo_bound_adapter import PaseoBoundAdapter, load_manifest

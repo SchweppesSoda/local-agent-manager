@@ -92,6 +92,14 @@ class PaseoBoundAdapter(PaseoAdapter):
             # here. The whole owned row is removed; metadata never grants a
             # native root or substitutes for its scalar resume handle.
             engine, root = binding["engine"], canonical_path(binding["root"])
+            # A per-agent launch overlay overrides the daemon's native home.
+            # An explicit binding must agree with that stronger evidence.
+            env = entry["value"].get("launchEnv", {})
+            field = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "pi": "PI_CODING_AGENT_DIR"}[engine]
+            overrides = [v for k, v in env.items() if k.upper() == field]
+            expected = binding.get("agent_dir") if engine == "pi" else binding["root"]
+            if overrides and (len(overrides) != 1 or canonical_path(local_root(overrides[0])) != canonical_path(expected)):
+                files.fail("launch_environment_binding_conflict")
             ids = {h["value"] for h in row["references"] if h["kind"] == "id"}
             paths = {h["value"] for h in row["references"] if h["kind"] == "path"}
             if len(ids) > 1 or engine != "pi" and paths or engine == "pi" and row["references"] and len(paths) != 1:

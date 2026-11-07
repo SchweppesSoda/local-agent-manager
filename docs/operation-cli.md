@@ -21,7 +21,7 @@ through the independent `delete_native_project` family. See
 Use one client per operation. A plan/run selects exactly one scope mode:
 
 ```text
-records --client <native|codex-native|cindy|aionui|pi|claude|orca|herdr|workbuddy|qwenwork|qoderwork|paseo> [--project <selector> ...]
+records --client <native|codex-native|cindy|aionui|pi|claude|orca|herdr|workbuddy|qwenwork|qoderwork|paseo|t3code> [--project <selector> ...]
 delete plan --client <client> (--project <selector> ... | --all-projects | --record-id <id> ...)
 delete apply --operation-id <id> [--plan <plan.json>] [--clients-closed]
 delete run --client <client> (--project <selector> ... | --all-projects | --record-id <id> ...)
@@ -352,6 +352,52 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 下载并核对固定 SHA 的测试依赖；该命令不安装或启动 Paseo。
 完整范围、中断恢复和明确阻挡条件见
 [Windows 清理边界](adapters.md#paseowindows-显式绑定的完整清理)。
+
+## T3 Code 完整本地操作
+
+先用 `records --client t3code --json` 获取元数据，或用可重复的 `--t3code-root` 指定
+实际 T3 home（包含 `userdata` 的目录，不是 Electron 桌面 profile）。默认使用
+`T3CODE_HOME` 或 `~/.t3`。普通 inventory 不执行删除，也不推断原生 provider 根目录。
+
+Windows 的显式绑定文件使用以下格式；`environment_id` 必须来自该 profile 的
+`userdata/environment-id`，`native_stores` 必须覆盖所有已观察 thread。示例路径和 ID
+必须替换为已确认的本机值，不能直接复制执行。T3 thread ID 与原生 ID 分开处理。
+
+```json
+{
+  "schema_version": "larj.t3code-bindings.v1",
+  "profile_root": "D:/T3Home",
+  "environment_id": "environment-id-from-file",
+  "runtime_binaries": ["D:/Apps/T3/T3 Code (Nightly).exe"],
+  "native_stores": [
+    {"thread_id": "t3-thread-id-1", "engine": "codex", "root": "D:/CodexHome", "codex_binary": "D:/Apps/Codex/codex.exe"},
+    {"thread_id": "t3-thread-id-2", "engine": "claude", "root": "D:/ClaudeConfig"}
+  ],
+  "desktop_profiles": [
+    {"root": "D:/T3DesktopProfile", "runtime_binaries": ["D:/Apps/T3/T3 Code (Nightly).exe"]}
+  ]
+}
+```
+
+绑定所有相关的本地 runtime 文件和桌面 profile（Windows 常见桌面路径为
+`%APPDATA%/t3code-v2`）。仅明确限定 headless 服务端时才能用 `desktop_profiles: []`；
+它不能代表浏览器、移动端或远程副本已经删除。桌面缓存需要已安装的固定 LevelDB 依赖：
+
+```powershell
+python -m local_agent_record_janitor.office_leveldb --install --runtime-dir 'D:/Dependencies/larj-leveldb'
+$env:LARJ_LEVELDB_RUNTIME = 'D:/Dependencies/larj-leveldb'
+local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
+```
+
+计划列出原生及前端动作、后代、文件/数据库摘要和依赖。审阅并明确授权该计划后，关闭
+所有绑定客户端和后台服务，使用现有 `delete apply --authorized-plan-sha256` 流程；
+`--clients-closed` 是用户确认，不能代替 writer 枚举和 server-owner 锁。随后使用
+`operation status`、`operation verify` 对同一计划做冷验证。命令参数沿用本文
+[Commands](#commands)，不另设直接删表命令。
+
+完整清理只支持固定 schema 的本机 v2 Codex/Claude 记录；附件、弱引用、peer、旧恢复
+记录和未证明的共享关系会明确阻挡。工作区、诊断日志、凭据及外部备份保留。
+具体边界见 [T3 Code 适配说明](adapters.md#t3-code本机数据库与完整清理)。
 
 ## WorkBuddy local sessions
 

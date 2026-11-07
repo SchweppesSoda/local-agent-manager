@@ -97,7 +97,32 @@ class PaseoStoreTests(unittest.TestCase):
         code, result = self.invoke("records", "--client", "paseo", "--json")
         self.assertEqual(code, 0, result)
         self.assertEqual({row["record_id"] for row in result["targets"]}, {sample["record"]["id"] for sample in fixture["records"]})
-        self.assertTrue(all(row["record_metadata"]["upstream_commit"] == fixture["upstream_commit"] for row in result["targets"]))
+        self.assertTrue(all(fixture["upstream_commit"] in row["record_metadata"]["supported_upstream_commits"] for row in result["targets"]))
+
+    def test_0153_restart_and_private_launch_environment(self):
+        self.write(self.record(resumeOnStartup=True, launchEnv={"TOKEN": PRIVATE}))
+        code, result = self.invoke("records", "--client", "paseo", "--json")
+        self.assertEqual(code, 0, result)
+        row = result["targets"][0]["record_metadata"]["snapshots"][0]
+        self.assertTrue(row["resume_on_startup"])
+        self.assertTrue(row["launch_environment_present"])
+        self.assertNotIn("launchEnv", row)
+        for change in ({"resumeOnStartup": 1}, {"launchEnv": {"TOKEN": 3}}):
+            self.write(self.record(**change))
+            code, result = self.invoke("records", "--client", "paseo", "--json")
+            self.assertNotEqual(code, 0)
+
+    def test_custom_serialized_session_handles_are_opaque_metadata(self):
+        opaque = json.dumps({"session": "custom", "token": PRIVATE})
+        self.write(self.record(provider="antigravity",
+            persistence={"provider": "antigravity", "sessionId": opaque},
+            runtimeInfo={"provider": "antigravity", "sessionId": opaque}))
+        code, result = self.invoke("records", "--client", "paseo", "--json")
+        self.assertEqual(code, 0, result)
+        target = result["targets"][0]
+        self.assertEqual(target["engine"], "unsupported:antigravity")
+        self.assertEqual(target["references"], [])
+        self.assertTrue(target["record_metadata"]["snapshots"][0]["opaque_session_handle_present"])
 
     def test_exact_parent_label_and_pi_path_are_observations_not_native_ownership(self):
         transcript = self.root / "foreign-provider" / "session.jsonl"

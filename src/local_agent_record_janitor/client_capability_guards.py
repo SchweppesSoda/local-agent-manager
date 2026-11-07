@@ -91,6 +91,7 @@ class ClientCapabilityLimits:
         from .orca_authorization import permits, permits_frontend, permits_error
         from .herdr_cleanup import permits as herdr_permits
         from .paseo_cleanup import permits as paseo_permits
+        from .t3code_cleanup import permits as t3code_permits
         reasons = list(
             f"{CLIENT_CAPABILITY_LIMIT}: {descriptor.client}/{engine} {field} is unavailable"
             + (f" ({limit.reason})" if limit.reason else "")
@@ -103,6 +104,7 @@ class ClientCapabilityLimits:
                      and permits_frontend(native_root, target_ids, execution=execution))
             and not herdr_permits(descriptor.client, engine, native_root, target_ids, field=field, execution=execution)
             and not paseo_permits(descriptor.client, engine, native_root, target_ids, field=field, execution=execution)
+            and not t3code_permits(descriptor.client, engine, native_root, target_ids, field=field, execution=execution)
         )
         if native_root is not None and (field == "native_delete" or field == "frontend_project_delete" and not sources):
             root_key = canonical_path(native_root)

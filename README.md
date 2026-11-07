@@ -123,18 +123,35 @@ local-agent-record-janitor records --client paseo --json
 local-agent-record-janitor records --client paseo --paseo-root 'D:\profiles\paseo' --engine codex --json
 ```
 
-适配依据为 Paseo `0.11.0-beta.3` 的固定源码；当前清单范围为 `persisted_agent_registry`。
+适配覆盖 Paseo `0.11.0-beta.3` 与 `0.15.3` 的已知注册格式；当前清单范围为 `persisted_agent_registry`。
 普通盘点不证明原生聊天已清除或后台进程已关闭。Windows 上可用显式绑定启用完整操作：
 
 ```powershell
 local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
 ```
 
-计划先列出 Codex/Pi/Claude 原生动作，再清理注册副本、调度中的会话内容及绑定桌面的
+计划先列出 Codex/Pi/Claude 原生动作，再清理注册副本、已完成的创建/发送回执、调度中的会话内容及绑定桌面的
 IndexedDB、文本草稿和布局引用，沿用审批、apply 与冷验证。绑定格式及缓存依赖见
 [Paseo 操作说明](docs/operation-cli.md#paseo-完整本地操作)。未绑定、远程客户端、
 Blob/外部附件和未知旧格式仍阻挡完整删除。标题、配置、凭据与聊天正文不进入报告。详见
 [Paseo 适配边界](docs/adapters.md#paseoagent-注册记录只读盘点)。
+
+### T3 Code
+
+`records --client t3code` 只读盘点 `T3CODE_HOME` 或 `~/.t3` 中的 thread 元数据、
+Codex/Claude 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固定版本
+`0.1.8-nightly.20261107.4301` 的数据库 schema，未知结构会明确阻挡。
+
+```powershell
+local-agent-record-janitor records --client t3code --json
+local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
+```
+
+Windows 显式绑定可使用计划、apply 和冷验证：先清理实际 Codex/Claude 存储，再清理
+T3 的事件、投影、搜索索引、终端历史和绑定桌面的草稿/布局。执行持有 T3 自身的
+server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境会阻挡。标题、正文与凭据
+不进入报告。绑定格式及支持范围见 [T3 Code 操作说明](docs/operation-cli.md#t3-code-完整本地操作)
+和 [适配边界](docs/adapters.md#t3-code本机数据库与完整清理)。
 
 ### 术语与身份边界
 
@@ -193,6 +210,7 @@ OpenAI 稳定 API。
 | Herdr | 持久化 current/restore 引用及显式本机 live metadata | Windows 显式绑定支持原生记录、窗格、历史和恢复副本清理；默认无绑定盘点仍只读 |
 | 千问办公 / QoderWork CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
 | Paseo | agent 注册副本、提供者记录、调度和显式绑定桌面缓存 | Windows 显式绑定支持 Codex/Pi/Claude → 服务端及桌面清理与冷验证；无绑定盘点仍只读，远程与未知缓存阻挡 |
+| T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 固定 schema；Windows 显式绑定支持 Codex/Claude → T3 清理与冷验证，未绑定只读 |
 | Codex：index-only | thread 列表记录存在，但 rollout 内容文件不存在 | 删除整个 thread，通常为 `low` |
 | Codex：rollout-only | rollout 内容文件存在，但 thread 列表记录不存在 | 删除整个 thread，属于 `high`，必须明确选择 |
 | Codex：重复内容文件 | 同一 thread ID 有多份可验证 rollout 内容文件 | 保留，或把全部已确认副本作为整条 thread 的 `high` 风险删除范围；不提供隔离动作 |

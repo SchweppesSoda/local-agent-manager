@@ -1035,6 +1035,10 @@ def _add_common_arguments(
                         help="Paseo 完整清理的显式 agent/原生目录/桌面配置绑定清单（Windows）")
     parser.add_argument("--workbuddy-root", action="append", default=[], type=Path, metavar="PATH",
                         help="WorkBuddy 独立配置根目录（可重复；默认 WORKBUDDY_CONFIG_DIR 或 ~/.workbuddy）")
+    parser.add_argument("--t3code-root", action="append", default=[], type=Path, metavar="PATH",
+                        help="T3 Code base directory（可重复；默认 T3CODE_HOME 或 ~/.t3）")
+    parser.add_argument("--t3code-bindings", type=Path, metavar="JSON",
+                        help="T3 Code 本地清理的 thread/原生目录/桌面显式绑定（Windows）")
     parser.add_argument("--paseo-root", action="append", default=[], type=Path, metavar="PATH",
                         help="Paseo home（可重复；默认 PASEO_HOME 或 ~/.paseo；只读盘点）")
     for office_client, label in (("qwenwork", "千问办公 CN"), ("qoderwork", "QoderWork CN")):
@@ -1079,7 +1083,7 @@ def _add_operation_scope_arguments(
 
     parser.add_argument(
         "--client",
-        choices=("native", "codex-native", "cindy", "aionui", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "qoderwork", "paseo"),
+        choices=("native", "codex-native", "cindy", "aionui", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "qoderwork", "paseo", "t3code"),
         required=client_required,
         help=(
             "选择一个客户端所有者；codex-native 表示官方 ChatGPT UI/Codex CLI "
@@ -1153,6 +1157,7 @@ _CLIENT_PLATFORM_MAP = {
     "qwenwork": "qwenwork",
     "qoderwork": "qoderwork",
     "paseo": "paseo",
+    "t3code": "t3code",
 }
 _OPERATION_BODY_KEYS = frozenset(
     {
@@ -1188,7 +1193,7 @@ def _normalize_client_name(value: object) -> str:
     except KeyError as exc:
         raise ValueError(
             "--client 必须指定一个受支持的客户端："
-            "native、codex-native、cindy、aionui、pi、claude、orca、herdr、workbuddy、qwenwork、qoderwork 或 paseo"
+            "native、codex-native、cindy、aionui、pi、claude、orca、herdr、workbuddy、qwenwork、qoderwork、paseo 或 t3code"
         ) from exc
 
 
@@ -1470,7 +1475,7 @@ def _run_operation_backend(
 
     try:
         if verb == "plan":
-            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "qoderwork", "paseo"}
+            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "qoderwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
             operation_kwargs: dict[str, Any] = {
@@ -1517,7 +1522,7 @@ def _run_operation_backend(
                 operation_kwargs["progress_callback"] = progress_callback
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
-            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "qoderwork", "paseo"}
+            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "qoderwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
             operation_kwargs = {
@@ -3030,6 +3035,8 @@ def _run_client_records(
         payload["inventory_scope"] = "database_metadata_and_known_sdk_paths"
     elif client == "paseo":
         payload["inventory_scope"] = "persisted_agent_registry"
+    elif client == "t3code":
+        payload["inventory_scope"] = "database_metadata"
     from .client_inventory import collect_client_file_aliases, collect_shared_store_file_aliases
     payload["file_aliases"] = collect_client_file_aliases(contexts, selected).to_dict()
     payload["shared_store_file_aliases"] = collect_shared_store_file_aliases(contexts, selected)
