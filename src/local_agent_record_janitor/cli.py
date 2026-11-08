@@ -538,6 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--paseo-only", action="store_true",
         help="delete plan/apply：只通过本机 Paseo daemon 删除一条 Paseo 记录，保留 provider 原生会话",
     )
+    delete.add_argument("--t3code-only", action="store_true",
+                        help="delete plan/apply：按完整 thread ID 调用 T3 自带删除，保留原生会话和工作树")
     delete.add_argument(
         "--yes",
         action="store_true",
@@ -581,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=30.0,
         metavar="SECONDS",
-        help="app-server 或 Paseo daemon 请求超时秒数（默认：30）",
+        help="app-server、Paseo daemon 或 T3 server 请求超时秒数（默认：30）",
     )
     delete.add_argument(
         "--out",
@@ -1479,7 +1481,7 @@ def _run_operation_backend(
 
     try:
         if verb == "plan":
-            if supplied_adapters is None and not (scope or {}).get("paseo_only") and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
+            if supplied_adapters is None and not ((scope or {}).get("paseo_only") or (scope or {}).get("t3code_only")) and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
             operation_kwargs: dict[str, Any] = {
@@ -1504,6 +1506,9 @@ def _run_operation_backend(
             if (scope or {}).get("paseo_only"):
                 operation_kwargs["scope"] = scope
                 operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
+            if (scope or {}).get("t3code_only"):
+                operation_kwargs["scope"] = scope
+                operation_kwargs["t3code_roots"] = tuple(args.t3code_root or ())
             result = coordinator.plan_operation(**operation_kwargs)
         elif verb == "apply":
             operation_kwargs = {
@@ -1530,6 +1535,9 @@ def _run_operation_backend(
             if getattr(args, "paseo_root", None) or getattr(args, "paseo_bindings", None):
                 operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
                 operation_kwargs["paseo_bindings"] = args.paseo_bindings
+            if getattr(args, "t3code_root", None) or getattr(args, "t3code_bindings", None):
+                operation_kwargs["t3code_roots"] = tuple(args.t3code_root or ())
+                operation_kwargs["t3code_bindings"] = args.t3code_bindings
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
             if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
@@ -1635,9 +1643,13 @@ def _run_delete_operation(
         if getattr(args, "action_id", None) or getattr(args, "session_id", None) or getattr(args, "thread_id", None):
             raise ValueError("delete plan/apply/run 使用 --record-id，不使用旧 action/session/thread selector")
         if args.paseo_only:
-            if verb not in {"plan", "apply"} or getattr(args, "paseo_bindings", None):
+            if verb not in {"plan", "apply"} or args.paseo_bindings or args.t3code_bindings:
                 raise ValueError("--paseo-only 仅用于 delete plan/apply，不能与 --paseo-bindings 合用")
             scope["paseo_only"] = True
+        if args.t3code_only:
+            if verb not in {"plan", "apply"} or args.t3code_bindings or args.paseo_bindings or args.paseo_only:
+                raise ValueError("--t3code-only 仅用于 delete plan/apply，不能与绑定清理或 --paseo-only 合用")
+            scope["t3code_only"] = True
     except ValueError as exc:
         payload = _operation_error_payload(
             command="delete",
@@ -1837,7 +1849,7 @@ def main(
             coordinator=coordinator,
         )
 
-    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only):
+    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only or args.t3code_only):
         return _run_delete_operation(
             args,
             supplied_adapters=adapters,

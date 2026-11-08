@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .action_registry import action_capability
+from .builtin_delete import module_for as builtin_delete
 from .agent_operations import action_binding
 from .path_identity import inventory_path_identity_scope
 from .operation_store import OperationStore, plan_sha256, strict_json_load, write_new_json
@@ -158,6 +159,7 @@ class OperationCoordinator:
         herdr_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
         paseo_roots: Sequence[str | Path] = (),
+        t3code_roots: Sequence[str | Path] = (),
         adapters: Iterable[Any] | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         **_unused: Any,
@@ -173,12 +175,15 @@ class OperationCoordinator:
         try:
             self._validate_scope(normalized_scope, require_selection=True)
             client_name = str(normalized_scope["client"])
-            paseo_daemon_root = None
-            if normalized_scope.get("paseo_only"):
-                if (client_name != "paseo" or len(paseo_roots) != 1
+            builtin_root = None
+            builtin_module = builtin_delete(normalized_scope)
+            if builtin_module:
+                expected_client = "t3code" if normalized_scope.get("t3code_only") else "paseo"
+                roots = t3code_roots if expected_client == "t3code" else paseo_roots
+                if (client_name != expected_client or len(roots) != 1
                         or len(normalized_scope["record_ids"]) != 1 or normalized_scope["engines"]):
-                    raise OperationCoordinatorError("paseo_only_requires_one_explicit_profile_and_record_id")
-                paseo_daemon_root = paseo_roots[0]
+                    raise OperationCoordinatorError(f"{expected_client}_only_requires_one_explicit_profile_and_record_id")
+                builtin_root = roots[0]
             source = None if adapters is None else tuple(adapters)
             self._emit_progress(progress_callback, "inventory", "started")
             (
@@ -199,7 +204,7 @@ class OperationCoordinator:
                 orca_roots=orca_roots,
                 herdr_roots=herdr_roots,
                 workbuddy_roots=workbuddy_roots,
-                paseo_daemon_root=paseo_daemon_root,
+                builtin_root=builtin_root, builtin_module=builtin_module,
             )
             self._emit_progress(
                 progress_callback,
@@ -273,6 +278,8 @@ class OperationCoordinator:
         workbuddy_roots: Sequence[str | Path] = (),
         paseo_roots: Sequence[str | Path] = (),
         paseo_bindings: Path | None = None,
+        t3code_roots: Sequence[str | Path] = (),
+        t3code_bindings: Path | None = None,
         plan_sha256: str | None = None,
         clients_closed: bool = False,
         adapters: Iterable[Any] | None = None,
@@ -290,7 +297,9 @@ class OperationCoordinator:
             record_ids=record_ids,
             engines=engines,
         )
-        if not clients_closed and not normalized_scope.get("paseo_only"):
+        if normalized_scope.get('paseo_only') and normalized_scope.get('t3code_only'):
+            return self._error_document('apply', normalized_scope, 'builtin_delete_modes_conflict', operation_id=operation_id)
+        if not clients_closed and not builtin_delete(normalized_scope):
             return self._error_document(
                 "apply", normalized_scope, "clients_closed_ack_required",
                 operation_id=operation_id, blocker_code="clients_closed_ack_required",
@@ -307,15 +316,15 @@ class OperationCoordinator:
                 codex_home=codex_home,
             )
             self._validate_apply_scope(document, normalized_scope)
-            paseo_only = document["scope"].get("paseo_only")
-            if paseo_only:
-                from .paseo_daemon_delete import approved_evidence
-                evidence = approved_evidence(document)
+            builtin_module = builtin_delete(document["scope"])
+            if builtin_module:
+                evidence = builtin_module.approved_evidence(document)
                 if not plan_sha256:
-                    raise OperationCoordinatorError("paseo_only_requires_approved_plan_sha256")
-                if (paseo_bindings is not None or paseo_roots and (
-                        len(paseo_roots) != 1 or canonical_path(paseo_roots[0]) != canonical_path(evidence["root"]))):
-                    raise OperationCoordinatorError("paseo_only_frozen_profile_mismatch")
+                    raise OperationCoordinatorError(f"{document['scope']['client']}_only_requires_approved_plan_sha256")
+                roots = t3code_roots if document["scope"].get("t3code_only") else paseo_roots
+                if (paseo_bindings is not None or t3code_bindings is not None or roots and (
+                        len(roots) != 1 or canonical_path(roots[0]) != canonical_path(evidence["root"]))):
+                    raise OperationCoordinatorError(f"{document['scope']['client']}_only_frozen_profile_mismatch")
             frozen_workbuddy_roots = self._bound_workbuddy_roots(document, workbuddy_roots)
             from .office_cleanup import bound_adapters as office_bound_adapters
             adapters = office_bound_adapters(document, adapters)
@@ -375,7 +384,7 @@ class OperationCoordinator:
             discovery_roots = (*frozen_roots, *orca_roots) if document["schema_version"] == PLAN_V3 or has_orca_frontend else orca_roots
             live = self._live.get(operation)
             source = ()
-            if not paseo_only:
+            if not builtin_module:
                 source = (tuple(adapters) if adapters is not None else live.adapters if live is not None
                           else tuple(self._default_adapters(client_name, codex_home=codex_home, orca_roots=discovery_roots,
                                                             workbuddy_roots=frozen_workbuddy_roots)))
@@ -868,7 +877,7 @@ class OperationCoordinator:
                 discovery_roots = ((*validate_guard_sources(document), *orca_roots)
                                    if document["schema_version"] == PLAN_V3 or has_orca_frontend else orca_roots)
                 source = ()
-                if not document["scope"].get("paseo_only"):
+                if not builtin_delete(document["scope"]):
                     source = tuple(adapters) if adapters is not None else tuple(self._default_adapters(
                         client_name, codex_home=codex_home, orca_roots=discovery_roots,
                         workbuddy_roots=self._bound_workbuddy_roots(document, workbuddy_roots)))
@@ -1213,9 +1222,8 @@ class OperationCoordinator:
         if any(a.get("kind") == "delete_paseo_frontend" for a in document.get("actions", ())):
             from .paseo_cleanup import residuals
             return residuals(document)
-        if document.get("scope", {}).get("paseo_only"):
-            from .paseo_daemon_delete import approved_evidence, require_absent
-            require_absent(approved_evidence(document))
+        if module := builtin_delete(document.get("scope", {})):
+            module.require_absent(module.approved_evidence(document))
             return []
 
         if any(a.get("kind") == "delete_herdr_frontend" for a in document.get("actions", ())):
@@ -1507,7 +1515,7 @@ class OperationCoordinator:
                 # even when an interruption prevented an execution result.
                 verified_modified = bool(state.get("modified")) or bool(
                     raw_batch.get("mutation_family") in {
-                        "delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_frontend"
+                        "delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_server_thread", "delete_t3code_frontend"
                     }
                     and state.get("mutation_started")
                     and action_ids and not child_residuals
@@ -1593,6 +1601,7 @@ class OperationCoordinator:
         return {
             "client": normalized_client,
             **({"paseo_only": True} if raw.get("paseo_only") is True else {}),
+            **({"t3code_only": True} if raw.get("t3code_only") is True else {}),
             "projects": tuple(dict.fromkeys(
                 str(value).strip()
                 for value in (projects or raw.get("projects", ()))
@@ -1641,13 +1650,13 @@ class OperationCoordinator:
         workbuddy_roots: Sequence[str | Path] = (),
         explicit_frontend_ids: Sequence[str] = (),
         approved_document=None,
-        paseo_daemon_root=None,
+        builtin_root=None, builtin_module=None,
     ) -> tuple[Any, ...]:
-        if paseo_daemon_root is not None or (approved_document or {}).get("scope", {}).get("paseo_only"):
-            from .paseo_daemon_delete import approved_evidence, context_for, freeze
-            evidence = (approved_evidence(approved_document) if approved_document is not None
-                        else freeze(paseo_daemon_root, explicit_frontend_ids[0]))
-            context = context_for(self, evidence)
+        module = builtin_module or builtin_delete((approved_document or {}).get("scope", {}))
+        if module:
+            evidence = (module.approved_evidence(approved_document) if approved_document is not None
+                        else module.freeze(builtin_root, explicit_frontend_ids[0]))
+            context = module.context_for(self, evidence)
             return context if include_action_contexts else context[:5]
         explicit_session_ids = tuple(dict.fromkeys((*explicit_session_ids, *explicit_frontend_ids)))
         explicit_frontend_ids = explicit_session_ids
@@ -3103,7 +3112,7 @@ class OperationCoordinator:
         context: Any,
         scope: Mapping[str, Any],
     ) -> tuple[tuple[Any, ...], list[dict[str, Any]]]:
-        if scope.get("paseo_only"):
+        if builtin_delete(scope):
             return tuple(context.plan.actions), []
         if scope.get("client") in {"orca", "herdr", "paseo", "t3code"} and any(str(a.kind.value) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"} for a in context.plan.actions):
             blockers = [self._blocker("scan_incomplete", str(error)) for error in context.plan.errors]
@@ -3537,9 +3546,9 @@ class OperationCoordinator:
         for engine in engines:
             normalized_engine = normalize_engine(engine)
             capability = capability_for(str(scope["client"]), normalized_engine)
-            if scope.get("paseo_only"):
+            if builtin_delete(scope):
                 capability = replace(capability, frontend_session_delete=True, verify=True,
-                                     reason="Exact local Paseo daemon deletion; provider history preserved")
+                                     reason="Exact local built-in deletion; provider history preserved")
             if any(
                 self._action_engine(context, action) == normalized_engine
                 and str(
@@ -3709,8 +3718,9 @@ class OperationCoordinator:
 
         if str(getattr(action.kind, "value", action.kind)) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"}:
             payload = action.impact.external_action_payload or {}
-            return "healthy" if payload.get("requires_action_ids") else "orphan_frontend"
-        if str(getattr(action.kind, "value", action.kind)) == "delete_paseo_daemon_agent":
+            native_files = any(t.get('native_files', {}).get('changes') for t in payload.get('t3code_evidence', {}).get('native_targets', ()))
+            return "healthy" if payload.get("requires_action_ids") or native_files else "orphan_frontend"
+        if str(getattr(action.kind, "value", action.kind)) in {"delete_paseo_daemon_agent", "delete_t3code_server_thread"}:
             return "unverified"
         if str(getattr(action.kind, "value", action.kind)) == "delete_schedule_run":
             return "healthy"
@@ -3863,6 +3873,10 @@ class OperationCoordinator:
         if (document.get("scope", {}).get("paseo_only")
                 or any(a.get("kind") == paseo_daemon_kind for a in document.get("actions", ()))):
             approved_evidence(document)
+        from .t3code_server_delete import KIND as t3_server_kind, approved_evidence as t3_approved_evidence
+        if (document.get("scope", {}).get("t3code_only")
+                or any(a.get("kind") == t3_server_kind for a in document.get("actions", ()))):
+            t3_approved_evidence(document)
         return document
 
     @staticmethod
@@ -3878,7 +3892,7 @@ class OperationCoordinator:
         # supplied is compared against the immutable plan, not just client;
         # this prevents a valid hash from being replayed against another
         # project, record, or engine by a stale CLI invocation.
-        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only"):
+        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only", "t3code_only"):
             value = requested.get(key)
             if key == "all_projects":
                 if value is not True:
@@ -4648,7 +4662,7 @@ class OperationCoordinator:
             )
             return result
 
-        if not live.document["scope"].get("paseo_only"):
+        if not builtin_delete(live.document["scope"]):
             current = self._with_current_guard_sources(live.adapters, live.client,
                 codex_home=self._bound_codex_home(live.document, None))
             self._retain_live_guards(live, refresh_guard_sources(retain_guard_sources(
@@ -4952,9 +4966,9 @@ class OperationCoordinator:
                                 "native deletion is positively verified: "
                                 + ", ".join(sorted(unreleased))
                             )
-                    if str(batch.mutation_family) == "delete_paseo_daemon_agent":
-                        from .paseo_daemon_delete import execute
-                        outcome = execute(live.document, batch.actions[0], checkpoint=checkpoint,
+                    if str(batch.mutation_family) in {"delete_paseo_daemon_agent", "delete_t3code_server_thread"}:
+                        module = builtin_delete(live.document["scope"])
+                        outcome = module.execute(live.document, batch.actions[0], checkpoint=checkpoint,
                                           timeout=timeout, plan=live.context.plan)
                     elif (
                         batch.actions
@@ -5259,7 +5273,7 @@ class OperationCoordinator:
                 operation_id=live.operation_id,
                 reason="recovery_required",
             )
-        elif live.document["scope"].get("paseo_only") and blocked_batches:
+        elif builtin_delete(live.document["scope"]) and blocked_batches:
             terminal, terminal_error = None, None
         else:
             self._emit_progress(
@@ -5661,7 +5675,7 @@ class OperationCoordinator:
         *, readonly_recovery: bool = False,
     ) -> tuple[Any | None, str | None]:
         try:
-            if live.document["scope"].get("paseo_only"):
+            if builtin_delete(live.document["scope"]):
                 return live.context, None
             self._retain_live_guards(live, self._with_current_guard_sources(live.adapters, live.client,
                 codex_home=self._bound_codex_home(live.document, None)), readonly_recovery=readonly_recovery)

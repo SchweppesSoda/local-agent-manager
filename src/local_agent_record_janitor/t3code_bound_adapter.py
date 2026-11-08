@@ -7,7 +7,7 @@ import time
 
 from . import frozen_files
 from .herdr_bound_adapter import native_catalog
-from .t3code_store import T3CodeAdapter, V2, RELATIVE, MAX_ROWS, fail, identifier, local_root, engine, rows, database_path
+from .t3code_store import T3CodeAdapter, V2, RELATIVE, MAX_ROWS, fail, identifier, local_root, engine as inventory_engine, rows, database_path
 from .paseo_cleanup_files import decode
 from .client_contracts import ClientDescriptor, ClientReference, ReferenceKind, ReferenceLifecycle, ReferenceSnapshot
 from .record_identity import RecordKey, StoreKey, EngineCapability, canonical_path
@@ -15,7 +15,13 @@ from .sqlite_utils import connect_readonly
 from contextlib import closing
 
 SCHEMA = "larj.t3code-bindings.v1"
-_NATIVE_ENGINES = frozenset(("codex", "claude"))
+_NATIVE_ENGINES = frozenset(("codex", "claude", "antigravity"))
+
+
+def engine(provider):
+    # Inventory alone still grants no native capability. Only this explicitly
+    # bound T3 path qualifies the managed ACP layout.
+    return 'antigravity' if provider == 'antigravity' else inventory_engine(provider)
 
 
 def validate_manifest(value):
@@ -32,7 +38,7 @@ def validate_manifest(value):
         fail("binding_native_stores_required")
     seen = set()
     for item in value["native_stores"]:
-        if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "codex_binary"}
+        if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "codex_binary", "provider_instance_id", "acp_runtime_binaries"}
                 or not {"thread_id", "engine", "root"} <= item.keys() or item["engine"] not in _NATIVE_ENGINES):
             fail("binding_store_invalid")
         identifier(item["thread_id"])
@@ -42,6 +48,11 @@ def validate_manifest(value):
         local_root(item["root"])
         if "codex_binary" in item:
             local_root(item["codex_binary"])
+        if item['engine'] == 'antigravity':
+            from .antigravity_acp_cleanup import check_binding
+            check_binding(value, item)
+        elif set(item) & {'provider_instance_id', 'acp_runtime_binaries'}:
+            fail('binding_provider_fields_invalid')
     if not isinstance(value["desktop_profiles"], list):
         fail("binding_desktop_profiles_invalid")
     profiles = set()
@@ -64,7 +75,7 @@ def load_manifest(path):
     return validate_manifest(decode(raw))
 
 
-def history_references(root):
+def history_references(root, bindings):
     """Project all persisted native thread handles without exporting payloads."""
     with closing(connect_readonly(database_path(root))) as db:
         db.execute("BEGIN")
@@ -84,13 +95,21 @@ def history_references(root):
                 observed = rows(db, f"SELECT DISTINCT {provider} AS provider FROM {table} WHERE {provider} IS NOT NULL")
                 if any(engine(row["provider"]) not in _NATIVE_ENGINES for row in observed):
                     fail("provider_cleanup_unsupported")
+                if 'provider_instance_id' in columns:
+                    for item in rows(db, f"SELECT DISTINCT thread_id,provider_instance_id FROM {table} WHERE {provider}='antigravity'"):
+                        bound = bindings.get(item['thread_id'])
+                        if bound is None or bound['engine'] != 'antigravity':
+                            fail('provider_binding_conflict')
+                        if item['provider_instance_id'] != bound['provider_instance_id']:
+                            fail('antigravity_historical_instance_unbound')
             if "payload_json" not in columns:
                 continue
             if db.execute(f'''SELECT 1 FROM {table} AS t,json_tree(t.payload_json) AS j WHERE
                     (j.key='nativeThreadRef' AND j.type NOT IN ('object','null')) OR
                     (j.key='nativeThreadId' AND j.type NOT IN ('text','null')) LIMIT 1''').fetchone():
                 fail("native_reference_shape_unqualified")
-            result.extend(rows(db, f'''SELECT DISTINCT t.thread_id,
+            instance = 't.provider_instance_id' if 'provider_instance_id' in columns else 'NULL'
+            result.extend(rows(db, f'''SELECT DISTINCT t.thread_id, {instance} AS provider_instance_id,
                 json_extract(j.value,'$.driver') AS driver, json_extract(j.value,'$.nativeId') AS native_id,
                 json_extract(j.value,'$.strength') AS strength
                 FROM {table} AS t,json_tree(t.payload_json) AS j
@@ -135,12 +154,19 @@ class T3CodeBoundAdapter(T3CodeAdapter):
             row = copies[0]
             if binding["engine"] != engine(row["default_provider"]):
                 fail("provider_binding_conflict")
+            if any(p['thread_id'] == thread_id and engine(p['driver'] or p['provider']) != binding['engine'] for p in data['providers']):
+                fail('provider_binding_conflict')
+            if binding['engine'] == 'antigravity':
+                if (row['provider_instance_id'] != binding['provider_instance_id'] or any(
+                        p['thread_id'] == thread_id and p['provider_instance_id'] != binding['provider_instance_id']
+                        for p in data['providers'])):
+                    fail('antigravity_instance_binding_conflict')
             observations.append({"id": thread_id, "parent_thread_id": row["parent_thread_id"],
                 "source": str(self.profile_root / RELATIVE)})
             backend, root = binding["engine"], canonical_path(binding["root"])
             stores[(backend, root)] = StoreKey(backend, Path(root), kind="config_dir" if backend == "claude" else "directory")
         seen = set()
-        history = history_references(self.profile_root)
+        history = history_references(self.profile_root, self.bindings)
         strong = {(r["thread_id"], r["native_id"]) for r in history if r["strength"] == "strong"}
         for row in history:
             if row["driver"] is not None and engine(row["driver"]) not in _NATIVE_ENGINES:
@@ -153,6 +179,11 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                 continue
             if row["strength"] not in {"strong", "none"} or (row["native_id"] is not None and row["strength"] != "strong"):
                 fail("native_reference_strength_unqualified")
+            binding = self.bindings.get(row['thread_id'])
+            if binding is None or binding['engine'] != engine(row['driver']):
+                fail('historical_provider_binding_unqualified')
+            if binding['engine'] == 'antigravity' and row['provider_instance_id'] != binding['provider_instance_id']:
+                fail('antigravity_historical_instance_unbound')
             if row["native_id"] is None:
                 if row["strength"] != "none":
                     fail("native_reference_strength_unqualified")

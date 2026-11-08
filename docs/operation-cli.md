@@ -380,6 +380,32 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 完整范围、中断恢复和明确阻挡条件见
 [Windows 清理边界](adapters.md#paseowindows-显式绑定的完整清理)。
 
+## 只删 T3 会话
+
+Windows `--t3code-only` 使用本机已安装 T3 Nightly 的 CLI 发放短期凭证，通过该 profile
+的回环服务调用 `thread.delete`。要求服务运行、所选 thread 空闲、完整 ID 精确匹配，
+并显式指定一个 T3 home；不接受 ID 前缀、批量 project 范围或 native bindings。
+支持已验证的 `0.1.8-nightly.20261107.4301` / `0.1.8-nightly.20261108.4353` 和固定数据库结构。
+
+```powershell
+local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json
+local-agent-record-janitor delete apply --t3code-only --operation-id '<计划中的 operation_id>' --plan t3-only.json --plan-sha256 '<已批准的 plan_sha256>' --json
+local-agent-record-janitor operation verify --operation-id '<同一 operation_id>' --plan t3-only.json --json
+```
+
+计划固定 profile、environment ID、服务实例、运行文件摘要和所选记录。删除前先通过
+`thread.metadata.update` 的预期路径/分支条件解除工作树关联，读回确认后再删除，
+所以启用 `worktreeOnDelete` 也保留原工作树。核验要求删除标记一致、没有活动运行、
+后台 effects 全部结束、原生引用不变且工作树目录身份仍一致；并非收到 RPC 响应就成功。
+临时凭证只在进程内传递，并通过自带 CLI 撤销。
+
+这实现 T3 自带软删除，保留 provider 原生会话及工作树，不宣称 T3 全部历史物理清除。
+Codex、Claude、Antigravity 混合 profile 不需要原生绑定，选中 Antigravity 也适用。
+不更改原生存储，因此原生保留依据是已验证接口语义、引用不变和临时 profile 验收；
+运行时不会扫描或散列全部原生会话。工作树内容也不递归扫描。
+不要求 `--clients-closed`，也不能与 `--t3code-bindings` / `--paseo-only` 合用。
+超时或解除关联后的异常进入 `unknown`，禁止重发；使用原计划 `status/verify`。
+
 ## T3 Code 完整本地操作
 
 先用 `records --client t3code --json` 获取元数据，或用可重复的 `--t3code-root` 指定
@@ -388,12 +414,12 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 
 Antigravity 记录仍使用 `unsupported:antigravity`；元数据的
 `provider_backend_family_hint=antigravity-acp` 只描述内置实现线索，
-`native_cleanup_status=unsupported` 明确表示原生存储和完整删除范围尚未支持。
+`native_cleanup_status=requires_t3code_binding` 表示需要显式绑定才能验证原生清理资格。
 T3 的托管运行时、隔离配置、会话文件和前端数据库不能互相替代；参见
 [Antigravity 边界](adapters.md#antigravity)。
 
 混合 profile 中没有原生 ID 的 Antigravity provider 仍然可见；将默认 provider 改成
-Codex 或提供 Codex 绑定，不能绕过未支持 provider 的完整清理资格检查。
+Codex 或提供 Codex 绑定，不能绕过原生 provider 和实例的资格检查。
 
 Windows 的显式绑定文件使用以下格式；`environment_id` 必须来自该 profile 的
 `userdata/environment-id`，`native_stores` 必须覆盖所有已观察 thread。示例路径和 ID
@@ -431,9 +457,42 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 `operation status`、`operation verify` 对同一计划做冷验证。命令参数沿用本文
 [Commands](#commands)，不另设直接删表命令。
 
-完整清理只支持固定 schema 的本机 v2 Codex/Claude 记录；附件、弱引用、peer、旧恢复
+完整清理支持固定 schema 的本机 v2 Codex/Claude 和下述受限 Antigravity ACP 记录；附件、弱引用、peer、旧恢复
 记录和未证明的共享关系会明确阻挡。工作区、诊断日志、凭据及外部备份保留。
 具体边界见 [T3 Code 适配说明](adapters.md#t3-code本机数据库与完整清理)。
+
+### Antigravity ACP 完整删除绑定
+
+此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**，不是独立 `agy` CLI 或
+Paseo 的原生删除入口。每条 Antigravity 绑定使用 `engine: "antigravity"`，增加
+`provider_instance_id` 和 `acp_runtime_binaries`（`agy_acp_server.exe`、配套
+`localharness_external.exe` 的绝对路径）；二者也必须列入顶层 `runtime_binaries`。
+`root` 必须严格对应 `<T3Home>/userdata/providers/antigravity/<SHA256(instanceId)>/antigravity-acp`。
+当前及历史强引用必须属于同一实例；不得把其他 instance 的原生 ID 填入该绑定。
+
+```json
+{
+  "thread_id": "完整-T3-thread-ID",
+  "engine": "antigravity",
+  "root": "D:/T3Home/userdata/providers/antigravity/<instance-hash>/antigravity-acp",
+  "provider_instance_id": "antigravity",
+  "acp_runtime_binaries": [
+    "D:/T3Home/tools/antigravity-acp/win32-x64/versions/<release>/agy_acp_server.exe",
+    "D:/T3Home/tools/antigravity-acp/win32-x64/versions/<release>/localharness_external.exe"
+  ]
+}
+```
+
+普通完整清理命令不变。计划冻结原生文件摘要；同一 T3 前端动作在持有启动锁和运行文件
+排他边界后，删除精确 UUID 对应的数据库、SQLite 侧文件、`.meta` 和 `brain/<UUID>`，
+然后清理 T3 本地历史。未选会话、设置、凭据、skills、runtime 和工作区保留并核验。
+原生数据库 schema/ID 不符、未知恢复文件、`parent_references` 或子轨迹关系都阻挡；
+这些关系尚无完整解析器，不会猜测级联删除。不同版本、独立 CLI、远程数据仍不受支持。
+中断后只允许原计划冷验证；残留需要新计划。
+
+开发验收可设置 `LARJ_T3_BUNDLE_ACCEPTANCE=1` 后运行
+`python -m unittest tests.test_t3code_runtime_acceptance`。它仅使用临时 profile、无效测试
+key 和合成会话，不发送模型提示；Windows 的 SQLite 测试临时目录应使用较短的绝对路径。
 
 ## WorkBuddy local sessions
 

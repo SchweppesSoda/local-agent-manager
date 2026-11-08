@@ -703,15 +703,19 @@ reparse 与硬链接，单文件上限 512 MiB，元数据查询上限 20,000 �
 不完整扫描不会输出“零记录成功”。普通盘点范围为 `database_metadata`；不证明 writer
 已关闭，也不授予 native delete 或完整 verify 能力。
 
-`--t3code-bindings` 为整个 profile 的每个已观察 thread 明确绑定 Codex home 或 Claude
-config dir，同时绑定 `environment-id`、所有相关本机桌面 profile 和实际运行文件。
+`--t3code-only` 提供单条自带软删除，并保留原生会话及工作树，见
+[命令与核验语义](operation-cli.md#只删-t3-会话)。固定数据库结构也已在
+`0.1.8-nightly.20261108.4353` 验证；未知结构或服务版本拒绝该模式。
+
+`--t3code-bindings` 为整个 profile 的每个已观察 thread 明确绑定 Codex home、Claude
+config dir 或已验证的 T3 Antigravity ACP 实例，同时绑定 `environment-id`、所有相关本机桌面 profile 和实际运行文件。
 完整删除目前限定 v2，且原生引用必须为 `strong`；历史事件和其他 per-thread payload
 中的 `nativeThreadRef` 也检查，不能只删除当前投影。v1 恢复记录、provider 切换造成的
 多引擎历史、弱引用、缺失原生归属、peer 环境及未选 thread 共享 native ID 会阻挡。
 计划列出所选 thread 的后代和实际原生依赖，不以 cwd 或相似 ID 猜测归属。
 
 上游的 `thread.deleted` 是事件/软删除，不能用它证明本机历史消失。这里先复用既有
-Codex/Claude writer 与跨客户端保护，再事务删除对应 command receipts、effects、events、
+Codex/Claude writer 与跨客户端保护，或清理绑定 ACP 实例的精确会话文件，再事务删除对应 command receipts、effects、events、
 runtime 与 projection 行；FTS 触发器同步移除搜索数据。模拟副本预先计算 before/after
 逻辑摘要，原库核对 schema、完整性、外键、行数和批准摘要后提交，冷读再验。
 未选中的 JSON 恢复关系、跨选择边界的 handoff/subagent、共享 provider session、
@@ -795,9 +799,18 @@ manifest 符合已知插件 ID，则记录为 `legacy_plugin_candidate`，其余
 
 **记录能力。** Paseo 和 T3 的 Antigravity 记录保留 `unsupported:antigravity`
 引擎身份。`provider_backend_family_hint` 仅指各自内置集成的运行时家族，
-`native_cleanup_status=unsupported` 表明当前缺少 native 清理资格。
+Paseo 的 `native_cleanup_status=unsupported` 表明当前缺少 native 清理资格；T3 为
+`requires_t3code_binding`，普通盘点不能自动授予删除能力。
 Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Google CLI
 自己的会话历史保留。
+
+T3 的完整清理另支持 Windows 托管 ACP 1.4.5 的固定运行文件摘要与原生数据库 DDL。
+实例路径由 provider instance ID 的 SHA-256 决定；当前及历史强引用、数据库内 trajectory/cascade
+ID 和精确 UUID 文件名共同证明归属，不能仅凭 cwd 删除。原生清理与 T3 数据清理共享一个
+批准动作和 writer 边界。删除所选 `.db`、SQLite 侧文件、`.meta`、`brain/<UUID>`；保留
+设置、凭据、skills、运行文件、工作树及未选会话。未知顶层文件、备份、schema、父引用或
+子轨迹关系阻挡。ACP 1.4.5 未声明 `session/delete`，这里没有伪造该 RPC。
+见 [绑定和验收方法](operation-cli.md#antigravity-acp-完整删除绑定)。
 
 Google CLI 的官方 `/resume` 界面支持选定会话删除。操作前核对 CLI 版本与
 picker 显示的快捷键。1.1.13 起改为 `F4`，1.4.8 修正删除时遗漏运行中子代理、

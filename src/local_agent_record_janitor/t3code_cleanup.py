@@ -7,13 +7,20 @@ from pathlib import Path
 
 from . import t3code_cleanup_files as files, t3code_lifecycle, t3code_localstorage
 from .t3code_bound_adapter import T3CodeBoundAdapter, validate_manifest, native_catalog
-from .herdr_cleanup import native_remaining
+from .herdr_cleanup import native_remaining as generic_native_remaining
+from . import antigravity_acp_cleanup as antigravity
 from .office_cleanup import digest
 from .record_identity import canonical_path
 
 KIND = "delete_t3code_frontend"
 SCHEMA = "larj.t3code-cleanup.v1"
 _ticket = ContextVar("t3code_cleanup_ticket", default=None)
+
+
+def native_remaining(target):
+    if target['engine'] == 'antigravity':
+        return antigravity.remaining(target['native_files'])
+    return generic_native_remaining(target)
 
 
 def evidence_from_document(document):
@@ -52,6 +59,10 @@ def validate(evidence):
         if (binding not in manifest["native_stores"] or binding["thread_id"] not in selected
                 or target["engine"] != binding["engine"] or target["root"] != canonical_path(binding["root"])):
             files.fail("native_target_binding_changed")
+        if target['engine'] == 'antigravity':
+            if target['action_ids'] or target['paths']:
+                files.fail('antigravity_embedded_action_scope_invalid')
+            antigravity.validate(target['native_files'], manifest, binding, target['ids'])
         covered = set()
         for action in actions:
             if action["action_id"] not in target["action_ids"]:
@@ -86,7 +97,7 @@ def validate(evidence):
             files.fail("reference_scope_changed")
         if ref["opaque_native_locator"] != ref["native_id"]:
             files.fail("reference_identity_changed")
-    from .t3code_store import engine
+    from .t3code_bound_adapter import engine
     for ref in evidence["files"]["database"]["native_references"]:
         if not any(r["engine"] == engine(ref["driver"]) and r["native_id"] == ref["native_id"] for r in evidence["references"]):
             files.fail("historical_native_reference_unbound")
@@ -153,6 +164,9 @@ def residuals(document):
     result = []
     for target in evidence["native_targets"]:
         if native_remaining(target):
+            if target['engine'] == 'antigravity':
+                result.append(action_id(evidence))
+                continue
             if not target["action_ids"]:
                 files.fail("absent_native_target_reappeared")
             result.extend(target["action_ids"])
@@ -180,7 +194,10 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
     from .adapters import NativeIntegrityAdapter
     from .inventory import build_session_catalog
     from .manual_delete import build_manual_delete_plan
-    selected = [a for a in candidates if isinstance(a, T3CodeBoundAdapter)]
+    # Warm apply retains the planning guard and reconstructs the frozen bound
+    # adapter. They represent one profile only when the entire binding agrees.
+    selected = list({(canonical_path(a.profile_root), digest(a.manifest)): a
+                     for a in candidates if isinstance(a, T3CodeBoundAdapter)}.values())
     if not selected:
         return None
     if len(selected) != 1 or not selectors:
@@ -225,7 +242,9 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
     manual_catalog = manual_plan = None
     for binding, ids, exact_paths in desired:
         engine, root = binding["engine"], Path(binding["root"])
-        if engine == "codex":
+        if engine == 'antigravity':
+            context, chosen = base, []
+        elif engine == "codex":
             native = (NativeIntegrityAdapter(codex_home=root,
                 codex_bin_hint=Path(binding["codex_binary"]) if binding.get("codex_binary") else None),)
             catalog = build_session_catalog(native)
@@ -255,17 +274,22 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
         native_contexts.append(context)
         target = {"engine": engine, "root": canonical_path(root), "ids": sorted(ids), "paths": sorted(exact_paths),
             "binding": binding, "action_ids": sorted(str(a.action_id) for a in chosen)}
+        if engine == 'antigravity' and not old:
+            target['native_files'] = antigravity.freeze(adapter.manifest, binding, ids)
         if old:
             previous = next(t for t in old["native_targets"] if t["engine"] == engine and t["root"] == canonical_path(root))
             if set(target["action_ids"]) - set(previous["action_ids"]) or not set(ids) <= set(previous["ids"]):
                 files.fail("native_scope_changed")
             target = previous
-        if not chosen and native_remaining(target):
+        if engine != 'antigravity' and not chosen and native_remaining(target):
             files.fail("native_writer_missing")
         targets.append(target)
     if old:
         evidence = old
         files.remaining(evidence["files"])
+        for target in evidence['native_targets']:
+            if target['engine'] == 'antigravity':
+                antigravity.remaining(target['native_files'])
     else:
         def matches(ref):
             return any(t["engine"] == ref.engine and t["root"] == ref.native_record.store.canonical_path
@@ -333,6 +357,9 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
         # Admit native deletion only after rechecking every frontend family
         # under the startup lock, including desktop changes since planning.
         files.remaining(evidence["files"])
+        for target in evidence['native_targets']:
+            if target['engine'] == 'antigravity':
+                antigravity.remaining(target['native_files'])
         for desktop in evidence["desktop"]:
             t3code_localstorage.remaining(desktop["localstorage"])
         token = _ticket.set((json.loads(json.dumps(evidence)), True))
@@ -355,7 +382,7 @@ def execute(evidence, *, phase_callback):
     ticket = _ticket.get()
     if not ticket or not ticket[1] or ticket[0] != evidence or t3code_lifecycle.current_boundary(evidence["root"]) is None:
         files.fail("execution_ticket_required")
-    if any(native_remaining(t) for t in evidence["native_targets"]):
+    if any(native_remaining(t) for t in evidence["native_targets"] if t['engine'] != 'antigravity'):
         files.fail("native_dependency_remains")
     with ExitStack() as stack:
         prepared = []
@@ -363,6 +390,9 @@ def execute(evidence, *, phase_callback):
             for key, module in (("localstorage", t3code_localstorage),):
                 family = stack.enter_context(module.prepared(desktop[key]))
                 prepared.append((module, desktop[key], family))
+        for target in evidence['native_targets']:
+            if target['engine'] == 'antigravity':
+                antigravity.apply(target['native_files'], phase_callback=phase_callback)
         for module, item, family in prepared:
             module.install(item, family, phase_callback=phase_callback)
         files.apply(evidence["files"], phase_callback=phase_callback)

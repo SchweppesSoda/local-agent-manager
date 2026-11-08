@@ -287,7 +287,7 @@ def build_inventory(adapters, *, engines=()):
                     # The built-in driver's family is a hint, independent of
                     # the thread's configured binary and actual launch.
                     metadata["provider_backend_family_hint"] = "antigravity-acp"
-                    metadata["native_cleanup_status"] = "unsupported"
+                    metadata["native_cleanup_status"] = "requires_t3code_binding"
                 targets.append(ClientTarget("t3code", backend, RecordKey(store, identifier_, kind="t3code_thread"),
                     project, None, (identifier_,), RecordClassification.UNVERIFIED, capability(backend),
                     references=references, frontend_binding_keys=tuple(r.binding_key for r in references),

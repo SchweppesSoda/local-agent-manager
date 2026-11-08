@@ -77,7 +77,7 @@ class T3CodeTests(unittest.TestCase):
         self.assertEqual(set(selected), {"unsupported:antigravity", "codex"})
         antigravity = selected["unsupported:antigravity"]
         self.assertEqual(antigravity["record_metadata"]["provider_backend_family_hint"], "antigravity-acp")
-        self.assertEqual(antigravity["record_metadata"]["native_cleanup_status"], "unsupported")
+        self.assertEqual(antigravity["record_metadata"]["native_cleanup_status"], "requires_t3code_binding")
         self.assertNotIn("provider_backend_family_hint", selected["codex"]["record_metadata"])
         self.assertFalse(antigravity["record_metadata"]["coverage"]["native_root_verified"])
         self.assertFalse(antigravity["record_metadata"]["coverage"]["full_record_closure"])
@@ -113,8 +113,8 @@ class T3CodeTests(unittest.TestCase):
                 "environment_id": "env_fixture", "runtime_binaries": [str(runtime)], "desktop_profiles": [],
                 "native_stores": [{"thread_id": "keeper", "engine": "codex", "root": str(native_root)}]}
             for engine, message in (
-                ("antigravity", "t3code_binding_store_invalid"),
-                ("codex", "t3code_provider_cleanup_unsupported"),
+                ("antigravity", "t3code_antigravity_instance_required"),
+                ("codex", "t3code_provider_binding_conflict"),
             ):
                 with self.subTest(forged_engine=engine):
                     forged = {**manifest, "native_stores": [*manifest["native_stores"],
@@ -143,7 +143,7 @@ class T3CodeTests(unittest.TestCase):
             self.assertNotEqual(code, 0, result)
             self.assertEqual(result["goal_status"], "blocked", result)
             self.assertFalse(result["mutation_started"])
-            self.assertIn("t3code_historical_provider_cleanup_unsupported",
+            self.assertIn("t3code_historical_provider_binding_unqualified",
                 {row["message"] for row in result["blockers"]})
             execute.assert_not_called()
         self.writer.assert_not_called()

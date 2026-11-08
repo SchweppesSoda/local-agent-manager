@@ -180,15 +180,21 @@ Blob/外部附件和未知旧格式仍阻挡完整删除。标题、配置、凭
 ### T3 Code
 
 `records --client t3code` 只读盘点 `T3CODE_HOME` 或 `~/.t3` 中的 thread 元数据、
-Codex/Claude 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固定版本
-`0.1.8-nightly.20261107.4301` 的数据库 schema，未知结构会明确阻挡。
+provider 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固定 schema，
+覆盖 `0.1.8-nightly.20261107.4301` 和 `0.1.8-nightly.20261108.4353`，未知结构阻挡。
 
 ```powershell
 local-agent-record-janitor records --client t3code --json
+local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json
 local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
 ```
 
-Windows 显式绑定可使用计划、apply 和冷验证：先清理实际 Codex/Claude 存储，再清理
+`--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除；支持混合 Antigravity，
+先解除工作树关联，保留 provider 原生会话及工作树，并核验软删除和后台清理结果。
+需要显式 profile 和批准的计划 hash；用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
+
+Windows 显式绑定可使用计划、apply 和冷验证：清理实际 Codex/Claude 存储，或已验证
+T3 ACP 1.4.5 实例的 Antigravity 原生数据库、元数据与会话产物，再清理
 T3 的事件、投影、搜索索引、终端历史和绑定桌面的草稿/布局。执行持有 T3 自身的
 server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境会阻挡。标题、正文与凭据
 不进入报告。绑定格式及支持范围见 [T3 Code 操作说明](docs/operation-cli.md#t3-code-完整本地操作)

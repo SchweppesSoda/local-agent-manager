@@ -45,6 +45,7 @@ class ActionKind(str, Enum):
     DELETE_HERDR_FRONTEND = "delete_herdr_frontend"
     DELETE_PASEO_FRONTEND = "delete_paseo_frontend"
     DELETE_PASEO_DAEMON_AGENT = "delete_paseo_daemon_agent"
+    DELETE_T3CODE_SERVER_THREAD = "delete_t3code_server_thread"
     DELETE_T3CODE_FRONTEND = "delete_t3code_frontend"
     DELETE_OFFICE_FRONTEND = "delete_office_frontend"
     DELETE_ORCA_FRONTEND = "delete_orca_frontend"
