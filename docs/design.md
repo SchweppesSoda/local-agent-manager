@@ -84,6 +84,13 @@ CLI 已安装且 Windows 用户 PATH 已注册，仍可能无法被某个客户�
 材料不等于长期备份。已有授权在相同范围内持续有效，改变产品、目标、数据保留或迁移
 策略时才需要新的选择。操作系统的提权提示与聊天中的任务授权分别说明。
 
+运行时卸载、解包缓存清理、旧实例整体弃用和逐条记录删除分别定义范围与完成条件。
+例如 T3 改用 `agy acp` 后，CLI 仍以 ACP 协议服务；卸载旧 server/helper 不等于旧实例
+的凭据、设置与历史记录已经清理。整体弃用须先确认实际消费者、活动数据根及用户选定
+的完整范围。实例内指向共享 skills 的链接与目标分别核对，不能递归穿过链接清理共享目录。
+当前项目没有通用 profile-retirement 命令；单次任务脚本和历史清理结果不构成通用能力。
+具体范围与验证方法见 [旧实例数据检查](../skills/agent-management/references/antigravity.md#distinguish-uninstall-results-from-discarded-instance-data)。
+
 ### 多主机与验证
 
 代码和 skill 可以部署到多台主机；安装路径、环境变量、消费者、凭据及清理计划不在
