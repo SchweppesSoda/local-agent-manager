@@ -36,7 +36,7 @@
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
 | WorkBuddy / WorkBuddy | 独立 SQLite、精确会话 artifacts 和 UI 引用 | 仅支持已识别 5.6.2 本地终态范围，Windows writer 覆盖及完整冻结证据；未知副本只读 |
 | 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
-| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | 默认只读；Windows 显式绑定的 Codex/Pi/Claude、服务端和桌面完整操作见下文，未知 provider 关闭 |
+| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 支持 daemon 单会话删除。显式绑定的完整清理支持 Codex/Pi/Claude |
 | T3 Code / Codex、Claude | v1/v2 thread 元数据及 provider 恢复 ID | 默认只读；Windows 显式绑定的 v2 本地记录支持原生依赖、事件/投影、终端及桌面清理，未知 schema 关闭 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
 
@@ -615,8 +615,7 @@ config、provider metadata、runtime extra 和 lastError 不进入输出；原�
 使用 JSON 等不透明 sessionId 时只报告存在，不把私有内容当作 ID 输出。
 同 profile 重复 agent ID 保留每个快照与引用，并报告冲突，不采用上游缓存的最后覆盖值。
 
-默认无绑定 adapter 的删除与 verify 标志关闭，`delete plan/run/apply`、`operation status/verify`
-不会把只读结果升级为删除完成。`records --inspect-clients` 只说明持久元数据观察范围，
+默认无绑定 adapter 的完整删除与 verify 标志关闭。`records --inspect-clients` 只说明持久元数据观察范围，
 `clients_closed=null`、`coverage_complete=false`；保存的 `closed` 状态不是进程关闭证据。
 
 当前完整性只覆盖 `persisted_agent_registry`，不包含 schedules、project/workspace 注册表、
@@ -629,6 +628,23 @@ config、provider metadata、runtime extra 和 lastError 不进入输出；原�
 监督进程可能重启 worker。后续 writer 必须明确批准副本/调度与父子引用范围、证明全部
 相关写入者停止并提供持久 journal/只读恢复，不能用归档或删除事件代替终验。下述显式绑定
 流程为已限定的本机组合提供这些证据；普通盘点不会自动获得该权限。
+
+### Paseo daemon 删除
+
+`--paseo-only` 使用 Windows Paseo 0.15.3 桌面分发包的客户端连接所选本机
+profile 的 daemon。计划冻结 profile 物理身份、`server-id`、分发文件指纹和
+唯一登记快照。执行使用同一连接验证服务器 ID 和协议实现版本，并通过
+`delete_agent_request` 发送精确 Paseo UUID。Paseo 的查询可以匹配前缀或标题，
+所以每次都对返回的 ID 做完整比较。相关 provider 的原生历史保留。
+
+Paseo 0.15.3 的标准 daemon 保存文件登记并管理内存中的时间线。
+删除回执后重新检查 daemon 的精确查询和磁盘登记。旧版持久时间线目录、非本机
+端点、无法确认的运行时或重复/不可读快照会阻挡操作。调度、桌面缓存、外部副本及
+provider 历史属于其他存储范围。无法确认删除结果时保留 journal，恢复只查询，
+直到能证实两个来源均已移除对应的登记。
+
+[Paseo 0.15.3 删除请求](https://github.com/getpaseo/paseo/blob/v0.15.3/packages/server/src/server/session.ts#L3227-L3262)
+· [操作命令](operation-cli.md#只删-paseo-会话)
 
 ### Paseo：Windows 显式绑定的完整清理
 
@@ -780,7 +796,8 @@ manifest 符合已知插件 ID，则记录为 `legacy_plugin_candidate`，其余
 **记录能力。** Paseo 和 T3 的 Antigravity 记录保留 `unsupported:antigravity`
 引擎身份。`provider_backend_family_hint` 仅指各自内置集成的运行时家族，
 `native_cleanup_status=unsupported` 表明当前缺少 native 清理资格。
-前端隐藏、归档、删除注册行或软删除无法完成 native 清理终验。
+Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Google CLI
+自己的会话历史保留。
 
 Google CLI 的官方 `/resume` 界面支持选定会话删除。操作前核对 CLI 版本与
 picker 显示的快捷键。1.1.13 起改为 `F4`，1.4.8 修正删除时遗漏运行中子代理、

@@ -162,7 +162,10 @@ local-agent-record-janitor records --client paseo --paseo-root 'D:\profiles\pase
 ```
 
 适配覆盖 Paseo `0.11.0-beta.3` 与 `0.15.3` 的已知注册格式；当前清单范围为 `persisted_agent_registry`。
-普通盘点不证明原生聊天已清除或后台进程已关闭。Windows 上可用显式绑定启用完整操作：
+Windows 上，[`--paseo-only` 操作](docs/operation-cli.md#只删-paseo-会话)通过正在运行的
+本机 Paseo 0.15.3 daemon 删除一条完整 UUID 对应的会话，复查登记结果并保留 provider 原生历史。
+
+需要同时删除原生历史时，Windows 的显式绑定操作支持 Codex、Pi 和 Claude。
 
 ```powershell
 local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
@@ -245,7 +248,7 @@ OpenAI 稳定 API。
 | Orca | 本机 journal、profile 界面及恢复副本、已证明的 managed Codex home | 限定 Windows/Codex 组合支持完整操作及冷验证；未知恢复、其他引擎、runtime home 与远端写入关闭 |
 | Herdr | 持久化 current/restore 引用及显式本机 live metadata | Windows 显式绑定支持原生记录、窗格、历史和恢复副本清理；默认无绑定盘点仍只读 |
 | 千问办公 CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
-| Paseo | agent 注册副本、提供者记录、调度和显式绑定桌面缓存 | Windows 显式绑定支持 Codex/Pi/Claude → 服务端及桌面清理与冷验证；无绑定盘点仍只读，远程与未知缓存阻挡 |
+| Paseo | agent 登记、提供者记录、调度和显式绑定桌面缓存 | Windows `--paseo-only` 经本机 daemon 删除登记；显式绑定支持 Codex/Pi/Claude 原生、服务端及桌面完整清理 |
 | T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 固定 schema；Windows 显式绑定支持 Codex/Claude → T3 清理与冷验证，未绑定只读 |
 | Codex：index-only | thread 列表记录存在，但 rollout 内容文件不存在 | 删除整个 thread，通常为 `low` |
 | Codex：rollout-only | rollout 内容文件存在，但 thread 列表记录不存在 | 删除整个 thread，属于 `high`，必须明确选择 |

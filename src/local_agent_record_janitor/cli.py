@@ -535,6 +535,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_arguments(delete, progress=True)
     _add_operation_scope_arguments(delete)
     delete.add_argument(
+        "--paseo-only", action="store_true",
+        help="delete plan/apply：只通过本机 Paseo daemon 删除一条 Paseo 记录，保留 provider 原生会话",
+    )
+    delete.add_argument(
         "--yes",
         action="store_true",
         help="跳过 TTY 最终确认提示；不能替代目标选择或客户端关闭声明",
@@ -577,7 +581,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=30.0,
         metavar="SECONDS",
-        help="app-server 请求超时秒数（默认：30）",
+        help="app-server 或 Paseo daemon 请求超时秒数（默认：30）",
     )
     delete.add_argument(
         "--out",
@@ -1475,7 +1479,7 @@ def _run_operation_backend(
 
     try:
         if verb == "plan":
-            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
+            if supplied_adapters is None and not (scope or {}).get("paseo_only") and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
             operation_kwargs: dict[str, Any] = {
@@ -1497,6 +1501,9 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
+            if (scope or {}).get("paseo_only"):
+                operation_kwargs["scope"] = scope
+                operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
             result = coordinator.plan_operation(**operation_kwargs)
         elif verb == "apply":
             operation_kwargs = {
@@ -1520,6 +1527,9 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
+            if getattr(args, "paseo_root", None) or getattr(args, "paseo_bindings", None):
+                operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
+                operation_kwargs["paseo_bindings"] = args.paseo_bindings
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
             if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
@@ -1624,6 +1634,10 @@ def _run_delete_operation(
             scope = _operation_scope(args, require_selection=True)
         if getattr(args, "action_id", None) or getattr(args, "session_id", None) or getattr(args, "thread_id", None):
             raise ValueError("delete plan/apply/run 使用 --record-id，不使用旧 action/session/thread selector")
+        if args.paseo_only:
+            if verb not in {"plan", "apply"} or getattr(args, "paseo_bindings", None):
+                raise ValueError("--paseo-only 仅用于 delete plan/apply，不能与 --paseo-bindings 合用")
+            scope["paseo_only"] = True
     except ValueError as exc:
         payload = _operation_error_payload(
             command="delete",
@@ -1823,7 +1837,7 @@ def main(
             coordinator=coordinator,
         )
 
-    if args.command == "delete" and getattr(args, "delete_action", None):
+    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only):
         return _run_delete_operation(
             args,
             supplied_adapters=adapters,

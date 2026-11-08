@@ -27,6 +27,8 @@ ACTION_REGISTRY: Mapping[str, ActionCapability] = {
         "frozen_t3code_events_projections_search_terminal_and_ui_closure_absent"),
     "delete_paseo_frontend": ActionCapability("delete_paseo_frontend", True, "delete_paseo_frontend", True,
         "frozen_paseo_registry_schedules_and_desktop_copies_absent"),
+    "delete_paseo_daemon_agent": ActionCapability("delete_paseo_daemon_agent", True, "delete_paseo_daemon_agent", False,
+        "exact_paseo_agent_absent_from_daemon_and_registry"),
     "delete_herdr_frontend": ActionCapability("delete_herdr_frontend", True, "delete_herdr_frontend", True,
         "frozen_herdr_panes_history_and_restore_copies_absent"),
     "delete_orca_frontend": ActionCapability("delete_orca_frontend", True, "delete_orca_frontend", True,
@@ -169,7 +171,7 @@ def capability_field_for_action(kind: object) -> str | None:
         return "native_delete"
     if family in {"remove_frontend_reference", "remove_workbuddy_ui_reference"}:
         return "frontend_reference_delete"
-    if family in {"delete_frontend_session", "delete_schedule_run", "delete_office_frontend", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"}:
+    if family in {"delete_frontend_session", "delete_schedule_run", "delete_office_frontend", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_frontend"}:
         return "frontend_session_delete"
     if family in {"delete_project_item", "delete_native_project"}:
         return "frontend_project_delete"

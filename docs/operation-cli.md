@@ -311,7 +311,7 @@ snapshots and unreadable sources report incomplete inventory rather than an empt
 schedules, workspaces, client caches or all writers. Saved status is not a live
 probe: `--inspect-clients` keeps `clients_closed=null`. No daemon is started or
 contacted. Without an explicit binding, mutation and verification capabilities are disabled; plan/run/apply
-and cold status/verify remain blocked without dispatching a native writer. See
+and cold status/verify for full local cleanup remain blocked without dispatching a native writer. See
 [Paseo boundaries](adapters.md#paseoagent-注册记录只读盘点).
 
 For `antigravity`, inventory retains `unsupported:antigravity` and reports a
@@ -320,6 +320,25 @@ metadata. The hint describes the built-in provider family; custom implementation
 and effective native homes still require evidence. It does not enable deletion or
 make a serialized provider handle a native record ID. See
 [Antigravity ownership and cleanup boundaries](adapters.md#antigravity).
+
+### 只删 Paseo 会话
+
+Windows 上的 `--paseo-only` 通过正在运行的本机 Paseo 0.15.3 daemon 删除一条
+会话。需要标准用户安装位置的 Paseo 桌面分发包、一个显式的 `--paseo-root` 和
+一个完整 Paseo 会话 UUID。Paseo 使用自己的删除接口关闭该会话并移除登记和时间线。
+Codex、Antigravity 等 provider 的原生会话保留。该模式覆盖 daemon 的登记与时间线，
+桌面离线副本、调度和其他产品的记录在范围之外。
+
+```powershell
+local-agent-record-janitor delete plan --client paseo --paseo-only --paseo-root 'D:\PaseoHome' --record-id '<完整 Paseo 会话 UUID>' --out plan.json --json
+local-agent-record-janitor delete apply --paseo-only --operation-id '<operation_id>' --plan plan.json --plan-sha256 '<plan_sha256>' --json
+local-agent-record-janitor operation verify --operation-id '<operation_id>' --plan plan.json --json
+```
+
+apply 使用冻结的 profile 和计划哈希，执行与核验期间保持目标 daemon 运行。
+终验复查 daemon 与磁盘登记中的精确 ID。超时、身份不一致或回执后仍有记录时，
+执行 `operation status` 和 `operation verify`。结果为 `unknown` 的计划进入只读恢复。
+协议和版本边界见 [Paseo daemon 删除](adapters.md#paseo-daemon-删除)。
 
 ### Paseo 完整本地操作
 
