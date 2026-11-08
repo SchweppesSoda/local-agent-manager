@@ -46,6 +46,10 @@ class AntigravityCleanupTests(unittest.TestCase):
         self.manifest['runtime_binaries'].extend(binaries)
         self.manifest['native_stores'][0]={'thread_id':THREAD,'engine':'antigravity','root':str(self.acp_root),
             'provider_instance_id':instance,'acp_runtime_binaries':binaries}
+        self.settings_path=self.root/'userdata/settings.json'
+        self.settings={'providerInstances':{instance:{'driver':instance,'enabled':True,
+            'config':{'binaryPath':binaries[0]}}}}
+        self.settings_path.write_text(json.dumps(self.settings))
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
             db.execute(f"UPDATE {V2}threads SET default_provider='antigravity',provider_instance_id='antigravity' WHERE thread_id=?",(THREAD,))
             db.execute(f"UPDATE {V2}provider_threads SET provider='antigravity',driver='antigravity',provider_instance_id='antigravity',payload_json=? WHERE thread_id=?",
@@ -124,6 +128,67 @@ class AntigravityCleanupTests(unittest.TestCase):
         result=coordinator.apply_operation(operation_id=plan['operation_id'],plan_path=self.plan_path,
             plan_sha256=plan['plan_sha256'],clients_closed=True)
         self.assertEqual(result['goal_status'],'complete',result)
+
+    def test_cli_selection_blocks_old_acp_binding_before_mutation(self):
+        for binary in ('agy', 'antigravity', str(self.base/'agy.exe'), str(self.base/'agy.CMD')):
+            with self.subTest(binary=binary):
+                self.settings['providerInstances']['antigravity']['config']['binaryPath']=binary
+                self.settings_path.write_text(json.dumps(self.settings))
+                with self.assertRaisesRegex(ValueError,'antigravity_cli_acp_cleanup_unsupported'):
+                    acp.provider_selection(self.manifest,self.manifest['native_stores'][0])
+                self.assertEqual(self.plan()['goal_status'],'blocked')
+                self.assertTrue((self.acp_root/'conversations'/(NATIVE+'.db')).exists())
+
+    def test_runtime_switch_after_plan_blocks_before_any_mutation(self):
+        plan=self.plan();self.assertEqual(plan['goal_status'],'ready',plan)
+        self.settings['providerInstances']['antigravity']['config']['binaryPath']='agy'
+        self.settings_path.write_text(json.dumps(self.settings))
+        result=self.apply(plan)
+        self.assertEqual(result['goal_status'],'blocked',result)
+        self.assertFalse(result['mutation_started'])
+        self.assertTrue((self.acp_root/'conversations'/(NATIVE+'.db')).exists())
+
+    def test_missing_or_mismatched_provider_selection_blocks(self):
+        self.settings_path.unlink()
+        self.assertEqual(self.plan()['goal_status'],'blocked')
+        self.settings_path.write_text('{}')
+        self.assertEqual(self.plan()['goal_status'],'blocked')
+        for value in (False,0,[],{}):
+            self.settings['providerInstances']['antigravity']['config']['binaryPath']=value
+            self.settings_path.write_text(json.dumps(self.settings))
+            self.assertEqual(self.plan()['goal_status'],'blocked')
+        self.settings['providerInstances']['antigravity']['config']['binaryPath']=str(self.base/'other/agy_acp_server.exe')
+        self.settings_path.write_text(json.dumps(self.settings))
+        self.assertEqual(self.plan()['goal_status'],'blocked')
+
+    def test_old_evidence_without_provider_selection_is_rejected(self):
+        plan=self.plan();self.assertEqual(plan['goal_status'],'ready',plan)
+        evidence=copy.deepcopy(cleanup.evidence_from_document(plan))
+        native=evidence['native_targets'][0]['native_files']
+        native['schema_version']='larj.antigravity-acp-files.v1'
+        native.pop('provider_selection')
+        with self.assertRaisesRegex(ValueError,'antigravity_evidence_binding_changed'):
+            cleanup.validate(evidence)
+
+    def test_managed_pointer_must_select_bound_pair_and_is_frozen(self):
+        release='a'*64
+        directory=self.root/'tools/antigravity-acp/win32-x64'
+        binaries=[]
+        for name in acp.RUNTIMES:
+            path=directory/'versions'/release/name
+            path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(('fixture '+name).encode())
+            binaries.append(str(path))
+        binding=self.manifest['native_stores'][0]
+        binding['acp_runtime_binaries']=binaries;self.manifest['runtime_binaries'].extend(binaries)
+        self.settings['providerInstances']['antigravity']['config']['binaryPath']=''
+        self.settings_path.write_text(json.dumps(self.settings))
+        pointer=directory/'active.json';pointer.write_text(json.dumps({'releaseId':release}))
+        self.adapter=T3CodeBoundAdapter(self.manifest)
+        plan=self.plan();self.assertEqual(plan['goal_status'],'ready',plan)
+        pointer.write_text(json.dumps({'releaseId':'b'*64}))
+        result=self.apply(plan)
+        self.assertEqual(result['goal_status'],'blocked',result)
+        self.assertFalse(result['mutation_started'])
 
     def test_drift_blocks_before_any_mutation_and_standalone_writer_denied(self):
         plan=self.plan();self.assertEqual(plan['goal_status'],'ready',plan)

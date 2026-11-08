@@ -126,6 +126,8 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
     def test_real_acp_files_full_delete_and_reopened_list(self):
         # Installation metadata only; all sessions and auth below are synthetic.
         platform=Path.home()/'.t3/tools/antigravity-acp/win32-x64'
+        if not (platform/'active.json').exists():
+            self.skipTest('Legacy managed ACP is not installed; do not reinstall for tests')
         active=json.loads((platform/'active.json').read_text())
         binaries=[platform/'versions'/active['releaseId']/name for name in acp.RUNTIMES]
         with tempfile.TemporaryDirectory(prefix='a-') as directory:
@@ -152,6 +154,8 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
                 add_thread(db,TARGET,native=ids[0],driver=instance)
                 add_thread(db,KEEP,native=ids[1],driver=instance)
             (root/'userdata/environment-id').write_text('fixture-environment');(root/'userdata/server-owner.sqlite').touch()
+            (root/'userdata/settings.json').write_text(json.dumps({'providerInstances':{
+                instance:{'driver':instance,'enabled':True,'config':{'binaryPath':str(binaries[0])}}}}))
             t3_binary=root/'fixture-t3.exe';t3_binary.write_bytes(b'never executed')
             manifest={'schema_version':SCHEMA,'profile_root':str(root),'environment_id':'fixture-environment',
                 'runtime_binaries':[str(t3_binary),*map(str,binaries)],'desktop_profiles':[],
@@ -174,6 +178,33 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
             with process([binaries[0]],root,env,piped=True) as p:
                 client=initialize(p)
                 self.assertEqual([s['sessionId'] for s in client.call('session/list',{})['sessions']],[ids[1]])
+
+
+@unittest.skipUnless(os.name=='nt' and os.environ.get('LARJ_AGY_CLI_ACCEPTANCE')=='1',
+                     'Opt in with an explicit agy CLI path; temporary profiles only')
+class AgyCliAcceptanceTests(unittest.TestCase):
+    def test_cli_153_uses_user_profile_despite_t3_gemini_home(self):
+        binary=Path(os.environ['LARJ_AGY_CLI_BINARY'])
+        self.assertTrue(binary.is_absolute())
+        self.assertEqual(hashlib.sha256(binary.read_bytes()).hexdigest(),
+                         '47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6',
+                         'Requalify another CLI build before changing storage claims')
+        with tempfile.TemporaryDirectory(prefix='agy-') as directory:
+            root=Path(directory).resolve();gemini=root/'t3-instance'
+            native=gemini/'antigravity-acp';native.mkdir(parents=True)
+            (native/'settings.json').write_text(json.dumps({'auth':{'type':'gemini-api-key'}}))
+            env=isolated_env(root);env.update(GEMINI_HOME=str(gemini),AGY_ACP_FORCE_FILE_STORAGE='1',
+                GEMINI_API_KEY='fixture-not-a-valid-key',HTTP_PROXY='http://127.0.0.1:9',
+                HTTPS_PROXY='http://127.0.0.1:9',BROWSER='false',PYTHONUNBUFFERED='1')
+            with process([binary,'acp'],root,env,piped=True) as p:
+                client=AcpClient(p)
+                info=client.call('initialize',{'protocolVersion':1,'clientCapabilities':{}})
+                self.assertEqual(info['agentInfo']['version'],'1.5.3')
+                self.assertNotIn('delete',info['agentCapabilities']['sessionCapabilities'])
+                with self.assertRaisesRegex(AssertionError,'ACP fixture request failed: session/new'):
+                    client.call('session/new',{'cwd':str(root),'mcpServers':[]})
+            self.assertTrue((root/'.gemini/antigravity-cli/conversation_summaries.db').is_file())
+            self.assertEqual({p.name for p in native.iterdir()},{'settings.json'})
 
 
 if __name__=='__main__':unittest.main()

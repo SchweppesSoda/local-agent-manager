@@ -38,6 +38,11 @@
 配置只按已支持的格式提取最小白名单字段；未知格式保留不确定性，不倾倒整个配置。
 报告使用独立的 `larj.environment-inventory.v1` schema，不修改旧记录计划和审批指纹。
 
+T3 的 ACP 协议家族与底层程序分开：自定义 `agy acp` 的绑定仍属 `antigravity-acp`，
+可执行文件候选属于 `antigravity-cli`，配置追加 `launch_mode_hint=cli_acp`。
+该线索不把 CLI 绑定到旧的 T3 哈希实例目录；原生根保持未知，原生清理状态为
+`unsupported_cli_acp`。受管双文件运行时及历史实例目录继续独立盘点。
+
 Cindy 的运行时发现同时识别旧 `codex/<version>/codex` 布局与
 `codex-package/<version>/bin/codex` 托管包布局；Windows 使用对应 `.exe` 文件。
 自动发现仅提供运行候选，显式程序路径保持优先。候选选择不授予清理旧版本的权限。

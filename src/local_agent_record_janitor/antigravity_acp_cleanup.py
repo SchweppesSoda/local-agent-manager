@@ -17,12 +17,13 @@ import time
 import uuid
 
 from . import frozen_files
+from .environment_config import antigravity_cli_command, _unique_object
 from .record_identity import canonical_path
 from .sqlite_utils import connect_readonly
 from .t3code_cleanup_files import _names
 from .t3code_store import fail, local_root
 
-SCHEMA = 'larj.antigravity-acp-files.v1'
+SCHEMA = 'larj.antigravity-acp-files.v2'
 CONTRACT = json.loads(files(__package__).joinpath('antigravity_acp_schema.json').read_text())
 RUNTIMES = {
     'agy_acp_server.exe': 'ccca30a4aef1b915b0d8baa17b149de6cda305841fa27717e52c529bb462c51d',
@@ -116,6 +117,47 @@ def runtime(binding, profile_root):
     return result
 
 
+def provider_selection(manifest, binding):
+    """Freeze the selected instance; an installed old binary is not selection."""
+    root = Path(manifest['profile_root'])
+    proof, raw = frozen_files.read_file(root, 'userdata/settings.json', content=True, limit=256 * 1024)
+    try:
+        data = json.loads(raw, object_pairs_hook=_unique_object)
+        instance = data['providerInstances'][binding['provider_instance_id']]
+        config = instance['config']
+        if instance['driver'] != 'antigravity' or not isinstance(config, dict):
+            raise ValueError
+        binary = config.get('binaryPath', '')
+        if binary is None:
+            binary = ''
+        elif not isinstance(binary, str):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        fail('antigravity_provider_selection_unverified')
+    binary = binary.strip()
+    if antigravity_cli_command(binary):
+        fail('antigravity_cli_acp_cleanup_unsupported')
+    expected = next(Path(p) for p in binding['acp_runtime_binaries'] if Path(p).name == 'agy_acp_server.exe')
+    result = {'settings': proof}
+    if binary:
+        if canonical_path(local_root(binary)) != canonical_path(expected):
+            fail('antigravity_selected_runtime_mismatch')
+    else:
+        pointer, raw = frozen_files.read_file(root, 'tools/antigravity-acp/win32-x64/active.json',
+                                             content=True, limit=16384)
+        try:
+            release = json.loads(raw, object_pairs_hook=_unique_object)['releaseId']
+            if not isinstance(release, str) or len(release) != 64 or any(c not in '0123456789abcdef' for c in release):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            fail('antigravity_provider_selection_unverified')
+        selected = root/'tools/antigravity-acp/win32-x64/versions'/release/'agy_acp_server.exe'
+        if canonical_path(selected) != canonical_path(expected):
+            fail('antigravity_selected_runtime_mismatch')
+        result['managed_pointer'] = pointer
+    return result
+
+
 def _database(root, sid):
     # Even a read-only WAL open may create/update shared memory. Qualify an
     # exact private copy, including WAL, and never open the native database.
@@ -148,6 +190,7 @@ def _database(root, sid):
 
 def freeze(manifest, binding, ids):
     root = check_binding(manifest, binding)
+    selection = provider_selection(manifest, binding)
     ids = sorted({native_id(s) for s in ids})
     runtime_proof = runtime(binding, manifest['profile_root'])
     directories = [_names(root, name) for name in ('conversations', 'brain')]
@@ -182,6 +225,7 @@ def freeze(manifest, binding, ids):
             frozen_files._plain((root/name).lstat())
             preserved.append(frozen_files.freeze_remove(root, name))
     result = {'schema_version': SCHEMA, 'root': str(root), 'ids': ids, 'runtime': runtime_proof,
+              'provider_selection': selection,
               'root_identity': frozen_files._identity(root.stat()), 'root_entries': names,
               'directories': directories, 'changes': changes, 'preserved': preserved, 'skills': _skills(root)}
     remaining(result)
@@ -192,6 +236,7 @@ def validate(evidence, manifest, binding, ids):
     root = check_binding(manifest, binding)
     if (evidence.get('schema_version') != SCHEMA or evidence.get('root') != str(root)
             or evidence.get('ids') != sorted({native_id(s) for s in ids})
+            or evidence.get('provider_selection') != provider_selection(manifest, binding)
             or evidence.get('runtime') != runtime(binding, manifest['profile_root'])):
         fail('antigravity_evidence_binding_changed')
     allowed = {f'conversations/{sid}{suffix}' for sid in ids for suffix in SUFFIXES}

@@ -745,7 +745,7 @@ Windows 执行期间持有全部绑定运行文件及永久 `userdata/server-own
 |---|---|---|
 | 独立 Antigravity CLI | `agy`、`~/.gemini/antigravity-cli/` | 按实际运行路径、用户与数据根区分 |
 | Paseo 内置 Antigravity | Paseo profile 的 agent 注册快照，以及 daemon 启动的 `agy` | Paseo agent ID 与 CLI conversation ID 分开。配置可覆盖命令和启动环境 |
-| T3 Code Antigravity | T3 provider 实例的 `GEMINI_HOME` 及独立 ACP executable | T3 thread ID、ACP session ID、provider 实例和物理目录分别核实 |
+| T3 Code Antigravity | 受管双文件 ACP，或自定义 `agy acp` | 启动方式与实际 profile 分别核实；传入 `GEMINI_HOME` 不证明 CLI 遵守它 |
 | Antigravity App / IDE | 独立 App / IDE 及其 profile | CLI 的 `Other` 分页可将桌面对话导入为 CLI 副本。导入关联不构成共享物理存储证据 |
 
 **CLI 与 Paseo。** 已核对 Paseo 内置 provider 的命令行采用 `stream-json`，收到
@@ -770,13 +770,18 @@ schema 和完整关系契约。官方文档定义的 `cache/last_conversations.j
 **T3 Code ACP。** T3 在受管模式下通过
 `<T3 home>/tools/antigravity-acp/<platform>-<arch>/active.json` 选择
 `versions/<releaseId>/` 下由 `.install-complete.json` 记录的 ACP executable 与 `localharness_external`。
-手动 binary 或 PATH 是独立选择。T3 按 provider instance ID 的 SHA-256 在
+手动 binary 或 PATH 是独立选择。T3 从 Nightly `0.1.8-nightly.20261108.4353` 起允许
+`binaryPath` 指向 CLI 1.5.0+ 的 `agy` / `antigravity`（Windows 也支持 `.exe/.cmd/.bat`），
+自动增加 `acp` 参数，不再要求旁边存在 helper。默认受管选择没有改变；清空路径不会自动
+改用 PATH 上的 `agy`。[接入实现](https://github.com/pingdotgg/t3code/pull/32503)
+
+T3 按 provider instance ID 的 SHA-256 在
 `<stateDir>/providers/antigravity/<hash>/` 建立隔离的 `GEMINI_HOME`。
 发行构建的 `stateDir` 通常为 `<T3 home>/userdata`。其中 `antigravity-acp/`
 存放实例数据，`acp_token.json` 是凭据，`settings.json` 是配置。
 `<stateDir>/antigravity-tmp/` 中的运行时解包文件与会话不同。全局 skills
 可能通过符号链接或 Windows junction 暴露在实例内，链接目标仍属于共享设置。
-T3 的下载 runtime 由同一环境的实例共享，登录则按实例隔离。
+T3 的下载 runtime 由同一环境的实例共享，受管 ACP 的登录按实例隔离。
 [T3 路径与环境](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityAuthSupport.ts#L171-L247)
 · [T3 实例凭据路径](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityAuthSupport.ts#L374-L382)
 · [T3 受管安装](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/AntigravityInstallation.ts#L167-L174)
@@ -786,16 +791,26 @@ T3 的临时探测清理会在进程关闭后，以 UUIDv4 和 `.meta` 中的唯
 证明归属，再移除 `antigravity-acp/conversations/<id>` 对应的
 `.db`、`.db-wal`、`.db-shm`、`.db-journal`、`.meta` 及 `brain/<id>`。
 这是上游对一次性会话的实现证据。普通 thread 的完整影响范围、共享索引、后代或远程
-副本仍需独立确认。Google 新版 CLI 提供的 `agy acp` 是另一个 launch 路径，
-可复用 CLI 凭据。不能据此推导 T3 受管 ACP 或任意自定义 provider 的存储和能力。
+副本仍需独立确认。
 [T3 临时会话清理](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/acp/AntigravitySessionFiles.ts#L5-L41)
 · [Google CLI 的 ACP 模式](https://antigravity.google/docs/ide/extensions/acp/)
+
+**CLI 的 ACP 模式。** T3 仍传入实例 `GEMINI_HOME` 与 `AGY_ACP_FORCE_FILE_STORAGE=1`，
+但 Windows CLI 1.5.3 已验证构建（SHA-256 `47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6`）
+在隔离用户测试中仍于 `<USERPROFILE>/.gemini/antigravity-cli` 创建共享摘要数据库，
+未采用指定的旧 ACP 目录。握手成功不证明登录、会话创建或生成成功；该构建也未声明
+`session/delete`。此结论来自 [临时 profile 验收](../tests/test_t3code_runtime_acceptance.py)，
+不推广到其他平台或构建。实际存储可能与独立 CLI 共用，不能按旧实例哈希推导新会话位置，
+也不能承诺旧会话可以直接恢复或登录继续隔离。切换不迁移或删除旧实例数据。
 
 **环境发现。** `environment inventory` 的 `storage_artifacts` 只记录固定布局路径
 和文件状态。T3 按观察到的隔离实例分别输出 `native_profile`，该布局线索不把
 实例绑定到某个运行程序。Paseo profile 下的 `antigravity-provider.bak` 若
 manifest 符合已知插件 ID，则记录为 `legacy_plugin_candidate`，其余保持
 `unclassified_artifact`。该分类不证明来源、在用状态、历史记录归属或可删除性。
+自定义 CLI 的配置绑定保留 `engine=antigravity-acp`，程序候选标为 `antigravity-cli`，
+并给出 `launch_mode_hint=cli_acp` / `native_cleanup_status=unsupported_cli_acp`。
+命令名只是线索（`antigravity` 也可能是 IDE 启动器），绝对路径只证明配置选择；原生根保持未知。
 
 **记录能力。** Paseo 和 T3 的 Antigravity 记录保留 `unsupported:antigravity`
 引擎身份。`provider_backend_family_hint` 仅指各自内置集成的运行时家族，
@@ -805,6 +820,9 @@ Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Go
 自己的会话历史保留。
 
 T3 的完整清理另支持 Windows 托管 ACP 1.4.5 的固定运行文件摘要与原生数据库 DDL。
+同时冻结 provider 设置及默认受管选择的 `active.json`；旧程序仍在磁盘上不构成当前选择证据。
+切换到 CLI、自定义程序不匹配或计划后的选择漂移均在写入前阻挡。CLI 1.5.3 模式未取得
+完整原生删除资格，保留旧双文件适配不意味着 CLI 可以使用它。
 实例路径由 provider instance ID 的 SHA-256 决定；当前及历史强引用、数据库内 trajectory/cascade
 ID 和精确 UUID 文件名共同证明归属，不能仅凭 cwd 删除。原生清理与 T3 数据清理共享一个
 批准动作和 writer 边界。删除所选 `.db`、SQLite 侧文件、`.meta`、`brain/<UUID>`；保留

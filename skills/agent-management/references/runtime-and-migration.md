@@ -27,7 +27,7 @@ If the janitor is unavailable or a probe is inconclusive, keep fallback inspecti
 
 When janitor coverage is insufficient or the command is unavailable, inspect the exact target with native read-only tools. In the intended PowerShell session, check `Get-Command <name> -All` for command selection and `Get-Item -LiteralPath <path>` for an identified file or launcher. Check the package source, desktop launch settings, provider configuration, and documented diagnostics as needed. Inspect only the targeted nonsecret configuration fields. Record a path, version/source, and binding without printing auth data, whole config files, or unredacted process arguments.
 
-A standalone Antigravity CLI, an Antigravity desktop installation, and T3 Code's Antigravity ACP launcher can coexist. Resolve each from its own launch context and settings. Apply the same check to PATH Codex, a Desktop-bundled Codex, and an independently configured frontend runtime.
+A standalone Antigravity CLI, an Antigravity desktop installation, and T3 Code's managed Antigravity ACP pair can coexist. T3 can also select the CLI through a custom `binaryPath` and launch it as `agy acp`; that does not prove it uses the managed ACP profile. Follow the [Antigravity launch-mode and storage checks](antigravity.md) when switching or removing the pair. Resolve each from its own launch context and settings. Apply the same check to PATH Codex, a Desktop-bundled Codex, and an independently configured frontend runtime.
 
 ### Windows PATH inheritance
 

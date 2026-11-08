@@ -37,7 +37,7 @@ local-agent-record-janitor environment inventory --home 'D:\profiles\example' --
 与旧 `agent doctor` 的目标存储检查不同。通用 Windows 清理和普通软件维护独立维护，
 不包含在本项目的删除命令中。
 
-Antigravity 的独立 CLI、T3 ACP、桌面程序和 Paseo 插件残留分别识别。前端记录中的
+Antigravity 的独立 CLI、T3 受管 ACP、T3 的 `agy acp` 模式、桌面程序和 Paseo 插件残留分别识别。前端记录中的
 provider 名称不能证明原生数据归属；未验证的原生格式和完整删除范围继续阻挡。
 具体来源、目录层次与技能操作方法见 [Antigravity 边界](docs/adapters.md#antigravity)。
 
@@ -192,6 +192,10 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 `--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除；支持混合 Antigravity，
 先解除工作树关联，保留 provider 原生会话及工作树，并核验软删除和后台清理结果。
 需要显式 profile 和批准的计划 hash；用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
+
+T3 Nightly `20261108.4353` 起可以用现有 CLI 1.5.0+ 的 `agy acp` 替代受管运行时。
+该模式的原生清理尚未支持，不能复用下述 ACP 1.4.5 绑定；`--t3code-only` 仍保留原生历史。
+切换与卸载方法见 [Antigravity 技能说明](skills/agent-management/references/antigravity.md#switch-t3-to-the-cli-and-remove-the-managed-runtime)。
 
 Windows 显式绑定可使用计划、apply 和冷验证：清理实际 Codex/Claude 存储，或已验证
 T3 ACP 1.4.5 实例的 Antigravity 原生数据库、元数据与会话产物，再清理

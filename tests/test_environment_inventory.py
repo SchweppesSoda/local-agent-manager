@@ -159,6 +159,37 @@ class EnvironmentInventoryTests(unittest.TestCase):
         self.assertNotIn("SECRET", json.dumps(result))
 
 
+    def test_t3_cli_acp_override_identifies_binary_without_claiming_native_profile(self):
+        agy=self.file('Local/agy/bin/agy.exe')
+        self.file('.gemini/antigravity-cli/settings.json',b'CLI_SECRET')
+        self.file('.t3/userdata/settings.json',json.dumps({'providerInstances':{
+            'antigravity':{'driver':'antigravity','enabled':True,'config':{'binaryPath':str(agy)}}
+        }}).encode())
+        result=self.inventory(clients=('antigravity','t3code'))
+        runtime=next(r for r in result['runtimes'] if r['path']==str(agy))
+        self.assertEqual(runtime['engine'],'antigravity-cli')
+        binding=next(b for b in result['bindings'] if b['client']=='t3code' and b['selection']=='configured_hint')
+        self.assertEqual(binding['engine'],'antigravity-acp')
+        self.assertEqual(binding['executable_id'],runtime['id'])
+        self.assertEqual(binding['configuration']['launch_mode_hint'],'cli_acp')
+        self.assertEqual(binding['configuration']['native_cleanup_status'],'unsupported_cli_acp')
+        self.assertIsNone(binding['store_path'])
+        self.assertEqual(binding['store_scope'],'unknown')
+        self.assertNotIn('companion',runtime)
+        self.assertNotIn('SECRET',json.dumps(result))
+
+    def test_t3_cli_acp_command_names_do_not_prove_resolution(self):
+        for binary in ('agy','antigravity','agy.EXE','agy.cmd','antigravity.bat'):
+            with self.subTest(binary=binary):
+                self.file('.t3/userdata/settings.json',json.dumps({'providerInstances':{
+                    'antigravity':{'driver':'antigravity','config':{'binaryPath':binary}}
+                }}).encode())
+                result=self.inventory(clients=('t3code',))
+                binding=next(b for b in result['bindings'] if b['selection']=='configured_hint')
+                self.assertEqual(binding['configuration']['launch_mode_hint'],'cli_acp')
+                self.assertIsNone(binding['executable_id'])
+                self.assertIsNone(binding['store_path'])
+
     def test_antigravity_storage_markers_keep_cli_t3_and_paseo_artifacts_separate(self):
         agy = self.file("Local/agy/bin/agy.exe")
         night = self.file("Local/Programs/t3code/T3 Code (Nightly).exe")

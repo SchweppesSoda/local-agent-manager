@@ -464,10 +464,17 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 ### Antigravity ACP 完整删除绑定
 
 此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**，不是独立 `agy` CLI 或
-Paseo 的原生删除入口。每条 Antigravity 绑定使用 `engine: "antigravity"`，增加
+Paseo 的原生删除入口；T3 自定义 `binaryPath=agy` 的 CLI ACP 模式也不支持。
+该模式需要保留原生历史时使用 `--t3code-only`，不得把旧 ACP 目录当作新 CLI 会话目录。
+每条 Antigravity 绑定使用 `engine: "antigravity"`，增加
 `provider_instance_id` 和 `acp_runtime_binaries`（`agy_acp_server.exe`、配套
 `localharness_external.exe` 的绝对路径）；二者也必须列入顶层 `runtime_binaries`。
 `root` 必须严格对应 `<T3Home>/userdata/providers/antigravity/<SHA256(instanceId)>/antigravity-acp`。
+原生文件证据版本为 `larj.antigravity-acp-files.v2`，额外冻结 `userdata/settings.json`。
+绑定实例必须仍选择该双文件运行时：显式路径须匹配绑定的 server，默认模式须由
+`tools/antigravity-acp/win32-x64/active.json` 指向同一 server。CLI 选择返回
+`antigravity_cli_acp_cleanup_unsupported`；设置缺失、选择不符或计划后漂移阻挡写入。
+旧 v1 文件证据不再用于新执行，应重新生成计划；已有未知操作仍遵循恢复契约，不得重跑。
 当前及历史强引用必须属于同一实例；不得把其他 instance 的原生 ID 填入该绑定。
 
 ```json
@@ -493,6 +500,10 @@ Paseo 的原生删除入口。每条 Antigravity 绑定使用 `engine: "antigrav
 开发验收可设置 `LARJ_T3_BUNDLE_ACCEPTANCE=1` 后运行
 `python -m unittest tests.test_t3code_runtime_acceptance`。它仅使用临时 profile、无效测试
 key 和合成会话，不发送模型提示；Windows 的 SQLite 测试临时目录应使用较短的绝对路径。
+旧受管运行时已卸载时，其验收自动跳过，不为测试重新安装。CLI 模式的隔离存储验收使用
+`LARJ_AGY_CLI_ACCEPTANCE=1` 和绝对路径 `LARJ_AGY_CLI_BINARY`；测试固定 Windows CLI 1.5.3
+构建摘要，只进行 ACP 握手及无真实凭据的请求，验证它没有沿用 T3 的旧实例目录。
+此验收不授予 CLI 原生删除能力，也不证明实际账号生成成功。
 
 ## WorkBuddy local sessions
 

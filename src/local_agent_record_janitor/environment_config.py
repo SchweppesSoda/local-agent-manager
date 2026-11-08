@@ -13,6 +13,12 @@ from .environment_paths import BoundedPathProbe
 MAX_CONFIG_BYTES = 256 * 1024
 
 
+def antigravity_cli_command(binary: str) -> bool:
+    """A launch-name hint, not proof of the executable's product or profile."""
+    return bool(re.fullmatch(r"(?:agy|antigravity)(?:\.(?:exe|cmd|bat))?",
+                            binary.replace("\\", "/").rsplit("/", 1)[-1], re.IGNORECASE))
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict:
     result: dict = {}
     for key, value in pairs:

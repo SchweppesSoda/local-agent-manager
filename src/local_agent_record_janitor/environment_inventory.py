@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .discovery import CINDY_PROFILE_NAMES, cindy_codex_candidates, release_version
 from .environment_config import (
-    package_version, paseo_antigravity_backup_metadata, paseo_runtime_hints,
+    antigravity_cli_command, package_version, paseo_antigravity_backup_metadata, paseo_runtime_hints,
     t3_acp_managed_release, t3_runtime_hints,
 )
 from .environment_paths import BoundedPathProbe, MAX_DIRECTORY_ENTRIES, MAX_PATH_PROBES, local_path
@@ -33,6 +33,8 @@ _COMMANDS = {
 }
 _SUFFIXES = (".exe", ".com", ".cmd", ".bat", ".ps1", "")
 _ACP_NAMES = ("agy_acp_server.exe", "agy_acp_server.par")
+_CLI_ACP_NAMES = tuple(stem + suffix for stem in ("agy", "antigravity")
+                       for suffix in ("", ".exe", ".cmd", ".bat"))
 _T3_PROVIDER_KEY = re.compile(r"[a-f0-9]{64}")
 _STANDALONE = frozenset(("codex", "claude", "pi", "antigravity-cli"))
 _SUGGESTIONS = {
@@ -200,22 +202,28 @@ class _Inventory:
             evidence = dict(config)
             if binary is not None:
                 path = local_path(binary) if binary else None
-                names = _ACP_NAMES if engine == "antigravity-acp" else tuple(
+                names = (*_ACP_NAMES, *_CLI_ACP_NAMES) if engine == "antigravity-acp" else tuple(
                     name + suffix for name in _COMMANDS[engine] for suffix in _SUFFIXES
                 )
+                cli_acp = engine == "antigravity-acp" and antigravity_cli_command(binary)
                 if path is not None and path.name.casefold() in names:
-                    runtime = self.runtime(client, engine, path, via, include_missing=True, owner="unverified")
+                    runtime = self.runtime(client, "antigravity-cli" if cli_acp else engine,
+                                           path, via, include_missing=True, owner="unverified")
                     evidence["binary_setting"] = "absolute_path"
                 elif binary == "" or binary.casefold() in names:
                     evidence["binary_setting"] = "default_or_command_name"
                 else:
                     evidence["binary_setting"] = "unverified"
+                if cli_acp and evidence["binary_setting"] != "unverified":
+                    evidence["launch_mode_hint"] = "cli_acp"
+                    evidence["native_cleanup_status"] = "unsupported_cli_acp"
             store = local_path(home) if home else None
             if home:
                 evidence["home_setting"] = "absolute_path" if store is not None else "unverified"
             row = self.binding(client, engine, store, via, runtime=runtime, configuration=evidence,
                                profile=profile, enabled=enabled, selection="configured_hint",
-                               store_scope="configured_native_profile")
+                               store_scope="unknown" if evidence.get("launch_mode_hint") == "cli_acp"
+                               else "configured_native_profile")
             if runtime is not None and runtime["path_status"] != "present" and enabled is not False:
                 self.finding(
                     "configured_executable_unavailable", "warning" if runtime["path_status"] == "missing" else "info",
