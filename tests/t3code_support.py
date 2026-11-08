@@ -13,14 +13,18 @@ def create_store(root):
     path = Path(root) / RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
-    objects = CONTRACT["objects"]
-    for kind, name, table, sql in objects:
-        if kind == "table" and not name.startswith("orchestration_v2_message_search_"):
-            db.execute(sql)
-    for kind, name, table, sql in objects:
-        if kind in {"index", "trigger", "view"} and sql:
-            db.execute(sql)
-    db.commit()
+    try:
+        objects = CONTRACT["objects"]
+        for kind, name, table, sql in objects:
+            if kind == "table" and not name.startswith("orchestration_v2_message_search_"):
+                db.execute(sql)
+        for kind, name, table, sql in objects:
+            if kind in {"index", "trigger", "view"} and sql:
+                db.execute(sql)
+        db.commit()
+    except BaseException:
+        db.close()
+        raise
     return db
 
 

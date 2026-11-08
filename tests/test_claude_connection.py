@@ -302,7 +302,8 @@ class ClaudeConnectionTests(unittest.TestCase):
         try:
             identity = subprocess.check_output(["whoami"], text=True).strip()
             applied_acl = subprocess.run(
-                ["icacls", str(self.paseo), "/inheritance:r", "/grant:r", identity + ":(F)"],
+                ["icacls", str(self.paseo), "/inheritance:r", "/grant:r", identity + ":(F)",
+                 "*S-1-5-32-544:(RX)"],
                 capture_output=True, check=False,
             )
         except (OSError, subprocess.CalledProcessError):
@@ -311,10 +312,12 @@ class ClaudeConnectionTests(unittest.TestCase):
             self.skipTest("Could not create a restricted fixture DACL")
 
         def descriptor(path: Path) -> str:
-            # icacls prints the filename before the first ACE. Normalize that
-            # prefix so this checks the permissions of both fixture files.
-            value = subprocess.check_output(["icacls", str(path)], text=True, errors="replace")
-            return value.replace(str(path), "<fixture>", 1)
+            # The saved SDDL preserves ACEs and protection flags independently of the filename.
+            output = self.root / "fixture-dacl.txt"
+            subprocess.run(["icacls", str(path), "/save", str(output)], capture_output=True, check=True)
+            _, dacl = output.read_text(encoding="utf-16-le").splitlines()
+            self.assertTrue(dacl.startswith("D:P"), dacl)
+            return dacl
         before = descriptor(self.paseo)
         protect = claude_connection._prepare_config_file
         observations = []

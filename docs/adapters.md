@@ -697,6 +697,10 @@ macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平�
 schema 的 v1/v2 元数据投影。SQLite 只读事务保留 WAL 可见性；文件/侧文件禁止链接、
 reparse 与硬链接，单文件上限 512 MiB，元数据查询上限 20,000 行并有限时。
 
+T3 数据库操作所用的 Python `sqlite3` 需链接启用 FTS5 的 SQLite 3.45 或更新版本，
+以支持该 schema 的 `contentless_delete` 与 trigram `remove_diacritics`。可用
+`python -c "import sqlite3; print(sqlite3.sqlite_version)"` 查看实际链接的版本。
+
 报告包含 profile、thread/project ID、cwd、provider、时间、归档/删除标记、消息计数和
 原生恢复 ID，不读取消息正文、标题、token 或完整事件 payload。不同 profile 的同 ID
 保持独立，T3 thread ID 不等于 provider native ID。未知 schema、孤立投影、无效 ID 或
