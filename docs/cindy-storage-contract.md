@@ -1,8 +1,16 @@
 # Cindy storage contract
 
-This implementation is checked against [makecindy/cindy at
+The record-cleanup implementation is checked against [makecindy/cindy at
 8b512ba5396f83a242838d172dbd7afb19183265](https://github.com/makecindy/cindy/tree/8b512ba5396f83a242838d172dbd7afb19183265).
 It does not infer compatibility from the installed application version alone.
+
+Project-memory export is a separate, explicitly selected content operation.
+It uses the local `owners/<owner>/maker-memory/<scope>/meta.json.absPath` layout
+and curated shard names checked at [b6b6685](https://github.com/makecindy/cindy/tree/b6b668550e2cd276e047e666640ea3d727dac027).
+The lossy scope directory name locates a candidate; it does not prove project
+identity. `environment cindy-memory inspect/export` never changes Cindy's
+memory store or record references. See the [Claude connection workflow](../skills/agent-management/references/claude-connections.md)
+for selection and downstream instruction loading.
 
 ## Storage and selection
 

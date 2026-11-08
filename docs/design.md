@@ -13,13 +13,29 @@
 | 部分 | 入口与职责 | 执行边界 |
 |---|---|---|
 | 环境盘点和诊断 | `environment inventory/doctor`；发现运行程序、版本线索、客户端及存储位置 | 有界、只读的元数据探测，不运行发现的程序、不读取登录凭据或聊天正文 |
-| 环境维护 | 仓库维护的 `agent-management` skill；安装升级、调用路径修复、配置迁移和旧运行时处理 | 按实际安装渠道及客户端接口执行，先确定消费者和用户目标，再验证对应功能 |
+| 环境维护与接入 | `agent-management` skill；专用 `environment claude-connect/claude-import/cindy-memory`，以及安装升级、调用路径修复和旧运行时处理 | 连接配置、历史导入、记忆读取分别限定范围；按实际安装渠道及客户端接口执行并验证 |
 | 记录清理 | `records`、`delete`、`operation` 与现有 `CleanupService` | 沿用每种存储、记录和 mutation family 的精确协议 |
 
 `environment doctor` 检查环境事实及证据缺口；既有 `agent doctor` 检查记录操作的目标
 存储和客户端归属。二者不互相替代。环境清单是诊断输入，不会生成或批准记录删除动作。
 安装、升级、卸载和修复没有虚构的通用 `environment apply`；skill 使用当次核实的
 官方安装器、包管理器或客户端配置入口，记录操作仍进入既有 operation 协议。
+
+### Claude 接入边界
+
+专用接入命令使用显式路径和独立计划，不复用删除 manifest。`claude-connect` 冻结
+现有配置和目标路径，按核对过的 SHA-256 修改 Paseo 自定义 Claude provider 或 T3
+默认 `claudeAgent` 的程序与 home；不读取原生会话或证明认证。离线配置写入的
+`--clients-closed` 是调用方对相关 writer 已退出的断言，不是自动进程检查。
+
+`claude-import` 通过客户端官方接口创建前端记录，不直接写客户端数据库。Paseo
+支持完整 Claude UUID；T3 的已核实接口只有项目级近期历史导入，可能涉及多个引擎，
+不能用单条 Claude 授权代替。成功响应与实际原生引用核验分开，结果不明时先 verify。
+
+`cindy-memory inspect` 只读取项目归属元数据与文件属性；`export` 才读取精确选中的
+记忆分片并生成新快照。这是明确的内容导出能力，不受环境盘点的“仅元数据”描述覆盖。
+源记忆、项目指令和全局设置均不由导出命令修改；加载快照由技能按已有指令体系执行。
+固定来源、命令与验证说明见 [Claude 接入流程](../skills/agent-management/references/claude-connections.md)。
 
 ### 环境发现与诊断
 

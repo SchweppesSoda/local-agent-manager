@@ -44,6 +44,21 @@ provider 名称不能证明原生数据归属；未验证的原生格式和完�
 安装 skill 时将完整 `skills/agent-management` 目录复制到当前 Codex skills 目录；保留
 仓库安装，以便调用 CLI 和读取与该版本相匹配的操作契约。重新加载技能后即可使用。
 
+### Claude 与 Cindy 接入
+
+`environment claude-connect prepare/apply` 将选定的 Claude 程序和原生数据根配置到
+Paseo 或 T3 Code；先生成含文件指纹的计划，再按核对过的哈希应用。配置需为客户端
+已创建的受支持格式，应用前需退出对应配置写入进程。该动作不导入历史或验证登录。
+
+`environment claude-import prepare/apply/verify` 通过官方接口导入并核对前端历史。
+Paseo 支持按完整 Claude 会话 ID 导入；T3 仅支持明确接受的项目级近期历史，可能
+同时包含 Claude、Codex 和 Pi。该命令不发送续聊消息。
+
+`environment cindy-memory inspect/export` 按显式 owner 存储与项目盘点记忆元数据，
+或将精确选定的分片导出为新 Markdown 快照。导出会读取选定的记忆正文，不改源文件，
+也不自动启用项目指令。启用时须保留已有 `CLAUDE.md`／`AGENTS.md` 的加载行为。
+命令示例、会话导入范围与验证方式见 [Claude 接入流程](skills/agent-management/references/claude-connections.md)。
+
 ## 记录清理
 
 ### 命名迁移

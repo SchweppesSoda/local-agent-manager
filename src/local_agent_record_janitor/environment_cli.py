@@ -1,4 +1,4 @@
-"""Read-only CLI for Agent runtime and configuration evidence."""
+"""Agent environment evidence and explicit client connection workflows."""
 
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ def add_environment_commands(parser: argparse.ArgumentParser) -> None:
         required=True,
         title="环境命令",
     )
+    from .connection_cli import add_connection_commands
+    add_connection_commands(commands)
     for name, help_text in (
         ("inventory", "盘点已识别的运行时和配置路径"),
         ("doctor", "诊断运行时选择、路径和配置证据"),
@@ -60,6 +62,10 @@ def add_environment_commands(parser: argparse.ArgumentParser) -> None:
 def run_environment_command(
     args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO
 ) -> int:
+    if args.environment_command not in {"inventory", "doctor"}:
+        from .connection_cli import run_connection_command
+        return run_connection_command(args, stdout=stdout, stderr=stderr)
+
     from .environment_inventory import collect_environment_inventory
 
     try:
