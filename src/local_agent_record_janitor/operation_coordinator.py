@@ -1602,8 +1602,6 @@ class OperationCoordinator:
         explicit_frontend_ids: Sequence[str] = (),
         approved_document=None,
     ) -> tuple[Any, ...]:
-        from .client_capability_guards import restrict_cleanup_context
-
         explicit_session_ids = tuple(dict.fromkeys((*explicit_session_ids, *explicit_frontend_ids)))
         explicit_frontend_ids = explicit_session_ids
         source = (tuple(adapters) if adapters is not None else
@@ -1631,7 +1629,8 @@ class OperationCoordinator:
         result = self._build_context_sources(client, candidates, engines=engines,
             include_action_contexts=include_action_contexts, codex_home=codex_home,
             explicit_session_ids=explicit_session_ids)
-        context = restrict_cleanup_context(result[0], guards, self.service.typed_actions)
+        context, bindings = self._restrict_context_bindings(
+            result[0], result[5] if include_action_contexts else {}, guards)
         active = context.active_adapters
         catalog, manual_plan = result[2:4]
         if catalog is not None:
@@ -1639,8 +1638,6 @@ class OperationCoordinator:
         if manual_plan is not None:
             manual_plan = replace(manual_plan, active_adapters=active)
         if include_action_contexts:
-            bindings = {action_id: restrict_cleanup_context(bound, guards, self.service.typed_actions)
-                        for action_id, bound in result[5].items()}
             return (context, active, catalog, manual_plan, result[4], bindings)
         return (context, active, catalog, manual_plan, result[4])
 
@@ -1850,9 +1847,27 @@ class OperationCoordinator:
                                                for record in item.native_records), active_adapters=adapters)
         return replace(context, client_inventory=inventory), catalog
 
+    def _restrict_context_bindings(
+        self, context: Any, bindings: Mapping[str, Any], adapters: tuple[Any, ...],
+    ) -> tuple[Any, dict[str, Any]]:
+        """Refresh guards without splitting a shared batch execution context."""
+        from .client_capability_guards import restrict_cleanup_context
+
+        guarded_contexts: dict[int, Any] = {}
+
+        def guarded_context(bound: Any) -> Any:
+            key = id(bound)
+            if key not in guarded_contexts:
+                guarded_contexts[key] = restrict_cleanup_context(
+                    bound, adapters, self.service.typed_actions)
+            return guarded_contexts[key]
+
+        return guarded_context(context), {
+            key: guarded_context(bound) for key, bound in bindings.items()
+        }
+
     def _retain_live_guards(self, live: _LiveOperation, adapters: tuple[Any, ...], *, readonly_recovery: bool = False) -> None:
         """Keep newly supplied protections without rebuilding the approved catalog."""
-        from .client_capability_guards import restrict_cleanup_context
         from .client_contracts import describe_adapter
 
         if adapters == live.adapters and not any(describe_adapter(a).client in {"orca", "herdr", "paseo"} for a in adapters):
@@ -1873,9 +1888,8 @@ class OperationCoordinator:
         if paseo_evidence is not None and not readonly_recovery:
             ticket = paseo_planning_scope(paseo_evidence)
         with ticket:
-            live.context = restrict_cleanup_context(live.context, adapters, self.service.typed_actions)
-            live.action_contexts = {key: restrict_cleanup_context(bound, adapters, self.service.typed_actions)
-                                    for key, bound in live.action_contexts.items()}
+            live.context, live.action_contexts = self._restrict_context_bindings(
+                live.context, live.action_contexts, adapters)
         live.adapters = live.context.active_adapters
         if live.manual_catalog is not None:
             live.manual_catalog = replace(live.manual_catalog, active_adapters=live.adapters)

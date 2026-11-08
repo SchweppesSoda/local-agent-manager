@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from local_agent_record_janitor.adapters import CindyAdapter
 from local_agent_record_janitor.cleanup_service import CleanupService
 from local_agent_record_janitor.cli import main
 from local_agent_record_janitor.codex_state import read_spawn_descendants
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_record_janitor.operation_coordinator import OperationCoordinator, OperationCoordinatorError
 from tests.support import create_cindy_database, create_thread_index
 
 
@@ -259,6 +260,55 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertFalse(self.paths["child"].exists())
         self.assertTrue(self.paths["keep"].exists())
         self.assertEqual((self.official / "state_5.sqlite").read_bytes(), self.official_before)
+
+    def test_fresh_apply_keeps_multiple_orphans_in_one_guarded_context(self):
+        source = {"subagent": {"other": "guardian"}}
+        with closing(sqlite3.connect(self.home / "state_5.sqlite")) as db:
+            db.execute("DELETE FROM threads WHERE id='delete'")
+            for record_id in ("child", "child-two"):
+                path = self.home / "sessions" / f"rollout-{record_id}.jsonl"
+                metadata = {"id": record_id, "cwd": str(self.root / "ProxyConfig"),
+                            "source": source, "parent_thread_id": "delete",
+                            "thread_source": "guardian_review"}
+                path.write_text(json.dumps({"type": "session_meta", "payload": metadata}) + "\n",
+                                encoding="utf-8")
+                self.paths[record_id] = path
+                db.execute("INSERT OR REPLACE INTO threads (id,rollout_path,source) VALUES (?,?,?)",
+                           (record_id, str(path), json.dumps(source)))
+            db.commit()
+        self.paths["delete"].unlink()
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("DELETE FROM sessions WHERE id='ui-child'")
+            db.commit()
+
+        plan = self.plan(record_ids=("child", "child-two"))
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        self.assertEqual(len(plan["child_batches"]), 1)
+        result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertCountEqual(self.calls, ["child", "child-two"])
+        self.assertFalse(self.paths["child"].exists())
+        self.assertFalse(self.paths["child-two"].exists())
+        self.assertTrue(self.paths["keep"].exists())
+        self.assertEqual((self.official / "state_5.sqlite").read_bytes(), self.official_before)
+
+    def test_guard_refresh_preserves_distinct_context_boundary(self):
+        coordinator = self.coordinator()
+        context = coordinator.service.prepare((self.adapter(),))
+        distinct = replace(context)
+        guard = self.adapter()
+        refreshed, bindings = coordinator._restrict_context_bindings(
+            context, {"one": context, "two": context, "distinct": distinct}, (guard,))
+        self.assertIs(bindings["one"], refreshed)
+        self.assertIs(bindings["two"], refreshed)
+        self.assertIsNot(bindings["distinct"], refreshed)
+        self.assertIn(guard, refreshed.active_adapters)
+        self.assertIn(guard, bindings["distinct"].active_adapters)
+        live = SimpleNamespace(context=refreshed, action_contexts=bindings)
+        batch = SimpleNamespace(actions=(SimpleNamespace(action_id="one"),
+                                         SimpleNamespace(action_id="distinct")))
+        with self.assertRaisesRegex(OperationCoordinatorError, "more than one engine context"):
+            coordinator._context_for_batch(live, batch)
 
     def test_orphan_reference_cleanup_preserves_session_rows_and_other_project(self):
         self.server().delete_thread("delete")
