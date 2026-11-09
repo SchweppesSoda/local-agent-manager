@@ -170,6 +170,22 @@ def _native_context(engine: str, root: Path, record_id: str, action_id: str) -> 
 
 
 class ClientOperationIntegrationTests(unittest.TestCase):
+    def test_guard_restriction_preserves_aliases_without_merging_distinct_contexts(self):
+        from local_agent_record_janitor.operation_coordinator import OperationCoordinatorError
+        first, second = _empty_context(), _empty_context()
+        coordinator = OperationCoordinator(CleanupService())
+        with patch("local_agent_record_janitor.client_capability_guards.restrict_cleanup_context",
+                   side_effect=lambda *_: _empty_context()) as restrict:
+            primary, bindings = coordinator._restrict_context_bindings(first, {"a": first, "b": first, "c": second}, ())
+        self.assertEqual(restrict.call_count, 2)
+        self.assertIs(primary, bindings["a"])
+        self.assertIs(bindings["a"], bindings["b"])
+        self.assertIsNot(bindings["a"], bindings["c"])
+        live = SimpleNamespace(context=primary, action_contexts=bindings)
+        batch = SimpleNamespace(actions=(SimpleNamespace(action_id="a"), SimpleNamespace(action_id="c")))
+        with self.assertRaises(OperationCoordinatorError):
+            coordinator._context_for_batch(live, batch)
+
     def test_non_native_success_outcomes_set_top_level_status_and_modified(self) -> None:
         coordinator = OperationCoordinator(SimpleNamespace())
         cases = (

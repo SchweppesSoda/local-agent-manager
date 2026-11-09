@@ -44,6 +44,9 @@ _DEFAULT_ROLLOUT_READER = find_thread_rollouts
 class ActionKind(str, Enum):
     DELETE_HERDR_FRONTEND = "delete_herdr_frontend"
     DELETE_PASEO_FRONTEND = "delete_paseo_frontend"
+    DELETE_PASEO_DAEMON_AGENT = "delete_paseo_daemon_agent"
+    DELETE_T3CODE_SERVER_THREAD = "delete_t3code_server_thread"
+    DELETE_T3CODE_FRONTEND = "delete_t3code_frontend"
     DELETE_OFFICE_FRONTEND = "delete_office_frontend"
     DELETE_ORCA_FRONTEND = "delete_orca_frontend"
     DELETE_OFFICE_ARTIFACTS = "delete_office_artifacts"
@@ -1198,7 +1201,7 @@ def _finding_type(
     if isinstance(explicit, str) and explicit:
         return explicit
     lowered = f"{platform} {reason}".lower()
-    if platform.lower() in {"aionui", "cindy"} or (
+    if platform.lower() == "cindy" or (
         "frontend" in lowered and ("deleted" in lowered or "gone" in lowered)
     ):
         return "frontend_deleted_reference"
@@ -1768,7 +1771,7 @@ def _frontend_reference_actions(
                 "current state could not be read completely: "
                 + "; ".join(storage_evidence.errors)
             )
-        if unavailable_reason is None and platform not in {"aionui", "cindy"}:
+        if unavailable_reason is None and platform != "cindy":
             unavailable_reason = (
                 "This frontend has no supported exact reference writer."
             )
@@ -2837,8 +2840,6 @@ def _storage_label(path: Path) -> str:
     lowered = name.lower()
     if "cindy" in lowered:
         return "Cindy 专用数据目录"
-    if "aion" in lowered:
-        return "AionUI 专用数据目录"
     return f"{name} 数据目录"
 
 

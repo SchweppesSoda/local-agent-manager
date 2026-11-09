@@ -2,53 +2,6 @@
 
 Janitor 用于修复已经形成的残留。长期正确方案仍是：创建 Codex 对话的平台负责完整执行删除生命周期，并为跨数据库/文件系统失败提供可重试状态。
 
-## AionCore v0.1.55：已本地核验的删除顺序问题
-
-我们对安装环境和官方 `v0.1.55` 源码进行了本地核验。该版本的对话删除路径存在一个确定的顺序问题：
-
-1. `ConversationService::delete` 先执行 `conversation_repo.delete(user_id, id)`；
-2. 随后执行 `acp_session_repo.delete_for_user(user_id, id)`；
-3. 但 SQLite `delete_for_user` 的删除条件包含：
-
-   ```sql
-   EXISTS (
-     SELECT 1
-     FROM conversations c
-     WHERE c.id = acp_session.conversation_id
-       AND c.user_id = ?
-   )
-   ```
-
-4. 主 conversation 已经被删掉，因此该 `EXISTS` 为假，ACP 行删除数为 `0`；
-5. `false` 不是数据库错误，调用处也没有检查返回的布尔值，于是残留被静默接受。
-
-官方源码：
-
-- [`ConversationService::delete`](https://github.com/iOfficeAI/AionCore/blob/v0.1.55/crates/aionui-conversation/src/service.rs#L2278-L2319)
-- [`SqliteAcpSessionRepository::delete_for_user`](https://github.com/iOfficeAI/AionCore/blob/v0.1.55/crates/aionui-db/src/repository/sqlite_acp_session.rs#L298-L310)
-
-同一路径也没有看到对 Codex app-server `thread/delete` 的调用，因此即使修正 ACP 行顺序，Codex 对话仍可能留下。
-
-### 建议修复
-
-最小修复：
-
-- 在删除 conversation 前删除 ACP 行；或
-- 增加一个仅供“所有权已经验证”路径使用的 ACP 删除方法；或
-- 建立正确的外键与 `ON DELETE CASCADE`，并补迁移测试；
-- 检查 `rows_affected`，预期存在 ACP 行却删除 `0` 时返回错误。
-
-完整修复：
-
-1. 标记 conversation 为 deleting，停止并等待运行中的 agent。
-2. 在任何删除前读取并持久化 `session_id`、Codex home 和 backend。
-3. 调用 Codex 官方 `thread/delete`。
-4. 在一个 SQLite 事务中删除 ACP 映射、消息与 conversation。
-5. 若跨系统步骤失败，写入 durable deletion outbox，由后台安全重试。
-6. 只有全部完成后才向 UI 广播最终 deleted。
-
-Codex 删除无法与前端 SQLite 放进同一个原子事务，因此 durable outbox 比“尽力而为并只写 warning”可靠。
-
 ## Cindy：软删除与物理保留
 
 Cindy `0.1.23` 的本地核验状态是：

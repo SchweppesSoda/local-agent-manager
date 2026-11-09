@@ -1,9 +1,65 @@
 # Local Agent Record Janitor / 本地 Agent 记录清理器
 
 `local-agent-record-janitor` 是本项目统一使用的仓库名、发行包名和 CLI 命令；Python
-模块名统一为 `local_agent_record_janitor`。它是一个本地、保守的多引擎 Agent 记录检查
-和清理工具：处理 Codex thread、Pi Agent、Claude Code 和 WorkBuddy session，也能精确清除
-Cindy/AionUI 中已经失效的 frontend reference；前端映射不是另一份 native record。
+模块名统一为 `local_agent_record_janitor`。它提供本地 Agent 环境盘点、诊断和多引擎记录
+清理：处理 Codex thread、Pi Agent、Claude Code 和 WorkBuddy session，也能精确清除
+Cindy 中已经失效的 frontend reference；前端映射不是另一份 native record。
+
+## Agent 环境管理
+
+`environment inventory` 盘点已支持布局中的 Agent 程序、客户端和数据根候选，
+`environment doctor` 解释发现的问题及证据缺口。两者只读，不启动发现的程序，不读取
+登录凭据或聊天正文，也不授权清理目录。
+
+```powershell
+local-agent-record-janitor environment inventory --json
+local-agent-record-janitor environment doctor --client cindy --client t3code --json
+# 另一套用户目录或临时测试目录可显式指定，路径不固定到本机用户名：
+local-agent-record-janitor environment inventory --home 'D:\profiles\example' --appdata 'D:\profiles\example\AppData\Roaming' --local-appdata 'D:\profiles\example\AppData\Local' --path-value= --json
+```
+
+环境清单区分独立 CLI、桌面内置程序、Cindy 托管引擎和 T3 ACP。路径中的版本号是版本
+线索，不是程序执行结果；目录存在不证明当前客户端正在使用它，同一账号也不证明数据
+目录共享。覆盖范围和读取错误单独报告，具体字段和边界见
+[Agent 管理设计](docs/design.md#agent-环境与记录的分工)。
+
+客户端提示找不到已安装 CLI 时，按 [Windows PATH 继承排查](skills/agent-management/references/runtime-and-migration.md#windows-path-inheritance)
+核对启动器、客户端与服务端；当前环境命令不会自动读取其他进程的 PATH。
+
+`inventory` 成功生成报告返回 `0`，报告中的 coverage 仍可能不完整。`doctor` 按发现
+报告 `error`、`attention`、`inconclusive` 或 `no_issues_observed`；`error` 返回 `1`，
+其余返回 `0`。顶层探测失败返回 `1`，参数错误返回 `2`。没有发现问题只描述本次有界
+观察，不证明所有安装、登录状态或客户端连接均正常。
+
+仓库提供一个 [agent-management skill](skills/agent-management/SKILL.md)，统一处理环境
+诊断、Agent 安装升级、路径修复、配置迁移和记录清理。环境维护按实际安装渠道与客户端
+接口执行；记录删除继续使用下文的 `records/delete/operation`。`environment doctor`
+与旧 `agent doctor` 的目标存储检查不同。通用 Windows 清理和普通软件维护独立维护，
+不包含在本项目的删除命令中。
+
+Antigravity 的独立 CLI、T3 受管 ACP、T3 的 `agy acp` 模式、桌面程序和 Paseo 插件残留分别识别。前端记录中的
+provider 名称不能证明原生数据归属；未验证的原生格式和完整删除范围继续阻挡。
+具体来源、目录层次与技能操作方法见 [Antigravity 边界](docs/adapters.md#antigravity)。
+
+安装 skill 时将完整 `skills/agent-management` 目录复制到当前 Codex skills 目录；保留
+仓库安装，以便调用 CLI 和读取与该版本相匹配的操作契约。重新加载技能后即可使用。
+
+### Claude 与 Cindy 接入
+
+`environment claude-connect prepare/apply` 将选定的 Claude 程序和原生数据根配置到
+Paseo 或 T3 Code；先生成含文件指纹的计划，再按核对过的哈希应用。配置需为客户端
+已创建的受支持格式，应用前需退出对应配置写入进程。该动作不导入历史或验证登录。
+
+`environment claude-import prepare/apply/verify` 通过官方接口导入并核对前端历史。
+Paseo 支持按完整 Claude 会话 ID 导入；T3 仅支持明确接受的项目级近期历史，可能
+同时包含 Claude、Codex 和 Pi。该命令不发送续聊消息。
+
+`environment cindy-memory inspect/export` 按显式 owner 存储与项目盘点记忆元数据，
+或将精确选定的分片导出为新 Markdown 快照。导出会读取选定的记忆正文，不改源文件，
+也不自动启用项目指令。启用时须保留已有 `CLAUDE.md`／`AGENTS.md` 的加载行为。
+命令示例、会话导入范围与验证方式见 [Claude 接入流程](skills/agent-management/references/claude-connections.md)。
+
+## 记录清理
 
 ### 命名迁移
 
@@ -14,7 +70,7 @@ Cindy/AionUI 中已经失效的 frontend reference；前端映射不是另一份
 
 它主要处理两类问题：
 
-1. AionUI、Cindy 等 Agent 前端已经删除了自己的对话或会话，但它引用的 Codex
+1. Cindy 等 Agent 前端已经删除了自己的对话或会话，但它引用的 Codex
    thread、列表记录或 rollout 内容文件仍留在磁盘。
 2. Codex 自身的 thread 列表记录、rollout 内容文件和 thread 关联关系不一致，例如
    “只有列表记录没有内容”“只有内容没有列表记录”或孤立的关联任务 thread 日志。
@@ -25,9 +81,7 @@ Pi/Claude 的 `complete` 只保证冻结路径、manifest 和批准引用的目�
 
 项目目前处于 **Alpha**。`scan` 和 `records` 始终只读。已实现并验证的删除路径包括
 healthy/native 记录及其已冻结的 frontend reference closure，以及 Cindy 下 Pi/Claude
-的精确 session；AionUI 的 orphan project/conversations row 仅在已探测的支持 schema、
-精确不可变行证据且确认无 `acp_session` 引用时执行，其他 schema 仍为
-`inventory_only`。`records`、`clean` 和 operation
+的精确 session。`records`、`clean` 和 operation
 按各适配器实际能力报告状态：stale/broken 等残留继续由 anomaly scan 提供，不能据此
 声称 `records` 已统一覆盖全部异常类型。live reference 会 fail closed 并使动作不可选。
 远程后端仅在适配器提供权威发现证据时，在 `remote_delete=false` 下报告对应残留；否则只报告能力边界，不声称存在残留，也不执行远程删除。逐项修改命令
@@ -35,7 +89,7 @@ healthy/native 记录及其已冻结的 frontend reference closure，以及 Cind
 会在修改前重验证。
 
 Codex `delete` 的目标是 `(CODEX_HOME, thread_id)`，原生 thread 删除优先调用官方
-Codex `thread/delete`。这个动作不会顺带修改 Cindy/AionUI 数据库；失效的 frontend
+Codex `thread/delete`。这个动作不会顺带修改 Cindy 数据库；失效的 frontend
 reference 会成为另一份独立授权、独立事务和独立验证的精确清理动作。
 
 Codex Desktop 还可能维护一层宿主目录/UI 状态。它不是公开 app-server 数据契约；
@@ -91,25 +145,24 @@ local-agent-record-janitor operation verify --operation-id '<operation-id>' --pl
 [WorkBuddy 适配边界](docs/adapters.md#workbuddy独立本地会话)和
 [operation 契约](docs/operation-cli.md#workbuddy-local-sessions)。
 
-### 千问办公与 QoderWork
+### 千问办公
 
-`records --client qwenwork` 与 `records --client qoderwork` 可只读盘点已识别的 CN 版
+`records --client qwenwork` 可只读盘点已识别的 CN 版
 数据库：主会话、子会话、消息数量、云端/定时任务关联和已知 SDK 会话文件位置。
-两款产品的 profile 与 SDK 数据根分别处理，不与千问网页聊天、Qoder IDE 或 CLI 混用。
+profile 与 SDK 数据根分别处理，不与千问网页聊天混用。
 
 ```powershell
 local-agent-record-janitor records --client qwenwork --json
-local-agent-record-janitor records --client qoderwork --json
 # 自定义 profile 可重复指定；SDK 根也可显式指定：
 local-agent-record-janitor records --client qwenwork --qwenwork-root 'D:\profiles\QwenWorkCN' --qwenwork-sdk-root 'D:\sdk\.qwenworkcn' --json
 ```
 
-当前支持 QwenWorkCN 1.2.5 与 QoderWork CN 0.9.18 的已核实 schema。本地会话可通过
+当前支持 QwenWorkCN 1.2.5 的已核实 schema。本地会话可通过
 `delete plan/apply` 清理数据库、SDK 转录与会话缓存、草稿及已识别的界面引用，再用
 `operation status/verify` 核查结果。安装固定 LevelDB 依赖的方法见
 [办公版操作说明](docs/operation-cli.md#office-local-sessions)。清单不读取消息正文或
 登录凭据；云端、共享 SDK、自动化和无法证明归属的恢复引用仍会阻止对应目标删除。
-用户生成的文件保留。详见[办公版适配边界](docs/adapters.md#千问办公与-qoderworkcn-本地会话清理)。
+用户生成的文件保留。详见[办公版适配边界](docs/adapters.md#千问办公cn-本地会话清理)。
 
 ### Paseo
 
@@ -123,30 +176,60 @@ local-agent-record-janitor records --client paseo --json
 local-agent-record-janitor records --client paseo --paseo-root 'D:\profiles\paseo' --engine codex --json
 ```
 
-适配依据为 Paseo `0.11.0-beta.3` 的固定源码；当前清单范围为 `persisted_agent_registry`。
-普通盘点不证明原生聊天已清除或后台进程已关闭。Windows 上可用显式绑定启用完整操作：
+适配覆盖 Paseo `0.11.0-beta.3` 与 `0.15.3` 的已知注册格式；当前清单范围为 `persisted_agent_registry`。
+Windows 上，[`--paseo-only` 操作](docs/operation-cli.md#只删-paseo-会话)通过正在运行的
+本机 Paseo 0.15.3 daemon 删除一条完整 UUID 对应的会话，复查登记结果并保留 provider 原生历史。
+
+需要同时删除原生历史时，Windows 的显式绑定操作支持 Codex、Pi 和 Claude。
 
 ```powershell
 local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
 ```
 
-计划先列出 Codex/Pi/Claude 原生动作，再清理注册副本、调度中的会话内容及绑定桌面的
+计划先列出 Codex/Pi/Claude 原生动作，再清理注册副本、已完成的创建/发送回执、调度中的会话内容及绑定桌面的
 IndexedDB、文本草稿和布局引用，沿用审批、apply 与冷验证。绑定格式及缓存依赖见
 [Paseo 操作说明](docs/operation-cli.md#paseo-完整本地操作)。未绑定、远程客户端、
 Blob/外部附件和未知旧格式仍阻挡完整删除。标题、配置、凭据与聊天正文不进入报告。详见
 [Paseo 适配边界](docs/adapters.md#paseoagent-注册记录只读盘点)。
 
+### T3 Code
+
+`records --client t3code` 只读盘点 `T3CODE_HOME` 或 `~/.t3` 中的 thread 元数据、
+provider 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固定 schema，
+覆盖 `0.1.8-nightly.20261107.4301` 和 `0.1.8-nightly.20261108.4353`，未知结构阻挡。
+
+```powershell
+local-agent-record-janitor records --client t3code --json
+local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json
+local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
+```
+
+`--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除；支持混合 Antigravity，
+先解除工作树关联，保留 provider 原生会话及工作树，并核验软删除和后台清理结果。
+需要显式 profile 和批准的计划 hash；用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
+
+T3 Nightly `20261108.4353` 起可以用现有 CLI 1.5.0+ 的 `agy acp` 替代受管运行时。
+该模式的原生清理尚未支持，不能复用下述 ACP 1.4.5 绑定；`--t3code-only` 仍保留原生历史。
+切换与卸载方法见 [Antigravity 技能说明](skills/agent-management/references/antigravity.md#switch-t3-to-the-cli-and-remove-the-managed-runtime)。
+
+Windows 显式绑定可使用计划、apply 和冷验证：清理实际 Codex/Claude 存储，或已验证
+T3 ACP 1.4.5 实例的 Antigravity 原生数据库、元数据与会话产物，再清理
+T3 的事件、投影、搜索索引、终端历史和绑定桌面的草稿/布局。执行持有 T3 自身的
+server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境会阻挡。标题、正文与凭据
+不进入报告。绑定格式及支持范围见 [T3 Code 操作说明](docs/operation-cli.md#t3-code-完整本地操作)
+和 [适配边界](docs/adapters.md#t3-code本机数据库与完整清理)。
+
 ### 术语与身份边界
 
 | 层 | 本项目中的含义 |
 |---|---|
-| Frontend namespace | Cindy/AionUI 自己的 owner、数据库、对话或会话 ID，以及它们到原生记录的 frontend reference/mapping |
+| Frontend namespace | Cindy 自己的 owner、数据库、对话或会话 ID，以及它们到原生记录的 frontend reference/mapping |
 | Harness runtime | 实际运行的 Codex、Pi Agent 或 Claude Code harness、二进制路径和版本 |
 | Native store | `CODEX_HOME`、Pi `session_root`、Claude Code config root 或独立 WorkBuddy profile root |
 | Native record | Codex 的 `(codex_home, thread_id)`、Pi 的 storage-qualified JSONL session、Claude Code 的 config-qualified session manifest、WorkBuddy 的 profile-qualified session |
 
 跨引擎叙述统一使用 **local agent record / 原生记录**。Codex 对象严格称为
-**thread**，Pi Agent、Claude Code 与 WorkBuddy 对象称为 **session**；Cindy/AionUI 行称为
+**thread**，Pi Agent、Claude Code 与 WorkBuddy 对象称为 **session**；Cindy 行称为
 **frontend reference**。认证来源、登录状态和账号绑定只可作为诊断事实，不参与
 删除目标身份，也不能代替 native store 与 native record 的精确限定；它们至多说明
 某个 harness 如何获得运行授权。
@@ -183,16 +266,15 @@ OpenAI 稳定 API。
 
 | 范围 | 检查依据 | 当前候选动作 |
 |---|---|---|
-| AionUI | 前端对话已不存在，但 `acp_session` reference 仍在；并要求 Codex backend/originator 证据 | Codex thread 与精确映射分成独立动作；映射仅以主键或重验证的 `rowid + 完整行指纹` 删除 |
-| AionUI：orphan project/conversations row | 已探测支持 schema，`conversations` 行存在且没有任何 `acp_session` reference，并冻结完整行证据 | 仅满足上述证明时按数据库集合精确删除；其他 schema 只读列入 `orphan_project` / `inventory_only` |
 | Cindy | 软删除会话，或通过完整 Cindy 会话 ID 明确选择的保留会话；已失效的当前 `sdk_session_id` 或历史 `agent_switch` 引用 | 同一数据库内批量物理删除已批准的会话、消息、索引和支持的依赖；项目范围默认只选软删除行；引用清理仍使用精确字段/JSON 写入 |
 | Pi Agent | standalone 及每个 Cindy `<profile>/pi-agent-home/sessions` 的有界 JSONL 盘点 | 逐个精确删除可选 JSONL；live Cindy current/historical 引用阻止删除 |
 | Claude Code | effective config root 及可确定归属的 Cindy `claude-home`/默认 root | 逐 session 删除精确 manifest；共享配置、memory/history/index 保留 |
 | WorkBuddy | 独立 profile 的 5.6.2 SQLite 元数据、精确会话文件及 sidebar/pinned 引用 | `delete_workbuddy_session` 与独立 `remove_workbuddy_ui_reference`；已证明的本地终态会话或仅置顶引用，未知归属及云同步关联阻止删除 |
 | Orca | 本机 journal、profile 界面及恢复副本、已证明的 managed Codex home | 限定 Windows/Codex 组合支持完整操作及冷验证；未知恢复、其他引擎、runtime home 与远端写入关闭 |
 | Herdr | 持久化 current/restore 引用及显式本机 live metadata | Windows 显式绑定支持原生记录、窗格、历史和恢复副本清理；默认无绑定盘点仍只读 |
-| 千问办公 / QoderWork CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
-| Paseo | agent 注册副本、提供者记录、调度和显式绑定桌面缓存 | Windows 显式绑定支持 Codex/Pi/Claude → 服务端及桌面清理与冷验证；无绑定盘点仍只读，远程与未知缓存阻挡 |
+| 千问办公 CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
+| Paseo | agent 登记、提供者记录、调度和显式绑定桌面缓存 | Windows `--paseo-only` 经本机 daemon 删除登记；显式绑定支持 Codex/Pi/Claude 原生、服务端及桌面完整清理 |
+| T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 固定 schema；Windows 显式绑定支持 Codex/Claude → T3 清理与冷验证，未绑定只读 |
 | Codex：index-only | thread 列表记录存在，但 rollout 内容文件不存在 | 删除整个 thread，通常为 `low` |
 | Codex：rollout-only | rollout 内容文件存在，但 thread 列表记录不存在 | 删除整个 thread，属于 `high`，必须明确选择 |
 | Codex：重复内容文件 | 同一 thread ID 有多份可验证 rollout 内容文件 | 保留，或把全部已确认副本作为整条 thread 的 `high` 风险删除范围；不提供隔离动作 |
@@ -204,7 +286,7 @@ OpenAI 稳定 API。
 
 已支持的发现会成为 Observation，并按能力显示 CandidateAction。当前可执行 mutation
 包括 healthy/native 及已冻结 frontend closure、整条 Codex thread、旧索引残留、Desktop
-宿主残留、精确关系边、AionUI/Cindy 引用，以及 Pi/Claude/WorkBuddy 的精确 session 删除；stale/
+宿主残留、精确关系边、Cindy 引用，以及 Pi/Claude/WorkBuddy 的精确 session 删除；stale/
 broken 的完整发现仍走 anomaly scan，不保证从 `records` 统一进入可执行计划。
 `repair_index_path` 和 `quarantine_artifacts` 只保留旧 JSON 枚举兼容，不再生成或提供；
 无法证明身份和完整范围的异常记录只能保留。
@@ -215,8 +297,9 @@ broken 的完整发现仍走 anomaly scan，不保证从 `records` 统一进入�
 
 支持边界：
 
+- AionUI 和 QoderWork CN 已移除适配、参数及专用写入路径；包含其客户端身份或前端引用的旧计划会在执行前被拒绝。
 - native 扫描可在 Windows、macOS 和 Linux 使用，前提是 Codex 使用标准 `~/.codex` 数据布局，且可信的 `codex` 可执行文件位于 `PATH`；
-- AionUI 和 Cindy 的默认数据库、数据目录及捆绑 Codex 自动发现目前主要针对 Windows；
+- Cindy 的默认数据库、数据目录及捆绑 Codex 自动发现目前主要针对 Windows；
 - 其他平台上的第三方前端路径尚无公开 CLI 支持承诺，不应依赖隐藏参数或内部程序接口建立自动化。
 - Pi Agent 在 Windows、macOS 和 Linux 均使用其公开的本地会话布局；默认目录为 `~/.pi/agent`，会话目录为 `~/.pi/agent/sessions`。会话目录的优先级为 `--pi-session-dir`、`PI_CODING_AGENT_SESSION_DIR`、合并后的项目/全局 `settings.json` 的 `sessionDir`、再到 `<agentDir>/sessions`；agent 目录本身按 `--pi-agent-dir`、`PI_CODING_AGENT_DIR`、`~/.pi/agent` 解析。`--pi-agent-dir` 不会覆盖明确的 session directory。
 - Claude Code 的普通 `~/.claude`/`CLAUDE_CONFIG_DIR` 清单和逐项删除可在 Windows、macOS 和 Linux 使用；Cindy profile 的自动发现仍受上一条 Windows 边界约束。
@@ -271,7 +354,7 @@ python3 -m local_agent_record_janitor scan --platform native
 
 ## 快速开始
 
-先关闭 AionUI、Cindy 和正在使用同一 `CODEX_HOME` 的 Codex 客户端，再扫描：
+先关闭 Cindy 和正在使用同一 `CODEX_HOME` 的 Codex 客户端，再扫描：
 
 ```powershell
 local-agent-record-janitor scan
@@ -283,11 +366,11 @@ local-agent-record-janitor scan
 local-agent-record-janitor gui
 ```
 
-GUI 会只读聚合原生 Codex、Cindy 和 AionUI 记录，支持按名称、项目、路径或完整
+GUI 会只读聚合原生 Codex、Cindy 记录，支持按名称、项目、路径或完整
 thread ID 搜索。点击第一列逐项勾选，不提供“一键全选”；不可删除的行仍会显示，详情
 区会说明 live reference、清单不完整或其他 blocker。最终窗口列出每个根 thread、完整
 级联范围、已发现 rollout 文件数、将精确清理的 Codex Desktop 引用、仍会保留的
-Cindy/AionUI 引用和组合计划指纹。只有勾选“客户端已关闭”并输入
+Cindy 引用和组合计划指纹。只有勾选“客户端已关闭”并输入
 `客户端已关闭并确认永久删除` 后才会执行；执行前会重新盘点并精确比较原生与 Desktop
 状态指纹，完成后再次只读刷新。GUI 不读取或展示聊天正文。
 
@@ -296,11 +379,11 @@ Cindy/AionUI 引用和组合计划指纹。只有勾选“客户端已关闭”�
 原生删除达到可验证状态后，再删除绑定到同一范围且 `host_id='local'` 的精确 Codex
 Desktop catalog 行和结构化 UI 引用。Desktop 批次仍要求所属客户端关闭、快照指纹
 完全匹配、SQLite/JSON 临时回滚副本、精确影响数量和写后复核；任一步不确定都会停止
-并报告 residual/unknown，不会重试删除。Cindy/AionUI 数据库仍是独立所有者，不在这次
+并报告 residual/unknown，不会重试删除。Cindy 数据库仍是独立所有者，不在这次
 GUI 授权范围内，相关引用会在确认窗口中明确显示为保留项。
 
-如果目标是一次清理原生 Codex、Cindy 和 AionUI 中当前所有**可执行异常残留**，在
-完全退出 Codex/ChatGPT Desktop、Cindy 和 AionUI 后，从外部 PowerShell 运行：
+如果目标是一次清理原生 Codex、Cindy 中当前所有**可执行异常残留**，在
+完全退出 Codex/ChatGPT Desktop、Cindy 后，从外部 PowerShell 运行：
 
 ```powershell
 local-agent-record-janitor purge --yes --clients-closed
@@ -315,7 +398,7 @@ kind 拆成不可变批次，依次处理 thread、旧索引、Desktop 状态、
 共享 SQLite/JSON 写入前只创建临时回滚副本，验证成功后立即删除。任何完整扫描失败、
 计划漂移或执行错误都会停止后续批次；受阻动作保留并计数，并以退出码 `3` 和
 `goal_satisfied=false` 明确表示目标未完成，
-不会再显示为成功。可用 `--platform native|cindy|aionui` 把候选范围缩小到单一
+不会再显示为成功。可用 `--platform native|cindy` 把候选范围缩小到单一
 来源，但所有已发现前端仍参与 live-reference 安全检查。
 
 对于需要统一盘点多个项目、引擎和物理存储的 Agent，使用 operation API。一次 operation
@@ -366,7 +449,7 @@ Agent 命令只输出 JSON、不读取 stdin；计划只授权一个不可变动
 [AGENTS.md](AGENTS.md)；实际清理先读 [operation contract](docs/agent-operation-contract.md)，
 再按任务选择新版接口、旧版协议或恢复章节。
 
-列出当前支持适配器可见的正常/异常 Codex thread 及 Cindy/AionUI frontend reference：
+列出当前支持适配器可见的正常/异常 Codex thread 及 Cindy frontend reference：
 
 ```powershell
 local-agent-record-janitor records
@@ -393,7 +476,7 @@ Codex thread ID 的 Cindy `status=deleted` 前端记录也会显示，并可由�
 或删除授权。`--inspect-clients` 使用客户端明确声明的
 owner process root；它与 native root 分开。`probe_complete` 表示探测成功，
 `coverage_complete` 另行说明限定进程范围的覆盖；当前仅检查 Windows 下 Codex、
-ChatGPT、AionUI、Cindy 四类进程。明确选择 Herdr 时改用下述 metadata API 观察；
+ChatGPT、Cindy 三类进程。明确选择 Herdr 时改用下述 metadata API 观察；
 Herdr 的全部 writer、Pi/Claude 运行时、任意 node/server 和非 Windows 进程归属
 未被完整覆盖，不能由空结果推断 `clients_closed=true`。
 
@@ -480,11 +563,9 @@ Claude config root 按 `--claude-config-dir`、`CLAUDE_CONFIG_DIR`、`~/.claude`
 
 来源视图有明确边界：`--platform cindy` 显示 Cindy 专用 `codex-home` 中的全部
 Codex thread 及其 frontend reference，即使 SQLite reference 已经消失；
-`--platform aionui` 因与原生 Codex 共享 native store，只显示有明确 AionUI reference
-的 thread 和未映射行；`--platform native` 显示原生 `CODEX_HOME` 的完整底层清单；
-默认 `all` 显示三者并集。`delete` 使用同样的可选目标视图，但安全盘点始终读取相关
-native store 的完整状态，并把所有已发现的 Cindy/AionUI adapter 保留为 frontend
-reference guard，不会因为显示过滤而放宽删除检查。
+`--platform native` 显示原生 `CODEX_HOME` 的完整底层清单，默认 `all` 显示两者并集。
+`delete` 使用同样的可选目标视图，但安全盘点始终读取相关 native store 的完整状态，
+并保留已发现的 Cindy adapter 作为 frontend reference guard，不会因为显示过滤而放宽删除检查。
 
 TTY 中逐项选择任意记录永久删除：
 
@@ -494,7 +575,7 @@ local-agent-record-janitor delete
 
 输入编号或范围（例如 `1,3-4`）；`delete` 不接受 `all`。Codex 最终计划会展示完整
 根 thread ID、所有级联关联任务 thread、绝对数据目录、计划指纹和不会被删除的
-Cindy/AionUI frontend reference。输入专用确认句 `客户端已关闭并确认永久删除` 后，
+Cindy frontend reference。输入专用确认句 `客户端已关闭并确认永久删除` 后，
 工具会重建清单、精确比较批准指纹，再调用官方接口。
 
 非 TTY/自动化必须先明确目标做一次预览；预览退出码为 `2`，JSON 中包含所选范围的 `plan_fingerprint`：
@@ -527,7 +608,6 @@ TTY 可在 Pi 清单显示后输入一个临时编号；不支持 `all`。默认
 仅扫描一个来源：
 
 ```powershell
-local-agent-record-janitor scan --platform aionui
 local-agent-record-janitor scan --platform cindy
 local-agent-record-janitor scan --platform native
 ```
@@ -588,7 +668,7 @@ local-agent-record-janitor clean --action-id delete_conversation-完整动作ID 
 
 旧版聚合索引是文件资源，不是虚构的 Codex thread ID，不能用 `--thread-id` 选择、
 不能被 `all` 纳入，也不能与 thread 删除混跑。关闭使用同一数据目录的 Codex、
-AionUI 和 Cindy 后，可用计划中的兼容 action kind `repair_legacy_index` 精确移除已证明
+Cindy 后，可用计划中的兼容 action kind `repair_legacy_index` 精确移除已证明
 失效的原始整行：
 
 ```powershell
@@ -602,7 +682,7 @@ local-agent-record-janitor clean --action-id repair_legacy_index-完整动作ID 
 副本才暂时保留，等待 `verify` 收口。
 
 原生记录已经消失、但 Codex Desktop 侧栏/目录状态仍残留时，先完全退出
-Codex/ChatGPT Desktop、AionUI、Cindy，再从外部 PowerShell 获取高风险动作和计划
+Codex/ChatGPT Desktop、Cindy，再从外部 PowerShell 获取高风险动作和计划
 指纹，并保持这些客户端关闭直到执行完成。关闭客户端可能触发最后一次状态写入，
 所以不要在关闭前复制计划指纹：
 
@@ -669,7 +749,7 @@ Pi 没有对应的 Codex app-server 删除 API。Pi 上游将会话保存为 `se
   来源无冲突时，才可提供窄范围 `high` 风险整个 thread 删除；这会删除该子 thread
   及其批准的关联任务范围。若只剩无效关系边，则 `remove_broken_relation` 只在
   parent、child、status、schema 与完整行指纹仍完全匹配时删除该一行；
-- AionUI/Cindy 引用和关系边写入按一个物理数据库拆批，要求客户端关闭、schema 白名单、
+- Cindy 引用和关系边写入按一个物理数据库拆批，要求客户端关闭、schema 白名单、
   事务、精确影响行数、写后重读及临时回滚保护；
 - Cindy 的 `deleted` 是前端软删除状态，但一旦对应 Codex thread 被硬删除，就不能靠
   恢复 Cindy 状态找回 Codex 正文。
@@ -737,9 +817,8 @@ Pi 没有对应的 Codex app-server 删除 API。Pi 上游将会话保存为 `se
   任务运行历史使用独立的 `--record-id schedule-run:<完整运行 ID>` 选择，保留任务定义与会话；
   具体范围和恢复要求见 [operation 协议](docs/operation-cli.md)。
   独立引用清理仍只清空精确 `sdk_session_id`，或从绑定消息 ID 和内容哈希的
-  `agent_switch` JSON 中移除 `fromSdkSessionId`。AionUI orphan project/
-  conversations row 仅在已证明支持 schema、完整行证据且无 session 引用时删除；其他 schema
-  仍为 inventory-only。远程能力为 `remote_delete=false` 时，只有适配器提供权威发现证据才报告对应残留；否则只报告能力边界，不执行远程写入。
+  `agent_switch` JSON 中移除 `fromSdkSessionId`。远程能力为 `remote_delete=false` 时，
+  只有适配器提供权威发现证据才报告对应残留；否则只报告能力边界，不执行远程写入。
 - `scan` 与 `clean` 目前不处理 Pi/Claude；显式传入对应 platform 会返回不支持错误，而 `--platform all` 保持 Codex 原有行为。
 
 更多说明：

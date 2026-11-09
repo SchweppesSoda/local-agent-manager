@@ -28,10 +28,6 @@ from .frontend_reference_cleanup import (
     FrontendReferenceCleanupResult,
     execute_frontend_reference_cleanup,
 )
-from .frontend_project_cleanup import (
-    FrontendProjectCleanupResult,
-    execute_aionui_project_cleanup,
-)
 from .frontend_session_cleanup import (
     FrontendSessionCleanupResult,
     execute_cindy_session_cleanup,
@@ -89,7 +85,6 @@ class ExecutionOutcome:
     legacy_repair: LegacyIndexRepairResult | None = None
     desktop_cleanup: DesktopCleanupResult | None = None
     frontend_cleanup: FrontendReferenceCleanupResult | None = None
-    frontend_project_cleanup: FrontendProjectCleanupResult | None = None
     native_project_cleanup: NativeProjectCleanupResult | None = None
     frontend_session_cleanup: FrontendSessionCleanupResult | None = None
     relation_cleanup: RelationCleanupResult | None = None
@@ -101,9 +96,12 @@ class ExecutionOutcome:
     orca_cleanup: Any | None = None
     herdr_cleanup: Any | None = None
     paseo_cleanup: Any | None = None
+    t3code_cleanup: Any | None = None
 
     @property
     def ok(self) -> bool:
+        if self.t3code_cleanup is not None:
+            return True
         if self.paseo_cleanup is not None:
             return True
         if self.herdr_cleanup is not None:
@@ -126,7 +124,6 @@ class ExecutionOutcome:
             self.legacy_repair is not None
             or self.desktop_cleanup is not None
             or self.frontend_cleanup is not None
-            or self.frontend_project_cleanup is not None
             or self.native_project_cleanup is not None
             or self.frontend_session_cleanup is not None
             or self.relation_cleanup is not None
@@ -134,6 +131,8 @@ class ExecutionOutcome:
 
     @property
     def modified(self) -> bool:
+        if self.t3code_cleanup is not None:
+            return bool(self.t3code_cleanup.deleted_ids)
         if self.paseo_cleanup is not None:
             return bool(self.paseo_cleanup.deleted_ids)
         if self.herdr_cleanup is not None:
@@ -150,14 +149,14 @@ class ExecutionOutcome:
             return bool(self.native_project_cleanup.entries_removed)
         if self.frontend_session_cleanup is not None:
             return bool(self.frontend_session_cleanup.deleted_session_count)
-        if self.frontend_project_cleanup is not None:
-            return bool(self.frontend_project_cleanup.deleted_row_count)
         if self.frontend_cleanup is not None:
             return bool(self.frontend_cleanup.removed_reference_count)
         return False
 
     @property
     def results(self) -> tuple[Any, ...]:
+        if self.t3code_cleanup is not None:
+            return (self.t3code_cleanup,)
         if self.paseo_cleanup is not None:
             return (self.paseo_cleanup,)
         if self.herdr_cleanup is not None:
@@ -174,14 +173,17 @@ class ExecutionOutcome:
             return (self.native_project_cleanup,)
         if self.frontend_session_cleanup is not None:
             return (self.frontend_session_cleanup,)
-        if self.frontend_project_cleanup is not None:
-            return (self.frontend_project_cleanup,)
         if self.frontend_cleanup is not None:
             return (self.frontend_cleanup,)
         return ()
 
     def audit_payload(self) -> dict[str, Any]:
         """Return mutation evidence without observations or chat bodies."""
+
+        if self.t3code_cleanup is not None:
+            return {"command": "delete", "mutation_kind": self.mutation_kind,
+                    "selected_action_ids": [str(a.action_id) for a in self.selected_actions],
+                    "result": self.t3code_cleanup.to_dict(), "plan_fingerprint": str(self.plan.plan_fingerprint)}
 
         if self.paseo_cleanup is not None:
             return {"command": "delete", "mutation_kind": self.mutation_kind,
@@ -250,16 +252,6 @@ class ExecutionOutcome:
                     str(action.action_id) for action in self.selected_actions
                 ],
                 "result": self.frontend_cleanup.to_dict(),
-                "plan_fingerprint": str(self.plan.plan_fingerprint),
-            }
-        if self.frontend_project_cleanup is not None:
-            return {
-                "command": "clean",
-                "mutation_kind": "delete_project_item",
-                "selected_action_ids": [
-                    str(action.action_id) for action in self.selected_actions
-                ],
-                "result": self.frontend_project_cleanup.to_dict(),
                 "plan_fingerprint": str(self.plan.plan_fingerprint),
             }
         if self.frontend_session_cleanup is not None:
@@ -782,6 +774,21 @@ def _execute_prevalidated_actions_locked(
             frontend_session_cleanup=result,
         )
 
+    if mutation_kind == "delete_t3code_frontend":
+        from .t3code_cleanup import execute, action_id
+        evidence = actions[0].impact.external_action_payload["t3code_evidence"]
+        if (len(actions) != 1 or str(actions[0].action_id) != action_id(evidence)
+                or actions[0].target.thread_id != evidence["frontend_id"]
+                or actions[0].impact.owner_client != "t3code"
+                or actions[0].impact.external_storage_root != evidence["root"]
+                or actions[0].impact.owner_process_root != evidence["root"]):
+            raise ExecutionError("T3 Code frontend action scope mismatch")
+        def forward_t3code_phase(phase):
+            if action_state_callback is not None:
+                action_state_callback(phase, actions[0], None)
+        result = execute(evidence, phase_callback=forward_t3code_phase)
+        return ExecutionOutcome(mutation_kind=mutation_kind, selected_actions=tuple(actions), plan=plan, t3code_cleanup=result)
+
     if mutation_kind == "delete_paseo_frontend":
         from .paseo_cleanup import execute, action_id
         evidence = actions[0].impact.external_action_payload["paseo_evidence"]
@@ -891,54 +898,6 @@ def _execute_prevalidated_actions_locked(
         return ExecutionOutcome(mutation_kind=mutation_kind, selected_actions=actions,
                                 plan=plan, native_project_cleanup=result)
 
-    if mutation_kind == "delete_project_item":
-        database_paths = {
-            str(path)
-            for action in actions
-            for path in getattr(
-                action.impact,
-                "frontend_project_database_paths",
-                (),
-            )
-        }
-        if len(database_paths) != 1:
-            raise ExecutionError(
-                "One frontend project batch must target one physical database.",
-                kind="multiple_frontend_project_storages",
-                matches=[str(action.action_id) for action in actions],
-            )
-        evidence = tuple(
-            dict(item)
-            for action in actions
-            for item in getattr(
-                action.impact,
-                "frontend_project_evidence",
-                (),
-            )
-        )
-        if len(evidence) != len(actions):
-            raise ExecutionError(
-                "Every project action must bind exact row evidence.",
-                kind="frontend_project_evidence_incomplete",
-                matches=[str(action.action_id) for action in actions],
-            )
-
-        def forward_project_phase(phase: str) -> None:
-            if action_state_callback is None:
-                return
-            for action in actions:
-                action_state_callback(phase, action, None)
-
-        result = execute_aionui_project_cleanup(
-            evidence,
-            phase_callback=forward_project_phase,
-        )
-        return ExecutionOutcome(
-            mutation_kind=mutation_kind,
-            selected_actions=actions,
-            plan=plan,
-            frontend_project_cleanup=result,
-        )
 
     if mutation_kind == "remove_broken_relation":
         database_paths = {

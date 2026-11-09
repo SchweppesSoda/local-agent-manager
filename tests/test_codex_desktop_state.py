@@ -693,7 +693,7 @@ class CodexDesktopStateTests(unittest.TestCase):
             {
                 "process_id": 201,
                 "parent_process_id": 1,
-                "name": "AionUI.exe",
+                "name": "UnrelatedApp.exe",
                 "executable_path": None,
                 "command_line": None,
             },

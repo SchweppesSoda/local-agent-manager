@@ -7,12 +7,14 @@ partitioning, journal recovery, mutation, and verification belong to the
 CLI does not maintain a second scanner or mutation implementation. The
 implemented deletion paths currently cover healthy/native records with a
 frozen frontend closure, Cindy Pi/Claude sessions, exact supported local WorkBuddy and Office sessions, and Cindy frontend sessions
-whose exact row status is `deleted`. AionUI orphan
-project/conversations rows are executable only for the probed supported schema
-with immutable row evidence and zero `acp_session` references; other schemas
-remain `inventory_only`.
+whose exact row status is `deleted`.
 
 ## Commands
+
+Plans containing retired `aionui` or `qoderwork` client identities are rejected
+before storage guards, recovery or mutation, including native-scoped plans with
+retired frontend references. Their old command-line selectors and path options
+are no longer accepted. Supported clients require a fresh plan for their own scope.
 
 The `native` client also supports exact stale local-environment registrations
 through the independent `delete_native_project` family. See
@@ -21,7 +23,7 @@ through the independent `delete_native_project` family. See
 Use one client per operation. A plan/run selects exactly one scope mode:
 
 ```text
-records --client <native|codex-native|cindy|aionui|pi|claude|orca|herdr|workbuddy|qwenwork|qoderwork|paseo> [--project <selector> ...]
+records --client <native|codex-native|cindy|pi|claude|orca|herdr|workbuddy|qwenwork|paseo|t3code> [--project <selector> ...]
 delete plan --client <client> (--project <selector> ... | --all-projects | --record-id <id> ...)
 delete apply --operation-id <id> [--plan <plan.json>] [--clients-closed]
 delete run --client <client> (--project <selector> ... | --all-projects | --record-id <id> ...)
@@ -92,6 +94,16 @@ to read cannot become an empty guard set. Store-qualified failures affect the
 matching approved store; unscoped coverage failure of a required profile blocks
 dispatch. Only bounded product metadata is refreshed, without another native
 planner pass.
+
+A guard-only Orca profile with no journal may qualify a narrower read-only
+absence proof. It requires a valid profile index, every indexed profile's v3
+database, all registered JSON/SQLite recovery copies, and empty session-bearing
+state in profiles, legacy records and hook namespaces. Only the supported plain
+terminal layout is accepted. Unknown domains, bindings, restore files, schema
+changes, unreadable sources or changes between observations keep the original
+blockers. The proof is rebuilt for each required-source check, including apply
+and verify; it never grants Orca mutation capabilities or substitutes for
+`--clients-closed`. Missing journals without that positive evidence stay blocked.
 
 Qualified Orca native deletion uses `larj.operation-plan.v3`. Its target safety
 evidence freezes one managed account home, each complete native cascade, ordinary
@@ -242,10 +254,9 @@ sources, the closed-client CJK fallback, and regression fixtures.
 
 ## Office local sessions
 
-`records --client qwenwork|qoderwork` reads independently registered CN database
-schemas and known SDK UUID locations. Repeatable `--qwenwork-root` /
-`--qoderwork-root` select profiles; `--qwenwork-sdk-root` / `--qoderwork-sdk-root`
-select the shared SDK root for that product. IDs stay qualified by client and
+`records --client qwenwork` reads the registered CN database schema and known
+SDK UUID locations. Repeatable `--qwenwork-root` selects profiles;
+`--qwenwork-sdk-root` selects the shared SDK root. IDs stay qualified by client and
 profile. Unknown schemas and inaccessible sources cannot produce empty success.
 
 `inventory_scope=database_metadata_and_known_sdk_paths` describes the body-free
@@ -261,7 +272,7 @@ local-agent-record-janitor delete apply --operation-id '<operation ID from plan>
 local-agent-record-janitor operation verify --operation-id '<operation ID from plan>' --plan office-plan.json --json
 ```
 
-Use `qoderwork` for QoderWork CN. The dependency installer requires Node.js 18
+The dependency installer requires Node.js 18
 or newer and npm; it installs the locked `classic-level` package without install
 scripts. `LARJ_LEVELDB_RUNTIME` can select a dedicated runtime directory.
 Deletion never installs dependencies implicitly. Freeze/apply bind the Node
@@ -280,7 +291,7 @@ Only the registered CN schemas and proven local ownership qualify. Shared SDK
 UUIDs, selected remote mappings, automation/import/fork/ACP recovery references,
 unknown UI formats, changed runtime or store evidence produce targeted blockers.
 Workspace files, generated artifacts, credentials and cloud records are preserved.
-See [the evidence and limits](adapters.md#千问办公与-qoderworkcn-本地会话清理).
+See [the evidence and limits](adapters.md#千问办公cn-本地会话清理).
 
 ## Paseo agent registry metadata
 
@@ -300,8 +311,34 @@ snapshots and unreadable sources report incomplete inventory rather than an empt
 schedules, workspaces, client caches or all writers. Saved status is not a live
 probe: `--inspect-clients` keeps `clients_closed=null`. No daemon is started or
 contacted. Without an explicit binding, mutation and verification capabilities are disabled; plan/run/apply
-and cold status/verify remain blocked without dispatching a native writer. See
+and cold status/verify for full local cleanup remain blocked without dispatching a native writer. See
 [Paseo boundaries](adapters.md#paseoagent-注册记录只读盘点).
+
+For `antigravity`, inventory retains `unsupported:antigravity` and reports a
+`provider_backend_family_hint` plus `native_cleanup_status=unsupported` in record
+metadata. The hint describes the built-in provider family; custom implementations
+and effective native homes still require evidence. It does not enable deletion or
+make a serialized provider handle a native record ID. See
+[Antigravity ownership and cleanup boundaries](adapters.md#antigravity).
+
+### 只删 Paseo 会话
+
+Windows 上的 `--paseo-only` 通过正在运行的本机 Paseo 0.15.3 daemon 删除一条
+会话。需要标准用户安装位置的 Paseo 桌面分发包、一个显式的 `--paseo-root` 和
+一个完整 Paseo 会话 UUID。Paseo 使用自己的删除接口关闭该会话并移除登记和时间线。
+Codex、Antigravity 等 provider 的原生会话保留。该模式覆盖 daemon 的登记与时间线，
+桌面离线副本、调度和其他产品的记录在范围之外。
+
+```powershell
+local-agent-record-janitor delete plan --client paseo --paseo-only --paseo-root 'D:\PaseoHome' --record-id '<完整 Paseo 会话 UUID>' --out plan.json --json
+local-agent-record-janitor delete apply --paseo-only --operation-id '<operation_id>' --plan plan.json --plan-sha256 '<plan_sha256>' --json
+local-agent-record-janitor operation verify --operation-id '<operation_id>' --plan plan.json --json
+```
+
+apply 使用冻结的 profile 和计划哈希，执行与核验期间保持目标 daemon 运行。
+终验复查 daemon 与磁盘登记中的精确 ID。超时、身份不一致或回执后仍有记录时，
+执行 `operation status` 和 `operation verify`。结果为 `unknown` 的计划进入只读恢复。
+协议和版本边界见 [Paseo daemon 删除](adapters.md#paseo-daemon-删除)。
 
 ### Paseo 完整本地操作
 
@@ -342,6 +379,131 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 下载并核对固定 SHA 的测试依赖；该命令不安装或启动 Paseo。
 完整范围、中断恢复和明确阻挡条件见
 [Windows 清理边界](adapters.md#paseowindows-显式绑定的完整清理)。
+
+## 只删 T3 会话
+
+Windows `--t3code-only` 使用本机已安装 T3 Nightly 的 CLI 发放短期凭证，通过该 profile
+的回环服务调用 `thread.delete`。要求服务运行、所选 thread 空闲、完整 ID 精确匹配，
+并显式指定一个 T3 home；不接受 ID 前缀、批量 project 范围或 native bindings。
+支持已验证的 `0.1.8-nightly.20261107.4301` / `0.1.8-nightly.20261108.4353` 和固定数据库结构。
+
+```powershell
+local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json
+local-agent-record-janitor delete apply --t3code-only --operation-id '<计划中的 operation_id>' --plan t3-only.json --plan-sha256 '<已批准的 plan_sha256>' --json
+local-agent-record-janitor operation verify --operation-id '<同一 operation_id>' --plan t3-only.json --json
+```
+
+计划固定 profile、environment ID、服务实例、运行文件摘要和所选记录。删除前先通过
+`thread.metadata.update` 的预期路径/分支条件解除工作树关联，读回确认后再删除，
+所以启用 `worktreeOnDelete` 也保留原工作树。核验要求删除标记一致、没有活动运行、
+后台 effects 全部结束、原生引用不变且工作树目录身份仍一致；并非收到 RPC 响应就成功。
+临时凭证只在进程内传递，并通过自带 CLI 撤销。
+
+这实现 T3 自带软删除，保留 provider 原生会话及工作树，不宣称 T3 全部历史物理清除。
+Codex、Claude、Antigravity 混合 profile 不需要原生绑定，选中 Antigravity 也适用。
+不更改原生存储，因此原生保留依据是已验证接口语义、引用不变和临时 profile 验收；
+运行时不会扫描或散列全部原生会话。工作树内容也不递归扫描。
+不要求 `--clients-closed`，也不能与 `--t3code-bindings` / `--paseo-only` 合用。
+超时或解除关联后的异常进入 `unknown`，禁止重发；使用原计划 `status/verify`。
+
+## T3 Code 完整本地操作
+
+先用 `records --client t3code --json` 获取元数据，或用可重复的 `--t3code-root` 指定
+实际 T3 home（包含 `userdata` 的目录，不是 Electron 桌面 profile）。默认使用
+`T3CODE_HOME` 或 `~/.t3`。普通 inventory 不执行删除，也不推断原生 provider 根目录。
+
+Antigravity 记录仍使用 `unsupported:antigravity`；元数据的
+`provider_backend_family_hint=antigravity-acp` 只描述内置实现线索，
+`native_cleanup_status=requires_t3code_binding` 表示需要显式绑定才能验证原生清理资格。
+T3 的托管运行时、隔离配置、会话文件和前端数据库不能互相替代；参见
+[Antigravity 边界](adapters.md#antigravity)。
+
+混合 profile 中没有原生 ID 的 Antigravity provider 仍然可见；将默认 provider 改成
+Codex 或提供 Codex 绑定，不能绕过原生 provider 和实例的资格检查。
+
+Windows 的显式绑定文件使用以下格式；`environment_id` 必须来自该 profile 的
+`userdata/environment-id`，`native_stores` 必须覆盖所有已观察 thread。示例路径和 ID
+必须替换为已确认的本机值，不能直接复制执行。T3 thread ID 与原生 ID 分开处理。
+
+```json
+{
+  "schema_version": "larj.t3code-bindings.v1",
+  "profile_root": "D:/T3Home",
+  "environment_id": "environment-id-from-file",
+  "runtime_binaries": ["D:/Apps/T3/T3 Code (Nightly).exe"],
+  "native_stores": [
+    {"thread_id": "t3-thread-id-1", "engine": "codex", "root": "D:/CodexHome", "codex_binary": "D:/Apps/Codex/codex.exe"},
+    {"thread_id": "t3-thread-id-2", "engine": "claude", "root": "D:/ClaudeConfig"}
+  ],
+  "desktop_profiles": [
+    {"root": "D:/T3DesktopProfile", "runtime_binaries": ["D:/Apps/T3/T3 Code (Nightly).exe"]}
+  ]
+}
+```
+
+绑定所有相关的本地 runtime 文件和桌面 profile（Windows 常见桌面路径为
+`%APPDATA%/t3code-v2`）。仅明确限定 headless 服务端时才能用 `desktop_profiles: []`；
+它不能代表浏览器、移动端或远程副本已经删除。桌面缓存需要已安装的固定 LevelDB 依赖：
+
+```powershell
+python -m local_agent_record_janitor.office_leveldb --install --runtime-dir 'D:/Dependencies/larj-leveldb'
+$env:LARJ_LEVELDB_RUNTIME = 'D:/Dependencies/larj-leveldb'
+local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
+```
+
+计划列出原生及前端动作、后代、文件/数据库摘要和依赖。审阅并明确授权该计划后，关闭
+所有绑定客户端和后台服务，使用现有 `delete apply --authorized-plan-sha256` 流程；
+`--clients-closed` 是用户确认，不能代替 writer 枚举和 server-owner 锁。随后使用
+`operation status`、`operation verify` 对同一计划做冷验证。命令参数沿用本文
+[Commands](#commands)，不另设直接删表命令。
+
+完整清理支持固定 schema 的本机 v2 Codex/Claude 和下述受限 Antigravity ACP 记录；附件、弱引用、peer、旧恢复
+记录和未证明的共享关系会明确阻挡。工作区、诊断日志、凭据及外部备份保留。
+具体边界见 [T3 Code 适配说明](adapters.md#t3-code本机数据库与完整清理)。
+
+### Antigravity ACP 完整删除绑定
+
+此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**，不是独立 `agy` CLI 或
+Paseo 的原生删除入口；T3 自定义 `binaryPath=agy` 的 CLI ACP 模式也不支持。
+该模式需要保留原生历史时使用 `--t3code-only`，不得把旧 ACP 目录当作新 CLI 会话目录。
+每条 Antigravity 绑定使用 `engine: "antigravity"`，增加
+`provider_instance_id` 和 `acp_runtime_binaries`（`agy_acp_server.exe`、配套
+`localharness_external.exe` 的绝对路径）；二者也必须列入顶层 `runtime_binaries`。
+`root` 必须严格对应 `<T3Home>/userdata/providers/antigravity/<SHA256(instanceId)>/antigravity-acp`。
+原生文件证据版本为 `larj.antigravity-acp-files.v2`，额外冻结 `userdata/settings.json`。
+绑定实例必须仍选择该双文件运行时：显式路径须匹配绑定的 server，默认模式须由
+`tools/antigravity-acp/win32-x64/active.json` 指向同一 server。CLI 选择返回
+`antigravity_cli_acp_cleanup_unsupported`；设置缺失、选择不符或计划后漂移阻挡写入。
+旧 v1 文件证据不再用于新执行，应重新生成计划；已有未知操作仍遵循恢复契约，不得重跑。
+当前及历史强引用必须属于同一实例；不得把其他 instance 的原生 ID 填入该绑定。
+
+```json
+{
+  "thread_id": "完整-T3-thread-ID",
+  "engine": "antigravity",
+  "root": "D:/T3Home/userdata/providers/antigravity/<instance-hash>/antigravity-acp",
+  "provider_instance_id": "antigravity",
+  "acp_runtime_binaries": [
+    "D:/T3Home/tools/antigravity-acp/win32-x64/versions/<release>/agy_acp_server.exe",
+    "D:/T3Home/tools/antigravity-acp/win32-x64/versions/<release>/localharness_external.exe"
+  ]
+}
+```
+
+普通完整清理命令不变。计划冻结原生文件摘要；同一 T3 前端动作在持有启动锁和运行文件
+排他边界后，删除精确 UUID 对应的数据库、SQLite 侧文件、`.meta` 和 `brain/<UUID>`，
+然后清理 T3 本地历史。未选会话、设置、凭据、skills、runtime 和工作区保留并核验。
+原生数据库 schema/ID 不符、未知恢复文件、`parent_references` 或子轨迹关系都阻挡；
+这些关系尚无完整解析器，不会猜测级联删除。不同版本、独立 CLI、远程数据仍不受支持。
+中断后只允许原计划冷验证；残留需要新计划。
+
+开发验收可设置 `LARJ_T3_BUNDLE_ACCEPTANCE=1` 后运行
+`python -m unittest tests.test_t3code_runtime_acceptance`。它仅使用临时 profile、无效测试
+key 和合成会话，不发送模型提示；Windows 的 SQLite 测试临时目录应使用较短的绝对路径。
+旧受管运行时已卸载时，其验收自动跳过，不为测试重新安装。CLI 模式的隔离存储验收使用
+`LARJ_AGY_CLI_ACCEPTANCE=1` 和绝对路径 `LARJ_AGY_CLI_BINARY`；测试固定 Windows CLI 1.5.3
+构建摘要，只进行 ACP 握手及无真实凭据的请求，验证它没有沿用 T3 的旧实例目录。
+此验收不授予 CLI 原生删除能力，也不证明实际账号生成成功。
 
 ## WorkBuddy local sessions
 
@@ -461,13 +623,8 @@ Pi `parentSession` is fork provenance, not a recursive deletion rule. Claude
 subagent files are members of a session manifest. Neither relationship inherits
 Codex's descendant deletion semantics. See [adapter contracts](adapters.md).
 
-An unsupported AionUI backend is still inventoried and reported as
-`inventory_only`/`unsupported`; the operation is not marked deleted. An
-unreadable unrelated store is a warning, while an unreadable target or an
-unprovable shared reference blocks only the affected child batch. AionUI
-orphan project/conversations rows are executable only for the probed supported
-schema with immutable row evidence and zero `acp_session` references; other
-schemas remain `inventory_only`. When
+An unreadable unrelated store is a warning, while an unreadable target or an
+unprovable shared reference blocks only the affected child batch. When
 `remote_delete=false`, residuals are reported only when the adapter provides
 authoritative discovery evidence; otherwise the output states the capability
 boundary without claiming residuals, and nothing is deleted. Stale-index and broken-relation discovery remains in the

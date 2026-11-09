@@ -9,12 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from local_agent_record_janitor import frontend_reference_cleanup as cleanup
-from local_agent_record_janitor.adapters import AionUIAdapter, CindyAdapter
+from local_agent_record_janitor.adapters import CindyAdapter
 from local_agent_record_janitor.frontend_reference_cleanup import (
     FrontendReferenceError,
     execute_frontend_reference_cleanup,
 )
-from tests.support import create_aionui_database, create_cindy_database
+from tests.support import create_cindy_database
 
 
 class FrontendReferenceBatchTests(unittest.TestCase):
@@ -25,16 +25,6 @@ class FrontendReferenceBatchTests(unittest.TestCase):
         self.codex_home = self.root / "codex-home"
         self.codex_home.mkdir()
 
-    def _aionui_evidence(self, database: Path) -> list[dict[str, object]]:
-        adapter = AionUIAdapter(
-            database=database,
-            codex_home=self.codex_home,
-            codex_bin_hint=self.root / "codex.exe",
-        )
-        return [
-            dict(session.details["frontend_reference"])
-            for session in adapter.list_sessions()
-        ]
 
     def _cindy_evidence(self, database: Path) -> list[dict[str, object]]:
         adapter = CindyAdapter(
@@ -52,85 +42,13 @@ class FrontendReferenceBatchTests(unittest.TestCase):
         self,
         evidence: list[dict[str, object]],
     ) -> cleanup.FrontendReferenceCleanupResult:
-        platform = str(evidence[0].get("platform") or "").casefold()
         return execute_frontend_reference_cleanup(
-            self.root if platform == "cindy" else self.codex_home,
+            self.root,
             evidence,
             client_inspector=lambda _home: (),
-            owner_client="cindy" if platform == "cindy" else None,
+            owner_client="cindy",
         )
 
-    def test_aionui_set_guard_and_transaction_count_are_cardinality_independent(self) -> None:
-        for size in (1, 10, 100):
-            database = self.root / f"aionui-{size}.db"
-            create_aionui_database(
-                database,
-                sessions=[
-                    {
-                        "conversation_id": f"conversation-{index}",
-                        "session_id": f"native-{index}",
-                        "agent_id": "agent",
-                        "agent_source": "fixture",
-                        "session_status": "closed",
-                        "last_active_at": index,
-                    }
-                    for index in range(size)
-                ],
-                metadata=[("agent", "codex")],
-            )
-            evidence = self._aionui_evidence(database)
-            trace: list[str] = []
-            connect = cleanup.sqlite3.connect
-
-            def traced_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-                connection = connect(*args, **kwargs)
-                connection.set_trace_callback(trace.append)
-                return connection
-
-            with patch.object(cleanup.sqlite3, "connect", side_effect=traced_connect):
-                result = self._clean(evidence)
-
-            self.assertEqual(result.removed_reference_count, size)
-            self.assertEqual(len(result.reference_results), size)
-            self.assertEqual(
-                sum("SELECT" in sql and "FROM acp_session WHERE" in sql for sql in trace),
-                2,
-            )
-            self.assertEqual(sum("BEGIN IMMEDIATE" in sql for sql in trace), 1)
-            self.assertTrue(all(item["affected_rows"] == 1 for item in result.reference_results))
-            self.assertTrue(result.to_dict()["transaction"]["committed"])
-
-    def test_two_frontend_rows_for_one_native_are_two_exact_results(self) -> None:
-        database = self.root / "aionui-shared-native.db"
-        create_aionui_database(
-            database,
-            sessions=[
-                {
-                    "conversation_id": "conversation-one",
-                    "session_id": "shared-native",
-                    "agent_id": "agent",
-                },
-                {
-                    "conversation_id": "conversation-two",
-                    "session_id": "shared-native",
-                    "agent_id": "agent",
-                },
-            ],
-            metadata=[("agent", "codex")],
-        )
-
-        result = self._clean(self._aionui_evidence(database))
-
-        self.assertEqual(result.deleted_aionui_rows, 2)
-        self.assertEqual(
-            {item["id"] for item in result.reference_results},
-            {"aionui:conversation-one", "aionui:conversation-two"},
-        )
-        with closing(sqlite3.connect(database)) as connection:
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM acp_session").fetchone()[0],
-                0,
-            )
 
     def test_cindy_current_and_history_use_set_guards_and_one_transaction(self) -> None:
         database = self.root / "cindy-mixed.db"
@@ -257,54 +175,56 @@ class FrontendReferenceBatchTests(unittest.TestCase):
             )
 
     def test_phase_callback_marks_mutation_only_after_guard_and_verify(self) -> None:
-        database = self.root / "aionui-phases.db"
-        create_aionui_database(
+        database = self.root / "cindy-phases.db"
+        create_cindy_database(
             database,
-            sessions=[
+            [
                 {
-                    "conversation_id": "conversation-one",
-                    "session_id": "native-one",
-                    "agent_id": "agent",
+                    'id': 'conversation-one',
+                    'sdk_session_id': 'native-one',
+                    'status': 'deleted',
+                    'agent_kind': 'codex',
                 },
             ],
-            metadata=[("agent", "codex")],
         )
         phases: list[str] = []
         execute_frontend_reference_cleanup(
-            self.codex_home,
-            self._aionui_evidence(database),
+            self.root,
+            self._cindy_evidence(database),
             client_inspector=lambda _home: (),
             phase_callback=phases.append,
+            owner_client="cindy",
         )
         self.assertEqual(phases, ["mutation_started", "verified"])
 
     def test_guard_drift_emits_no_mutation_marker(self) -> None:
-        database = self.root / "aionui-guard-drift.db"
-        create_aionui_database(
+        database = self.root / "cindy-guard-drift.db"
+        create_cindy_database(
             database,
-            sessions=[
+            [
                 {
-                    "conversation_id": "conversation-one",
-                    "session_id": "native-one",
-                    "agent_id": "agent",
+                    'id': 'conversation-one',
+                    'sdk_session_id': 'native-one',
+                    'status': 'deleted',
+                    'agent_kind': 'codex',
                 },
             ],
-            metadata=[("agent", "codex")],
         )
-        evidence = self._aionui_evidence(database)
+        evidence = self._cindy_evidence(database)
         with closing(sqlite3.connect(database)) as connection:
             connection.execute(
-                "UPDATE acp_session SET agent_id = ? WHERE conversation_id = ?",
+                "UPDATE sessions SET agent_kind = ? WHERE id = ?",
                 ("drifted", "conversation-one"),
             )
             connection.commit()
         phases: list[str] = []
         with self.assertRaises(FrontendReferenceError) as raised:
             execute_frontend_reference_cleanup(
-                self.codex_home,
+                self.root,
                 evidence,
                 client_inspector=lambda _home: (),
                 phase_callback=phases.append,
+                owner_client="cindy",
             )
         self.assertEqual(phases, [])
         self.assertFalse(raised.exception.mutation_started)
@@ -312,19 +232,19 @@ class FrontendReferenceBatchTests(unittest.TestCase):
         self.assertFalse(raised.exception.outcome_unknown)
 
     def test_sql_failure_after_marker_reports_known_rollback(self) -> None:
-        database = self.root / "aionui-known-rollback.db"
-        create_aionui_database(
+        database = self.root / "cindy-known-rollback.db"
+        create_cindy_database(
             database,
-            sessions=[
+            [
                 {
-                    "conversation_id": "conversation-one",
-                    "session_id": "native-one",
-                    "agent_id": "agent",
+                    'id': 'conversation-one',
+                    'sdk_session_id': 'native-one',
+                    'status': 'deleted',
+                    'agent_kind': 'codex',
                 },
             ],
-            metadata=[("agent", "codex")],
         )
-        evidence = self._aionui_evidence(database)
+        evidence = self._cindy_evidence(database)
         original_apply = cleanup._apply_mutation
 
         def partial_apply(connection: sqlite3.Connection, mutation: object) -> None:
@@ -335,10 +255,11 @@ class FrontendReferenceBatchTests(unittest.TestCase):
         with patch.object(cleanup, "_apply_mutation", side_effect=partial_apply):
             with self.assertRaises(FrontendReferenceError) as raised:
                 execute_frontend_reference_cleanup(
-                    self.codex_home,
+                    self.root,
                     evidence,
                     client_inspector=lambda _home: (),
                     phase_callback=phases.append,
+                    owner_client="cindy",
                 )
         self.assertEqual(phases, ["mutation_started"])
         self.assertTrue(raised.exception.mutation_started)
@@ -346,24 +267,24 @@ class FrontendReferenceBatchTests(unittest.TestCase):
         self.assertFalse(raised.exception.outcome_unknown)
         with closing(sqlite3.connect(database)) as connection:
             self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM acp_session").fetchone()[0],
+                connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
                 1,
             )
 
     def test_restore_failure_reports_unknown_after_marker(self) -> None:
-        database = self.root / "aionui-restore-failure.db"
-        create_aionui_database(
+        database = self.root / "cindy-restore-failure.db"
+        create_cindy_database(
             database,
-            sessions=[
+            [
                 {
-                    "conversation_id": "conversation-one",
-                    "session_id": "native-one",
-                    "agent_id": "agent",
+                    'id': 'conversation-one',
+                    'sdk_session_id': 'native-one',
+                    'status': 'deleted',
+                    'agent_kind': 'codex',
                 },
             ],
-            metadata=[("agent", "codex")],
         )
-        evidence = self._aionui_evidence(database)
+        evidence = self._cindy_evidence(database)
         original_apply = cleanup._apply_mutation
 
         def partial_apply(connection: sqlite3.Connection, mutation: object) -> None:
@@ -381,10 +302,11 @@ class FrontendReferenceBatchTests(unittest.TestCase):
         ):
             with self.assertRaises(FrontendReferenceError) as raised:
                 execute_frontend_reference_cleanup(
-                    self.codex_home,
+                    self.root,
                     evidence,
                     client_inspector=lambda _home: (),
                     phase_callback=phases.append,
+                    owner_client="cindy",
                 )
         self.assertEqual(phases, ["mutation_started"])
         self.assertTrue(raised.exception.mutation_started)

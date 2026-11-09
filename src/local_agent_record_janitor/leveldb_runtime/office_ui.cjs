@@ -1,6 +1,6 @@
 'use strict'
 
-// Exact native UI keys in QwenWork CN 1.2.5 / QoderWork CN 0.9.18.
+// Exact native UI keys in QwenWork CN 1.2.5.
 // Values never become paths or execution instructions.
 module.exports = function operations ({ decodeString, encodeString, mapEntries, cleanDraft, fail }) {
   return function cleaner (name, chats, children) {

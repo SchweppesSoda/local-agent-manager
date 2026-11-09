@@ -252,7 +252,9 @@ def _delete_frozen(root, before, *, directory=False):
             os.close(fd)
 
 
-def apply_rewrite(root: Path, change, transform: Callable[[bytes], bytes]):
+def apply_rewrite(root: Path, change, transform: Callable[[bytes], bytes], *,
+                  replace_file: Callable[[Path, Path], None] | None = None,
+                  prepare_file: Callable[[Path, Path], None] | None = None):
     if change.get("kind") != "rewrite":
         raise FrozenFilesError("client_file_change_invalid")
     before, original = read_file(root, change["before"]["path"], content=True, limit=MAX_REWRITE_BYTES)
@@ -266,8 +268,12 @@ def apply_rewrite(root: Path, change, transform: Callable[[bytes], bytes]):
     fd, raw = tempfile.mkstemp(prefix=".larj-write-", dir=path.parent)
     temporary = Path(raw)
     temporary_identity = _identity(os.fstat(fd))
+    write_started = False
     try:
         with os.fdopen(fd, "wb") as stream:
+            if prepare_file is not None:
+                prepare_file(temporary, path)
+            write_started = True
             stream.write(after)
             stream.flush()
             if os.name != "nt":
@@ -283,7 +289,7 @@ def apply_rewrite(root: Path, change, transform: Callable[[bytes], bytes]):
                 or temporary_evidence["size"] != change["after_size"]):
             raise FrozenFilesError("client_preparation_file_replaced")
         with _parent_fence(root, before["path"]):
-            os.replace(temporary, checked_path(root, before["path"]))
+            (replace_file or os.replace)(temporary, checked_path(root, before["path"]))
         _fsync_directory(path.parent)
         if not satisfied(root, change):
             raise FrozenFilesError("client_file_after_state_unverified")
@@ -298,8 +304,10 @@ def apply_rewrite(root: Path, change, transform: Callable[[bytes], bytes]):
             if _identity(info) != temporary_identity:
                 raise FrozenFilesError("client_preparation_file_replaced")
             prepared, _ = read_file(root, temporary.relative_to(root).as_posix(), limit=MAX_REWRITE_BYTES)
-            if (prepared["identity"] != temporary_identity or prepared["size"] != change["after_size"]
-                    or prepared["sha256"] != change["after_sha256"]):
+            expected_size = change["after_size"] if write_started else 0
+            expected_hash = change["after_sha256"] if write_started else hashlib.sha256(b"").hexdigest()
+            if (prepared["identity"] != temporary_identity or prepared["size"] != expected_size
+                    or prepared["sha256"] != expected_hash):
                 raise FrozenFilesError("client_preparation_file_replaced")
             _delete_frozen(root, prepared)
 

@@ -12,7 +12,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, TextIO
 
-from .adapters import AionUIAdapter, CindyAdapter
+from .adapters import CindyAdapter
 from .adapters.base import FrontendAdapter
 from .adapter_factory import create_default_adapters as _create_default_adapters
 from .blocker_codes import (
@@ -47,7 +47,6 @@ from .discovery import (
     choose_codex_binary,
     default_appdata,
     default_codex_home,
-    discover_aionui_databases,
     resolve_cindy_profiles,
 )
 from .models import Finding
@@ -57,6 +56,7 @@ from .progress import ProgressReporter
 from .record_identity import RecordClassification
 from .rendering import safe_single_line
 from .execution import ExecutionError
+from .environment_cli import add_environment_commands, run_environment_command
 from .relation_cleanup import RelationCleanupError
 from .legacy_index import (
     LegacyIndexError,
@@ -473,6 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _ChineseArgumentParser(
         prog="local-agent-record-janitor",
         description=(
+            "只读盘点和诊断 Agent 运行环境。"
             "检查前端残留，只读盘点本地 Agent 记录（Codex thread、"
             "Pi Agent/Claude Code session），"
             "并保守清理明确选择且重验证通过的目标。"
@@ -483,6 +484,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         title="命令",
     )
+
+    environment = subparsers.add_parser(
+        "environment",
+        help="只读盘点和诊断 Agent 运行环境",
+        description="检查本机 Agent 运行时、配置和存储路径的证据。",
+    )
+    add_environment_commands(environment)
 
     scan = subparsers.add_parser(
         "scan",
@@ -495,7 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
         "records",
         help="只读列出本地 Agent 记录（Codex thread、Pi/Claude session）",
         description=(
-            "只读聚合 Codex 本地记录、Cindy/AionUI 引用以及 "
+            "只读聚合 Codex 本地记录、Cindy 引用以及 "
             "Pi Agent/Claude Code 会话；"
             "不会启动 app-server，也不会修改任何数据库或文件。"
         ),
@@ -526,6 +534,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(delete, progress=True)
     _add_operation_scope_arguments(delete)
+    delete.add_argument(
+        "--paseo-only", action="store_true",
+        help="delete plan/apply：只通过本机 Paseo daemon 删除一条 Paseo 记录，保留 provider 原生会话",
+    )
+    delete.add_argument("--t3code-only", action="store_true",
+                        help="delete plan/apply：按完整 thread ID 调用 T3 自带删除，保留原生会话和工作树")
     delete.add_argument(
         "--yes",
         action="store_true",
@@ -569,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=30.0,
         metavar="SECONDS",
-        help="app-server 请求超时秒数（默认：30）",
+        help="app-server、Paseo daemon 或 T3 server 请求超时秒数（默认：30）",
     )
     delete.add_argument(
         "--out",
@@ -603,7 +617,7 @@ def build_parser() -> argparse.ArgumentParser:
         "gui",
         help="在简单图形界面中逐项勾选并永久删除 Codex 对话",
         description=(
-            "只读列出原生 Codex、Cindy 与 AionUI 关联的对话元数据，"
+            "只读列出原生 Codex 和 Cindy 关联的对话元数据，"
             "允许用户逐项勾选可删除目标，并在核对完整级联范围、关闭客户端"
             "和输入专用确认句后执行永久删除。"
         ),
@@ -616,8 +630,6 @@ def build_parser() -> argparse.ArgumentParser:
         appdata=None,
         codex_home=None,
         codex_bin=None,
-        aionui_db=None,
-        aionui_codex_home=None,
         cindy_root=None,
         cindy_db=None,
         cindy_codex_home=None,
@@ -642,8 +654,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="app-server 请求超时秒数（默认：30）",
     )
     gui.add_argument("--appdata", type=Path, help=argparse.SUPPRESS)
-    gui.add_argument("--aionui-db", type=Path, help=argparse.SUPPRESS)
-    gui.add_argument("--aionui-codex-home", type=Path, help=argparse.SUPPRESS)
     gui.add_argument("--cindy-root", type=Path, help=argparse.SUPPRESS)
     gui.add_argument("--cindy-db", type=Path, help=argparse.SUPPRESS)
     gui.add_argument("--cindy-codex-home", type=Path, help=argparse.SUPPRESS)
@@ -757,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--clients-closed",
         action="store_true",
         help=(
-            "确认使用同一 Codex 数据目录的 Codex/AionUI/Cindy 客户端均已关闭；"
+            "确认使用同一 Codex 数据目录的 Codex/Cindy 客户端均已关闭；"
             "非交互修复旧版索引时必须提供"
         ),
     )
@@ -771,9 +781,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     purge = subparsers.add_parser(
         "purge",
-        help="一键清理原生 Codex、Cindy 和 AionUI 的可执行残留",
+        help="一键清理原生 Codex 和 Cindy 的可执行残留",
         description=(
-            "连续重扫并清理原生 Codex、Cindy 和 AionUI 中已经判定为异常、"
+            "连续重扫并清理原生 Codex 和 Cindy 中已经判定为异常、"
             "当前可安全执行的本地记录；不会删除正常对话，也不会触碰 Pi 或 "
             "Claude Code 会话。每批仍执行计划指纹复核，Desktop/旧索引修改仍"
             "创建可验证备份，真正受阻的目标会保留。"
@@ -792,7 +802,7 @@ def build_parser() -> argparse.ArgumentParser:
     purge.add_argument(
         "--clients-closed",
         action="store_true",
-        help="确认 Codex/ChatGPT Desktop、Cindy 和 AionUI 均已完全退出",
+        help="确认 Codex/ChatGPT Desktop、Cindy 均已完全退出",
     )
     purge.add_argument(
         "--timeout",
@@ -963,9 +973,9 @@ def _add_common_arguments(
         "--platform",
         action="append",
         choices=(
-            ("all", "aionui", "cindy", "native")
+            ("all", "cindy", "native")
             if codex_only
-            else ("all", "aionui", "cindy", "native", "pi", "claude")
+            else ("all", "cindy", "native", "pi", "claude")
         ),
         help="选择扫描来源；可重复（默认：all）",
     )
@@ -1020,8 +1030,6 @@ def _add_common_arguments(
             "必须是现存普通文件"
         ),
     )
-    parser.add_argument("--aionui-db", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--aionui-codex-home", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--cindy-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--cindy-db", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--cindy-codex-home", type=Path, help=argparse.SUPPRESS)
@@ -1035,9 +1043,13 @@ def _add_common_arguments(
                         help="Paseo 完整清理的显式 agent/原生目录/桌面配置绑定清单（Windows）")
     parser.add_argument("--workbuddy-root", action="append", default=[], type=Path, metavar="PATH",
                         help="WorkBuddy 独立配置根目录（可重复；默认 WORKBUDDY_CONFIG_DIR 或 ~/.workbuddy）")
+    parser.add_argument("--t3code-root", action="append", default=[], type=Path, metavar="PATH",
+                        help="T3 Code base directory（可重复；默认 T3CODE_HOME 或 ~/.t3）")
+    parser.add_argument("--t3code-bindings", type=Path, metavar="JSON",
+                        help="T3 Code 本地清理的 thread/原生目录/桌面显式绑定（Windows）")
     parser.add_argument("--paseo-root", action="append", default=[], type=Path, metavar="PATH",
                         help="Paseo home（可重复；默认 PASEO_HOME 或 ~/.paseo；只读盘点）")
-    for office_client, label in (("qwenwork", "千问办公 CN"), ("qoderwork", "QoderWork CN")):
+    for office_client, label in (("qwenwork", "千问办公 CN"),):
         parser.add_argument("--" + office_client + "-root", action="append", default=[], type=Path, metavar="PATH",
                             help=label + " userData 根目录（可重复；只读盘点）")
         parser.add_argument("--" + office_client + "-sdk-root", type=Path, metavar="PATH",
@@ -1079,7 +1091,7 @@ def _add_operation_scope_arguments(
 
     parser.add_argument(
         "--client",
-        choices=("native", "codex-native", "cindy", "aionui", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "qoderwork", "paseo"),
+        choices=("native", "codex-native", "cindy", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "paseo", "t3code"),
         required=client_required,
         help=(
             "选择一个客户端所有者；codex-native 表示官方 ChatGPT UI/Codex CLI "
@@ -1144,15 +1156,14 @@ _CLIENT_PLATFORM_MAP = {
     "native": "native",
     "codex-native": "native",
     "cindy": "cindy",
-    "aionui": "aionui",
     "pi": "pi",
     "claude": "claude",
     "orca": "orca",
     "herdr": "herdr",
     "workbuddy": "workbuddy",
     "qwenwork": "qwenwork",
-    "qoderwork": "qoderwork",
     "paseo": "paseo",
+    "t3code": "t3code",
 }
 _OPERATION_BODY_KEYS = frozenset(
     {
@@ -1188,7 +1199,7 @@ def _normalize_client_name(value: object) -> str:
     except KeyError as exc:
         raise ValueError(
             "--client 必须指定一个受支持的客户端："
-            "native、codex-native、cindy、aionui、pi、claude、orca、herdr、workbuddy、qwenwork、qoderwork 或 paseo"
+            "native、codex-native、cindy、pi、claude、orca、herdr、workbuddy、qwenwork、paseo 或 t3code"
         ) from exc
 
 
@@ -1470,7 +1481,7 @@ def _run_operation_backend(
 
     try:
         if verb == "plan":
-            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "qoderwork", "paseo"}
+            if supplied_adapters is None and not ((scope or {}).get("paseo_only") or (scope or {}).get("t3code_only")) and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
             operation_kwargs: dict[str, Any] = {
@@ -1492,6 +1503,12 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
+            if (scope or {}).get("paseo_only"):
+                operation_kwargs["scope"] = scope
+                operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
+            if (scope or {}).get("t3code_only"):
+                operation_kwargs["scope"] = scope
+                operation_kwargs["t3code_roots"] = tuple(args.t3code_root or ())
             result = coordinator.plan_operation(**operation_kwargs)
         elif verb == "apply":
             operation_kwargs = {
@@ -1515,9 +1532,15 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
+            if getattr(args, "paseo_root", None) or getattr(args, "paseo_bindings", None):
+                operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
+                operation_kwargs["paseo_bindings"] = args.paseo_bindings
+            if getattr(args, "t3code_root", None) or getattr(args, "t3code_bindings", None):
+                operation_kwargs["t3code_roots"] = tuple(args.t3code_root or ())
+                operation_kwargs["t3code_bindings"] = args.t3code_bindings
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
-            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "qoderwork", "paseo"}
+            if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
             operation_kwargs = {
@@ -1619,6 +1642,14 @@ def _run_delete_operation(
             scope = _operation_scope(args, require_selection=True)
         if getattr(args, "action_id", None) or getattr(args, "session_id", None) or getattr(args, "thread_id", None):
             raise ValueError("delete plan/apply/run 使用 --record-id，不使用旧 action/session/thread selector")
+        if args.paseo_only:
+            if verb not in {"plan", "apply"} or args.paseo_bindings or args.t3code_bindings:
+                raise ValueError("--paseo-only 仅用于 delete plan/apply，不能与 --paseo-bindings 合用")
+            scope["paseo_only"] = True
+        if args.t3code_only:
+            if verb not in {"plan", "apply"} or args.t3code_bindings or args.paseo_bindings or args.paseo_only:
+                raise ValueError("--t3code-only 仅用于 delete plan/apply，不能与绑定清理或 --paseo-only 合用")
+            scope["t3code_only"] = True
     except ValueError as exc:
         payload = _operation_error_payload(
             command="delete",
@@ -1747,6 +1778,9 @@ def main(
         output.write("\n")
         return EXIT_ERROR
 
+    if args.command == "environment":
+        return run_environment_command(args, stdout=output, stderr=error_output)
+
     if args.command == "agent":
         from .agent_cli import run_agent_command
 
@@ -1815,7 +1849,7 @@ def main(
             coordinator=coordinator,
         )
 
-    if args.command == "delete" and getattr(args, "delete_action", None):
+    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only or args.t3code_only):
         return _run_delete_operation(
             args,
             supplied_adapters=adapters,
@@ -3026,10 +3060,12 @@ def _run_client_records(
     ).hexdigest()
     if client == "herdr":
         payload["inventory_scope"] = "persisted_and_live_metadata" if args.inspect_clients else "persisted_metadata"
-    elif client in {"qwenwork", "qoderwork"}:
+    elif client == "qwenwork":
         payload["inventory_scope"] = "database_metadata_and_known_sdk_paths"
     elif client == "paseo":
         payload["inventory_scope"] = "persisted_agent_registry"
+    elif client == "t3code":
+        payload["inventory_scope"] = "database_metadata"
     from .client_inventory import collect_client_file_aliases, collect_shared_store_file_aliases
     payload["file_aliases"] = collect_client_file_aliases(contexts, selected).to_dict()
     payload["shared_store_file_aliases"] = collect_shared_store_file_aliases(contexts, selected)
@@ -4294,7 +4330,7 @@ def _run_manual_delete(
         if outside_view:
             raise ActionSelectionError(
                 "所选目标不属于 --platform 指定的记录视图；"
-                "aionui/cindy 视图只允许选择该前端映射的对话。",
+                "cindy 视图只允许选择该前端映射的对话。",
                 kind="platform_mismatch",
                 matches=tuple(str(action.action_id) for action in outside_view),
             )
@@ -4564,7 +4600,7 @@ def _platform_visible_conversations(
 
     ``native`` and ``all`` expose the complete native inventory for the
     adapters' homes. Cindy's dedicated Codex homes are themselves source
-    evidence, while shared-home AionUI records require a frontend mapping.
+    evidence; other shared-home records require a frontend mapping.
     The underlying catalog remains complete for deletion guards.
     """
 
@@ -4812,7 +4848,7 @@ def _write_manual_delete_plan(plan: Any, *, stdout: TextIO) -> None:
         frontend_sessions = tuple(action.frontend_sessions)
         if frontend_sessions:
             stdout.write(
-                f"    警告：{len(frontend_sessions)} 条 Cindy/AionUI 前端引用"
+                f"    警告：{len(frontend_sessions)} 条 Cindy 前端引用"
                 "不会被删除，执行后可能成为孤立映射。\n"
             )
             for session in frontend_sessions:
@@ -4945,7 +4981,7 @@ def _emit_manual_delete_result(
         if action is not None and tuple(action.frontend_sessions):
             stdout.write(
                 f"    注意：{len(tuple(action.frontend_sessions))} 条第三方前端引用"
-                "仍保留，未从 Cindy/AionUI 数据库删除。\n"
+                "仍保留，未从 Cindy 数据库删除。\n"
             )
         for artifact in result.remaining_artifacts:
             stdout.write(
@@ -5376,7 +5412,7 @@ def _run_planned_cleanup(
         return _emit_action_selection_error(
             ActionSelectionError(
                 f"使用 --yes {mutation_label}前，必须先关闭使用同一数据目录的 "
-                "Codex、AionUI 和 Cindy 客户端，并显式提供 --clients-closed。",
+                "Codex 和 Cindy 客户端，并显式提供 --clients-closed。",
                 kind="clients_closed_ack_required",
                 matches=[
                     str(action.action_id)
@@ -5397,7 +5433,7 @@ def _run_planned_cleanup(
         if tty:
             if legacy_actions:
                 stdout.write(
-                    "\n请先关闭使用同一数据目录的 Codex、AionUI 和 Cindy。"
+                    "\n请先关闭使用同一数据目录的 Codex 和 Cindy。"
                     "修复期间会创建临时回滚副本，验证成功后立即删除。"
                     "请输入“客户端已关闭并确认修复”继续，"
                     "输入其他内容取消："
@@ -5406,7 +5442,7 @@ def _run_planned_cleanup(
             elif desktop_actions:
                 stdout.write(
                     "\n请先关闭使用同一数据目录的 Codex/ChatGPT Desktop、"
-                    "AionUI 和 Cindy。清理期间会创建临时回滚副本，"
+                    "Cindy。清理期间会创建临时回滚副本，"
                     "验证成功后立即删除。请输入"
                     "“客户端已关闭并确认清理桌面残留”继续，输入其他内容取消："
                 )
@@ -6085,7 +6121,7 @@ def _write_finding_table(
         if not isinstance(finding_type, str) or not finding_type:
             finding_type = (
                 "frontend_deleted_reference"
-                if finding.platform.lower() in {"aionui", "cindy"}
+                if finding.platform.lower() == "cindy"
                 else ""
             )
         summary = summaries.get(

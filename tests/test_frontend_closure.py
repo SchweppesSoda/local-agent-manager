@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import AionUIAdapter, CindyAdapter
+from local_agent_record_janitor.adapters import CindyAdapter
 from local_agent_record_janitor.blocker_codes import LIVE_FRONTEND_REFERENCE
 from local_agent_record_janitor.cleanup_service import CleanupService
 from local_agent_record_janitor.frontend_reference_cleanup import (
@@ -26,7 +26,7 @@ from local_agent_record_janitor.manual_delete import (
 )
 from local_agent_record_janitor.models import ConversationSummary
 from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from tests.support import create_aionui_database, create_cindy_database, write_rollout
+from tests.support import create_cindy_database, write_rollout
 from local_agent_record_janitor.codex_state import find_thread_rollouts
 
 
@@ -69,16 +69,19 @@ class FrontendClosureTests(unittest.TestCase):
         return dict(record.details["frontend_reference"])
 
     def _coordinator_fixture(self) -> tuple[Path, Path, object, list[str]]:
-        """Build a real native catalog with one exact AionUI live reference."""
+        """Build a real native catalog with one exact Cindy live reference."""
 
-        database = self.root / "coordinator-aionui.sqlite"
-        create_aionui_database(
+        database = self.root / "coordinator-cindy.sqlite"
+        create_cindy_database(
             database,
-            conversations=["ui"],
-            sessions=[
-                {"conversation_id": "ui", "session_id": "native", "agent_id": "agent"}
+            [
+                {
+                    'id': 'ui',
+                    'sdk_session_id': 'native',
+                    'status': 'active',
+                    'agent_kind': 'codex',
+                },
             ],
-            metadata=[("agent", "codex")],
         )
         rollout = write_rollout(self.home, "native", originator="test")
         from tests.support import create_thread_index
@@ -87,10 +90,10 @@ class FrontendClosureTests(unittest.TestCase):
             self.home,
             [{"id": "native", "rollout_path": str(rollout)}],
         )
-        aionui = AionUIAdapter(database=database, codex_home=self.home)
+        cindy = CindyAdapter(database=database, codex_home=self.home, cindy_root=self.root)
         calls: list[str] = []
 
-        class NativeWithAionUI:
+        class NativeWithCindy:
             name = "native"
 
             def __init__(self) -> None:
@@ -98,19 +101,25 @@ class FrontendClosureTests(unittest.TestCase):
                 self.database = database
 
             def list_sessions(self) -> list[FrontendSessionRecord]:
-                return aionui.list_sessions()
+                cindy.invalidate_frontend_snapshot()
+                return cindy.list_sessions()
+
+            def scan(self):
+                from local_agent_record_janitor.adapters import NativeIntegrityAdapter
+
+                return NativeIntegrityAdapter(codex_home=self.codex_home).scan()
 
             def describe_client(self):
                 from local_agent_record_janitor.client_contracts import ClientDescriptor
                 from local_agent_record_janitor.record_identity import StoreKey, capability_for
                 # The native adapter owns its native database. Forwarding
-                # exact AionUI references does not make it their writer.
+                # exact Cindy references does not make it their writer.
                 return ClientDescriptor("native", sources=(self.codex_home / "state_5.sqlite",),
                     native_stores=(StoreKey("codex", self.codex_home, kind="codex_home"),),
                     inventory_engines=("codex",), capability_limits=(capability_for("native", "codex"),))
 
         self_home = self.home
-        return database, rollout, NativeWithAionUI(), calls
+        return database, rollout, NativeWithCindy(), calls
 
     def _deleting_server_factory(
         self,
@@ -135,19 +144,15 @@ class FrontendClosureTests(unittest.TestCase):
         self_home = self.home
         return lambda **_kwargs: DeletingServer()
 
-    def _add_aionui_reference(self, database: Path, conversation_id: str) -> None:
+    def _add_cindy_reference(self, database: Path, conversation_id: str) -> None:
         with closing(sqlite3.connect(database)) as connection:
             connection.execute(
-                "INSERT INTO conversations (id) VALUES (?)", (conversation_id,)
-            )
-            connection.execute(
-                "INSERT INTO acp_session (conversation_id, session_id, agent_id) "
-                "VALUES (?, ?, ?)",
-                (conversation_id, "native", "agent"),
+                "INSERT INTO sessions (id, sdk_session_id, status, agent_kind) VALUES (?, ?, ?, ?)",
+                (conversation_id, "native", "active", "codex"),
             )
             connection.commit()
 
-    def test_coordinator_run_deletes_native_once_then_aionui_reference(self) -> None:
+    def test_coordinator_run_deletes_native_once_then_cindy_reference(self) -> None:
         database, rollout, adapter, calls = self._coordinator_fixture()
         coordinator = OperationCoordinator(
             CleanupService(client_inspector=lambda _home: ())
@@ -162,12 +167,12 @@ class FrontendClosureTests(unittest.TestCase):
             app_server_factory=self._deleting_server_factory(database, rollout, calls),
             binary_resolver=lambda _hint: Path("codex"),
         )
-        self.assertEqual(result.get("goal_status"), "complete")
+        self.assertEqual(result.get("goal_status"), "complete", result)
         self.assertEqual(calls, ["native"])
         with closing(sqlite3.connect(database)) as connection:
             self.assertEqual(
                 connection.execute(
-                    "SELECT COUNT(*) FROM acp_session WHERE session_id = ?",
+                    "SELECT COUNT(*) FROM sessions WHERE sdk_session_id = ?",
                     ("native",),
                 ).fetchone()[0],
                 0,
@@ -186,7 +191,7 @@ class FrontendClosureTests(unittest.TestCase):
             plan_path=plan_path,
         )
         self.assertEqual(plan.get("goal_status"), "ready")
-        self._add_aionui_reference(database, "new-ui")
+        self._add_cindy_reference(database, "new-ui")
         result = coordinator.apply_operation(
             operation_id=plan["operation_id"],
             plan_path=plan_path,
@@ -201,7 +206,7 @@ class FrontendClosureTests(unittest.TestCase):
         with closing(sqlite3.connect(database)) as connection:
             self.assertEqual(
                 connection.execute(
-                    "SELECT COUNT(*) FROM acp_session WHERE session_id = ?",
+                    "SELECT COUNT(*) FROM sessions WHERE sdk_session_id = ?",
                     ("native",),
                 ).fetchone()[0],
                 2,
@@ -234,68 +239,12 @@ class FrontendClosureTests(unittest.TestCase):
         with closing(sqlite3.connect(database)) as connection:
             self.assertEqual(
                 connection.execute(
-                    "SELECT COUNT(*) FROM acp_session WHERE session_id = ?",
+                    "SELECT COUNT(*) FROM sessions WHERE sdk_session_id = ?",
                     ("native",),
                 ).fetchone()[0],
                 1,
             )
 
-    def test_aionui_same_native_parent_child_pair_and_new_ref_guard(self) -> None:
-        database = self.root / "aionui.sqlite"
-        create_aionui_database(
-            database,
-            conversations=["root-ui-a", "root-ui-b", "child-ui"],
-            sessions=[
-                {"conversation_id": "root-ui-a", "session_id": "root"},
-                {"conversation_id": "root-ui-b", "session_id": "root"},
-                {"conversation_id": "child-ui", "session_id": "child"},
-            ],
-            metadata=[("agent", "codex")],
-        )
-        adapter = AionUIAdapter(database=database, codex_home=self.home)
-        rows = adapter.list_sessions()
-        root_rows = tuple(row for row in rows if row.thread_id == "root")
-        child_rows = tuple(row for row in rows if row.thread_id == "child")
-        catalog = SessionCatalog(
-            records=(
-                self._record("root", root_rows, descendants=("child",)),
-                self._record("child", child_rows),
-            )
-        )
-        plan = build_manual_delete_plan(catalog)
-        root_action = next(item for item in plan.actions if item.thread_id == "root")
-        self.assertTrue(root_action.available)
-        self.assertTrue(root_action.frontend_closure_eligible)
-        closure = build_manual_delete_closure(root_action)
-        self.assertTrue(closure.eligible)
-        self.assertEqual(len(closure.frontend_actions), 1)
-        frontend = closure.frontend_actions[0]
-        self.assertEqual(frontend.impact.frontend_reference_count, 3)
-        self.assertEqual(
-            set(frontend.impact.affected_thread_ids),
-            {"root", "child"},
-        )
-        evidence = tuple(frontend.impact.frontend_reference_evidence)
-        by_native = {
-            "root": tuple(item for item in evidence if item["expected"]["session_id"] == "root"),
-            "child": tuple(item for item in evidence if item["expected"]["session_id"] == "child"),
-        }
-        guarded = guard_frontend_reference_closure(by_native)
-        self.assertEqual(guarded.collection_query_count, 1)
-        self.assertEqual(guarded.checked_reference_count, 3)
-
-        with closing(sqlite3.connect(database)) as connection:
-            connection.execute(
-                "INSERT INTO conversations (id) VALUES (?)",
-                ("new-ui",),
-            )
-            connection.execute(
-                "INSERT INTO acp_session (conversation_id, session_id) VALUES (?, ?)",
-                ("new-ui", "root"),
-            )
-            connection.commit()
-        with self.assertRaises(FrontendReferenceGuardError):
-            guard_frontend_reference_closure(by_native)
 
     def test_cindy_same_native_current_references_are_one_paired_action(self) -> None:
         database = self.root / "cindy.sqlite"
@@ -369,15 +318,20 @@ class FrontendClosureTests(unittest.TestCase):
         self.assertIn("exact owner", frontend.unavailable_reason or "")
 
     def test_unknown_native_result_never_releases_frontend_actions(self) -> None:
-        database = self.root / "aionui-unknown.sqlite"
-        create_aionui_database(
+        database = self.root / "cindy-unknown.sqlite"
+        create_cindy_database(
             database,
-            conversations=["ui"],
-            sessions=[{"conversation_id": "ui", "session_id": "native"}],
-            metadata=[("agent", "codex")],
+            [
+                {
+                    'id': 'ui',
+                    'sdk_session_id': 'native',
+                    'status': 'active',
+                    'agent_kind': 'codex',
+                },
+            ],
         )
         rows = tuple(
-            AionUIAdapter(database=database, codex_home=self.home).list_sessions()
+            CindyAdapter(database=database, codex_home=self.home, cindy_root=self.root).list_sessions()
         )
         action = next(
             item
@@ -403,20 +357,12 @@ class FrontendClosureTests(unittest.TestCase):
         )
     def test_collection_query_count_is_cardinality_independent(self) -> None:
         for size in (1, 10, 100):
-            database = self.root / f"aionui-{size}.sqlite"
-            create_aionui_database(
-                database,
-                conversations=[f"ui-{index}" for index in range(size)],
-                sessions=[
-                    {"conversation_id": f"ui-{index}", "session_id": f"native-{index}"}
-                    for index in range(size)
-                ],
-                metadata=[("agent", "codex")],
-            )
-            adapter = AionUIAdapter(database=database, codex_home=self.home)
+            database = self.root / f"cindy-{size}.sqlite"
+            create_cindy_database(database, [{'id': f'ui-{index}', 'sdk_session_id': f'native-{index}', 'status': 'active', 'agent_kind': 'codex'} for index in range(size)])
+            adapter = CindyAdapter(database=database, codex_home=self.home, cindy_root=self.root)
             evidence = [self._evidence(row) for row in adapter.list_sessions()]
             by_native = {
-                str(item["expected"]["session_id"]): (item,)
+                str(item["expected"]["native_session_id"]): (item,)
                 for item in evidence
             }
             result = guard_frontend_reference_closure(by_native)

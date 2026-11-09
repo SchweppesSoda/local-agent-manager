@@ -23,8 +23,14 @@ class ActionCapability:
 
 
 ACTION_REGISTRY: Mapping[str, ActionCapability] = {
+    "delete_t3code_server_thread": ActionCapability("delete_t3code_server_thread", True, "delete_t3code_server_thread", False,
+        "exact_t3_thread_soft_deleted_worktree_detached_provider_history_preserved"),
+    "delete_t3code_frontend": ActionCapability("delete_t3code_frontend", True, "delete_t3code_frontend", True,
+        "frozen_t3code_events_projections_search_terminal_and_ui_closure_absent"),
     "delete_paseo_frontend": ActionCapability("delete_paseo_frontend", True, "delete_paseo_frontend", True,
         "frozen_paseo_registry_schedules_and_desktop_copies_absent"),
+    "delete_paseo_daemon_agent": ActionCapability("delete_paseo_daemon_agent", True, "delete_paseo_daemon_agent", False,
+        "exact_paseo_agent_absent_from_daemon_and_registry"),
     "delete_herdr_frontend": ActionCapability("delete_herdr_frontend", True, "delete_herdr_frontend", True,
         "frozen_herdr_panes_history_and_restore_copies_absent"),
     "delete_orca_frontend": ActionCapability("delete_orca_frontend", True, "delete_orca_frontend", True,
@@ -118,12 +124,13 @@ ACTION_REGISTRY: Mapping[str, ActionCapability] = {
         requires_clients_closed=True,
         verifies_by="approved_frontend_session_rows_and_dependencies_absent",
     ),
+    # Preserve legacy plan decoding without registering its retired writer.
     "delete_project_item": ActionCapability(
         kind="delete_project_item",
-        implemented=True,
-        mutation_family="delete_project_item",
+        implemented=False,
+        mutation_family=None,
         requires_clients_closed=True,
-        verifies_by="approved_project_rows_absent",
+        verifies_by="retired_client_writer",
     ),
     "delete_native_project": ActionCapability(
         kind="delete_native_project",
@@ -166,7 +173,7 @@ def capability_field_for_action(kind: object) -> str | None:
         return "native_delete"
     if family in {"remove_frontend_reference", "remove_workbuddy_ui_reference"}:
         return "frontend_reference_delete"
-    if family in {"delete_frontend_session", "delete_schedule_run", "delete_office_frontend", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend"}:
+    if family in {"delete_frontend_session", "delete_schedule_run", "delete_office_frontend", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_server_thread", "delete_t3code_frontend"}:
         return "frontend_session_delete"
     if family in {"delete_project_item", "delete_native_project"}:
         return "frontend_project_delete"

@@ -42,7 +42,7 @@ class OfficeDatabaseTests(unittest.TestCase):
         return root, path
 
     def test_both_products_cascade_messages_fts_and_owned_nudges_preserving_neighbors(self):
-        for client in ("qwenwork", "qoderwork"):
+        for client in ("qwenwork",):
             with self.subTest(client=client):
                 root, path = self.fixture(client)
                 before = path.read_bytes()
@@ -109,8 +109,8 @@ class OfficeDatabaseTests(unittest.TestCase):
             self.assertEqual(office.remaining(evidence), 0)
 
     def test_plan_drift_or_changed_schema_refuses_before_checkpoint(self):
-        root, path = self.fixture("qoderwork")
-        evidence = office.freeze("qoderwork", root, ["chat-selected"])
+        root, path = self.fixture("qwenwork")
+        evidence = office.freeze("qwenwork", root, ["chat-selected"])
         with closing(sqlite3.connect(path)) as db:
             db.execute("UPDATE messages SET parts='changed' WHERE id='message-other'")
             db.commit()
@@ -121,7 +121,7 @@ class OfficeDatabaseTests(unittest.TestCase):
         with closing(sqlite3.connect(path)) as db:
             db.execute("CREATE TRIGGER surprise AFTER DELETE ON chats BEGIN DELETE FROM projects; END")
         with self.assertRaisesRegex(office.OfficeDatabaseError, "schema_unverified"):
-            office.freeze("qoderwork", root, ["chat-selected"])
+            office.freeze("qwenwork", root, ["chat-selected"])
 
     def test_unrelated_automation_and_typed_import_do_not_block_literal_prompt_mentions(self):
         root, path = self.fixture("qwenwork")
@@ -159,8 +159,8 @@ class OfficeDatabaseTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), before)
 
     def test_failure_during_checkpoint_rolls_back_and_never_claims_success(self):
-        root, path = self.fixture("qoderwork")
-        evidence = office.freeze("qoderwork", root, ["chat-selected"])
+        root, path = self.fixture("qwenwork")
+        evidence = office.freeze("qwenwork", root, ["chat-selected"])
         def fail(_):
             raise OSError("synthetic durable log failure")
         with self.assertRaises(office.OfficeDatabaseError):

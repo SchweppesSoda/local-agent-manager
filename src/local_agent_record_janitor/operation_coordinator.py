@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .action_registry import action_capability
+from .builtin_delete import module_for as builtin_delete
 from .agent_operations import action_binding
 from .path_identity import inventory_path_identity_scope
 from .operation_store import OperationStore, plan_sha256, strict_json_load, write_new_json
@@ -157,6 +158,8 @@ class OperationCoordinator:
         orca_roots: Sequence[str | Path] = (),
         herdr_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
+        paseo_roots: Sequence[str | Path] = (),
+        t3code_roots: Sequence[str | Path] = (),
         adapters: Iterable[Any] | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         **_unused: Any,
@@ -172,6 +175,15 @@ class OperationCoordinator:
         try:
             self._validate_scope(normalized_scope, require_selection=True)
             client_name = str(normalized_scope["client"])
+            builtin_root = None
+            builtin_module = builtin_delete(normalized_scope)
+            if builtin_module:
+                expected_client = "t3code" if normalized_scope.get("t3code_only") else "paseo"
+                roots = t3code_roots if expected_client == "t3code" else paseo_roots
+                if (client_name != expected_client or len(roots) != 1
+                        or len(normalized_scope["record_ids"]) != 1 or normalized_scope["engines"]):
+                    raise OperationCoordinatorError(f"{expected_client}_only_requires_one_explicit_profile_and_record_id")
+                builtin_root = roots[0]
             source = None if adapters is None else tuple(adapters)
             self._emit_progress(progress_callback, "inventory", "started")
             (
@@ -192,6 +204,7 @@ class OperationCoordinator:
                 orca_roots=orca_roots,
                 herdr_roots=herdr_roots,
                 workbuddy_roots=workbuddy_roots,
+                builtin_root=builtin_root, builtin_module=builtin_module,
             )
             self._emit_progress(
                 progress_callback,
@@ -244,7 +257,8 @@ class OperationCoordinator:
         except Exception as exc:
             self._emit_progress(progress_callback, "plan", "failed")
             return self._error_document(
-                "plan", normalized_scope, str(exc) or repr(exc), operation_id=operation_id
+                "plan", normalized_scope, str(exc) or repr(exc), operation_id=operation_id,
+                blocker_code=getattr(exc, "kind", "operation_backend_failed"),
             )
 
     def apply_operation(
@@ -262,6 +276,10 @@ class OperationCoordinator:
         codex_home: Path | None = None,
         orca_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
+        paseo_roots: Sequence[str | Path] = (),
+        paseo_bindings: Path | None = None,
+        t3code_roots: Sequence[str | Path] = (),
+        t3code_bindings: Path | None = None,
         plan_sha256: str | None = None,
         clients_closed: bool = False,
         adapters: Iterable[Any] | None = None,
@@ -279,7 +297,9 @@ class OperationCoordinator:
             record_ids=record_ids,
             engines=engines,
         )
-        if not clients_closed:
+        if normalized_scope.get('paseo_only') and normalized_scope.get('t3code_only'):
+            return self._error_document('apply', normalized_scope, 'builtin_delete_modes_conflict', operation_id=operation_id)
+        if not clients_closed and not builtin_delete(normalized_scope):
             return self._error_document(
                 "apply", normalized_scope, "clients_closed_ack_required",
                 operation_id=operation_id, blocker_code="clients_closed_ack_required",
@@ -296,6 +316,15 @@ class OperationCoordinator:
                 codex_home=codex_home,
             )
             self._validate_apply_scope(document, normalized_scope)
+            builtin_module = builtin_delete(document["scope"])
+            if builtin_module:
+                evidence = builtin_module.approved_evidence(document)
+                if not plan_sha256:
+                    raise OperationCoordinatorError(f"{document['scope']['client']}_only_requires_approved_plan_sha256")
+                roots = t3code_roots if document["scope"].get("t3code_only") else paseo_roots
+                if (paseo_bindings is not None or t3code_bindings is not None or roots and (
+                        len(roots) != 1 or canonical_path(roots[0]) != canonical_path(evidence["root"]))):
+                    raise OperationCoordinatorError(f"{document['scope']['client']}_only_frozen_profile_mismatch")
             frozen_workbuddy_roots = self._bound_workbuddy_roots(document, workbuddy_roots)
             from .office_cleanup import bound_adapters as office_bound_adapters
             adapters = office_bound_adapters(document, adapters)
@@ -303,6 +332,8 @@ class OperationCoordinator:
             adapters = herdr_bound_adapters(document, adapters)
             from .paseo_cleanup import bound_adapters as paseo_bound_adapters
             adapters = paseo_bound_adapters(document, adapters)
+            from .t3code_cleanup import bound_adapters as t3code_bound_adapters
+            adapters = t3code_bound_adapters(document, adapters)
             child_inspection = self._inspect_child_states(document)
             if child_inspection.blockers:
                 self._emit_progress(
@@ -352,14 +383,16 @@ class OperationCoordinator:
             has_orca_frontend = any(action.get("kind") == "delete_orca_frontend" for action in document.get("actions", ()))
             discovery_roots = (*frozen_roots, *orca_roots) if document["schema_version"] == PLAN_V3 or has_orca_frontend else orca_roots
             live = self._live.get(operation)
-            source = (tuple(adapters) if adapters is not None else live.adapters if live is not None
-                      else tuple(self._default_adapters(client_name, codex_home=codex_home, orca_roots=discovery_roots,
-                                                        workbuddy_roots=frozen_workbuddy_roots)))
-            if document["schema_version"] == PLAN_V3:
-                source = retain_guard_sources(source, frozen_roots)
-            source = self._with_current_guard_sources(source, client_name, codex_home=codex_home, orca_roots=orca_roots)
-            source = refresh_guard_sources(retain_guard_sources(source, (*frozen_roots, *orca_roots)))
-            source = self._frozen_orca_execution_sources(document, source)
+            source = ()
+            if not builtin_module:
+                source = (tuple(adapters) if adapters is not None else live.adapters if live is not None
+                          else tuple(self._default_adapters(client_name, codex_home=codex_home, orca_roots=discovery_roots,
+                                                            workbuddy_roots=frozen_workbuddy_roots)))
+                if document["schema_version"] == PLAN_V3:
+                    source = retain_guard_sources(source, frozen_roots)
+                source = self._with_current_guard_sources(source, client_name, codex_home=codex_home, orca_roots=orca_roots)
+                source = refresh_guard_sources(retain_guard_sources(source, (*frozen_roots, *orca_roots)))
+                source = self._frozen_orca_execution_sources(document, source)
             pending = any(str(batch.get("child_operation_id")) not in child_inspection.completed_child_ids
                           for batch in document.get("child_batches", ()))
             if pending and document["schema_version"] == PLAN_V1 and guard_sources_for(source):
@@ -837,17 +870,21 @@ class OperationCoordinator:
                 adapters = herdr_bound_adapters(document, adapters)
                 from .paseo_cleanup import bound_adapters as paseo_bound_adapters
                 adapters = paseo_bound_adapters(document, adapters)
+                from .t3code_cleanup import bound_adapters as t3code_bound_adapters
+                adapters = t3code_bound_adapters(document, adapters)
                 codex_home = self._bound_codex_home(document, codex_home)
                 has_orca_frontend = any(action.get("kind") == "delete_orca_frontend" for action in document.get("actions", ()))
                 discovery_roots = ((*validate_guard_sources(document), *orca_roots)
                                    if document["schema_version"] == PLAN_V3 or has_orca_frontend else orca_roots)
-                source = tuple(adapters) if adapters is not None else tuple(self._default_adapters(
-                    client_name, codex_home=codex_home, orca_roots=discovery_roots,
-                    workbuddy_roots=self._bound_workbuddy_roots(document, workbuddy_roots)))
-                if document["schema_version"] == PLAN_V3:
-                    source = retain_guard_sources(source, validate_guard_sources(document))
-                source = self._with_current_guard_sources(source, client_name, codex_home=codex_home, orca_roots=orca_roots)
-                source = refresh_guard_sources(retain_guard_sources(source, (*validate_guard_sources(document), *orca_roots)))
+                source = ()
+                if not builtin_delete(document["scope"]):
+                    source = tuple(adapters) if adapters is not None else tuple(self._default_adapters(
+                        client_name, codex_home=codex_home, orca_roots=discovery_roots,
+                        workbuddy_roots=self._bound_workbuddy_roots(document, workbuddy_roots)))
+                    if document["schema_version"] == PLAN_V3:
+                        source = retain_guard_sources(source, validate_guard_sources(document))
+                    source = self._with_current_guard_sources(source, client_name, codex_home=codex_home, orca_roots=orca_roots)
+                    source = refresh_guard_sources(retain_guard_sources(source, (*validate_guard_sources(document), *orca_roots)))
                 self._emit_progress(
                     progress_callback,
                     "inventory",
@@ -956,12 +993,14 @@ class OperationCoordinator:
         try:
             residuals = self._residual_action_ids(live.document, terminal)
         except Exception as exc:
+            inspection = self._inspect_child_states(live.document)
             return finish(self._result_document(
                 live.document,
                 live.document.get("scope", {}),
                 goal_status="unknown",
                 blockers=[self._blocker("terminal_scan_incomplete", str(exc))],
-                batches=(),
+                batches=inspection.batches, modified=inspection.modified,
+                mutation_started=inspection.mutation_started,
             ))
         try:
             self._persist_verified_child_journals(live.document, residuals)
@@ -1177,9 +1216,15 @@ class OperationCoordinator:
             return list(dict.fromkeys((*cls._orca_native_residual_action_ids(document), *cls._orca_frontend_residual_action_ids(document))))
         if any(a.get("kind") == "delete_orca_frontend" for a in document.get("actions", ())):
             return cls._orca_frontend_residual_action_ids(document)
+        if any(a.get("kind") == "delete_t3code_frontend" for a in document.get("actions", ())):
+            from .t3code_cleanup import residuals
+            return residuals(document)
         if any(a.get("kind") == "delete_paseo_frontend" for a in document.get("actions", ())):
             from .paseo_cleanup import residuals
             return residuals(document)
+        if module := builtin_delete(document.get("scope", {})):
+            module.require_absent(module.approved_evidence(document))
+            return []
 
         if any(a.get("kind") == "delete_herdr_frontend" for a in document.get("actions", ())):
             from .herdr_cleanup import residuals
@@ -1470,7 +1515,7 @@ class OperationCoordinator:
                 # even when an interruption prevented an execution result.
                 verified_modified = bool(state.get("modified")) or bool(
                     raw_batch.get("mutation_family") in {
-                        "delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend"
+                        "delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_server_thread", "delete_t3code_frontend"
                     }
                     and state.get("mutation_started")
                     and action_ids and not child_residuals
@@ -1555,6 +1600,8 @@ class OperationCoordinator:
         normalized_client = normalize_client(selected_client) if selected_client else None
         return {
             "client": normalized_client,
+            **({"paseo_only": True} if raw.get("paseo_only") is True else {}),
+            **({"t3code_only": True} if raw.get("t3code_only") is True else {}),
             "projects": tuple(dict.fromkeys(
                 str(value).strip()
                 for value in (projects or raw.get("projects", ()))
@@ -1575,6 +1622,8 @@ class OperationCoordinator:
 
     @staticmethod
     def _validate_scope(scope: Mapping[str, Any], *, require_selection: bool) -> None:
+        from .retired_clients import require_active_plan
+        require_active_plan(scope)
         if not scope.get("client"):
             raise OperationCoordinatorError("operation requires one client")
         selected = sum(bool(scope.get(name)) for name in ("projects", "all_projects", "record_ids"))
@@ -1601,7 +1650,14 @@ class OperationCoordinator:
         workbuddy_roots: Sequence[str | Path] = (),
         explicit_frontend_ids: Sequence[str] = (),
         approved_document=None,
+        builtin_root=None, builtin_module=None,
     ) -> tuple[Any, ...]:
+        module = builtin_module or builtin_delete((approved_document or {}).get("scope", {}))
+        if module:
+            evidence = (module.approved_evidence(approved_document) if approved_document is not None
+                        else module.freeze(builtin_root, explicit_frontend_ids[0]))
+            context = module.context_for(self, evidence)
+            return context if include_action_contexts else context[:5]
         explicit_session_ids = tuple(dict.fromkeys((*explicit_session_ids, *explicit_frontend_ids)))
         explicit_frontend_ids = explicit_session_ids
         source = (tuple(adapters) if adapters is not None else
@@ -1612,6 +1668,11 @@ class OperationCoordinator:
         # provide protection evidence without becoming new inventory targets.
         candidates = source if inventory_adapters is None else inventory_adapters
         guards = self._with_current_guard_sources(source, client, codex_home=codex_home, orca_roots=orca_roots)
+        if client == "t3code" and explicit_frontend_ids:
+            from .t3code_cleanup import build_context as build_t3code_context
+            qualified = build_t3code_context(self, candidates, guards, explicit_frontend_ids, engines, document=approved_document)
+            if qualified is not None:
+                return qualified if include_action_contexts else qualified[:5]
         if client == "paseo" and explicit_frontend_ids:
             from .paseo_cleanup import build_context as build_paseo_context
             qualified = build_paseo_context(self, candidates, guards, explicit_frontend_ids, engines, document=approved_document)
@@ -1629,8 +1690,7 @@ class OperationCoordinator:
         result = self._build_context_sources(client, candidates, engines=engines,
             include_action_contexts=include_action_contexts, codex_home=codex_home,
             explicit_session_ids=explicit_session_ids)
-        context, bindings = self._restrict_context_bindings(
-            result[0], result[5] if include_action_contexts else {}, guards)
+        context, bindings = self._restrict_context_bindings(result[0], result[5] if include_action_contexts else {}, guards)
         active = context.active_adapters
         catalog, manual_plan = result[2:4]
         if catalog is not None:
@@ -1722,7 +1782,7 @@ class OperationCoordinator:
             else tuple(self._default_adapters(client, codex_home=codex_home))
         )
         selected = tuple(adapter for adapter in source if self._adapter_matches(adapter, client))
-        if client in {"qwenwork", "qoderwork"}:
+        if client == "qwenwork":
             from .office_cleanup import build_context
             context = build_context(selected, self.service, engines=engines, refresh=True)
             result = (context, selected, None, None, {}, {})
@@ -1817,7 +1877,7 @@ class OperationCoordinator:
             ))
             scan_platforms = ("cindy", "native")
         context = self.service.prepare(scan_adapters, platforms=scan_platforms)
-        if client not in {"cindy", "aionui"}:
+        if client != "cindy":
             result = (context, selected, None, None, {}, {})
             return result if include_action_contexts else result[:5]
         result = self._merge_client_engine_contexts(
@@ -1847,30 +1907,21 @@ class OperationCoordinator:
                                                for record in item.native_records), active_adapters=adapters)
         return replace(context, client_inventory=inventory), catalog
 
-    def _restrict_context_bindings(
-        self, context: Any, bindings: Mapping[str, Any], adapters: tuple[Any, ...],
-    ) -> tuple[Any, dict[str, Any]]:
-        """Refresh guards without splitting a shared batch execution context."""
+    def _restrict_context_bindings(self, context: Any, bindings: Mapping[str, Any], adapters: tuple[Any, ...]) -> tuple[Any, dict[str, Any]]:
+        """Preserve shared engine identity without merging distinct contexts."""
         from .client_capability_guards import restrict_cleanup_context
-
-        guarded_contexts: dict[int, Any] = {}
-
-        def guarded_context(bound: Any) -> Any:
-            key = id(bound)
-            if key not in guarded_contexts:
-                guarded_contexts[key] = restrict_cleanup_context(
-                    bound, adapters, self.service.typed_actions)
-            return guarded_contexts[key]
-
-        return guarded_context(context), {
-            key: guarded_context(bound) for key, bound in bindings.items()
-        }
+        restricted: dict[int, Any] = {}
+        def restrict(bound: Any) -> Any:
+            if id(bound) not in restricted:
+                restricted[id(bound)] = restrict_cleanup_context(bound, adapters, self.service.typed_actions)
+            return restricted[id(bound)]
+        return restrict(context), {key: restrict(bound) for key, bound in bindings.items()}
 
     def _retain_live_guards(self, live: _LiveOperation, adapters: tuple[Any, ...], *, readonly_recovery: bool = False) -> None:
         """Keep newly supplied protections without rebuilding the approved catalog."""
         from .client_contracts import describe_adapter
 
-        if adapters == live.adapters and not any(describe_adapter(a).client in {"orca", "herdr", "paseo"} for a in adapters):
+        if adapters == live.adapters and not any(describe_adapter(a).client in {"orca", "herdr", "paseo", "t3code"} for a in adapters):
             return
 
         from contextlib import nullcontext
@@ -1883,13 +1934,19 @@ class OperationCoordinator:
                   if not readonly_recovery and live.document.get("actions") and (frontends or live.document.get("schema_version") == PLAN_V3) else nullcontext())
         if herdr_evidence is not None and not readonly_recovery:
             ticket = herdr_planning_scope(herdr_evidence)
+        from .t3code_cleanup import evidence_from_document as get_t3code_evidence, planning_scope as t3code_planning_scope
+        t3code_evidence = get_t3code_evidence(live.document)
+        if t3code_evidence is not None and not readonly_recovery:
+            ticket = t3code_planning_scope(t3code_evidence)
         from .paseo_cleanup import evidence_from_document as get_paseo_evidence, planning_scope as paseo_planning_scope
         paseo_evidence = get_paseo_evidence(live.document)
         if paseo_evidence is not None and not readonly_recovery:
             ticket = paseo_planning_scope(paseo_evidence)
         with ticket:
-            live.context, live.action_contexts = self._restrict_context_bindings(
-                live.context, live.action_contexts, adapters)
+            # Several actions can share one engine context. Preserve that
+            # identity while refreshing guards, or batch routing mistakes
+            # equivalent replacement objects for different engine contexts.
+            live.context, live.action_contexts = self._restrict_context_bindings(live.context, live.action_contexts, adapters)
         live.adapters = live.context.active_adapters
         if live.manual_catalog is not None:
             live.manual_catalog = replace(live.manual_catalog, active_adapters=live.adapters)
@@ -1930,11 +1987,6 @@ class OperationCoordinator:
             adapters,
             client=client,
             engines=engines,
-        )
-        context = self._merge_aionui_project_items(
-            context,
-            inventory,
-            client=client,
         )
         context = self._merge_cindy_terminal_sessions(
             context,
@@ -2414,143 +2466,6 @@ class OperationCoordinator:
             actions=self.service.typed_actions(merged_plan),
         )
 
-    def _merge_aionui_project_items(
-        self,
-        context: Any,
-        inventory: Any,
-        *,
-        client: str,
-    ) -> Any:
-        """Project exact AionUI orphan rows into normal cleanup batches."""
-
-        if client != "aionui":
-            return context
-        from .planning import (
-            ActionImpact,
-            ActionKind,
-            CandidateAction,
-            RiskLevel,
-            ScanStatus,
-            StorageLocation,
-            TargetRef,
-            storage_id_for_path,
-        )
-
-        existing_ids = {
-            str(action.action_id)
-            for action in getattr(context.plan, "actions", ())
-        }
-        actions: list[Any] = []
-        storages = list(getattr(context.plan, "storages", ()))
-        storage_ids = {str(storage.storage_id) for storage in storages}
-        for target in getattr(inventory, "targets", ()):
-            classification = getattr(target.classification, "value", target.classification)
-            if str(classification) != "orphan_project":
-                continue
-            evidence = tuple(
-                dict(item)
-                for item in getattr(target, "project_row_evidence", ())
-                if isinstance(item, Mapping)
-            )
-            if not evidence:
-                continue
-            record_key = getattr(target, "record_key", None)
-            store = getattr(record_key, "store", None)
-            database = getattr(store, "path", None)
-            project_id = getattr(record_key, "record_id", None)
-            if not isinstance(database, Path) or not isinstance(project_id, str):
-                continue
-            database = database.expanduser().absolute()
-            storage_path = database.parent
-            storage_id = storage_id_for_path(storage_path)
-            if storage_id not in storage_ids:
-                storages.append(
-                    StorageLocation(
-                        storage_id=storage_id,
-                        label="AionUI database directory",
-                        path=storage_path,
-                        scan_status=ScanStatus.OK,
-                    )
-                )
-                storage_ids.add(storage_id)
-            action_id = next(
-                (
-                    value
-                    for value in getattr(target, "action_ids", ())
-                    if str(value).startswith("delete_project_item:")
-                ),
-                None,
-            )
-            if not isinstance(action_id, str) or action_id in existing_ids:
-                continue
-            project = getattr(target, "project_key", None)
-            payload: dict[str, Any] = {
-                "project_id": project_id,
-            }
-            if project is not None:
-                if getattr(project, "kind", "") == "path":
-                    payload["project_path"] = project.value
-                if getattr(project, "display_name", None):
-                    payload["project_label"] = project.display_name
-            impact = ActionImpact(
-                frontend_project_database_paths=(str(database),),
-                frontend_project_evidence=evidence,
-                resource_path=str(database),
-                external_storage_root=str(storage_path),
-                external_action_payload=payload,
-            )
-            snapshot = ":".join(
-                (
-                    str(evidence[0].get("schema_fingerprint") or ""),
-                    str(evidence[0].get("row_fingerprint") or ""),
-                )
-            )
-            actions.append(
-                CandidateAction(
-                    action_id=action_id,
-                    kind=ActionKind.DELETE_PROJECT_ITEM,
-                    target=TargetRef(storage_id, project_id),
-                    risk=RiskLevel.REVIEW,
-                    available=bool(target.capability.frontend_project_delete),
-                    unavailable_reason=(
-                        None
-                        if target.capability.frontend_project_delete
-                        else "Exact AionUI project-row writer is unavailable"
-                    ),
-                    impact=impact,
-                    snapshot_fingerprint=snapshot,
-                    requires_explicit_selection=True,
-                    resource_kind="project_item",
-                )
-            )
-            existing_ids.add(action_id)
-        if not actions:
-            return context
-        merged_plan = replace(
-            context.plan,
-            actions=tuple((*getattr(context.plan, "actions", ()), *actions)),
-            storages=tuple(storages),
-        )
-        import hashlib
-        import json
-
-        fingerprint = hashlib.sha256(
-            json.dumps(
-                self._metadata(merged_plan.to_dict()),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        merged_plan = replace(
-            merged_plan,
-            plan_fingerprint="merged:v1:" + fingerprint,
-        )
-        return replace(
-            context,
-            plan=merged_plan,
-            actions=self.service.typed_actions(merged_plan),
-        )
 
     def _merge_cleanup_contexts(self, base: Any, extras: Sequence[Any]) -> Any:
         """Merge metadata/actions while retaining one top-level context."""
@@ -3184,8 +3099,6 @@ class OperationCoordinator:
             appdata=None,
             codex_home=(Path(codex_home).expanduser() if codex_home else None),
             codex_bin=None,
-            aionui_db=None,
-            aionui_codex_home=None,
             cindy_root=None,
             cindy_db=None,
             cindy_codex_home=None,
@@ -3199,12 +3112,14 @@ class OperationCoordinator:
         context: Any,
         scope: Mapping[str, Any],
     ) -> tuple[tuple[Any, ...], list[dict[str, Any]]]:
-        if scope.get("client") in {"orca", "herdr", "paseo"} and any(str(a.kind.value) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend"} for a in context.plan.actions):
+        if builtin_delete(scope):
+            return tuple(context.plan.actions), []
+        if scope.get("client") in {"orca", "herdr", "paseo", "t3code"} and any(str(a.kind.value) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"} for a in context.plan.actions):
             blockers = [self._blocker("scan_incomplete", str(error)) for error in context.plan.errors]
             blockers.extend(self._blocker("action_unavailable", a.unavailable_reason or "Orca closure unavailable")
                             for a in context.plan.actions if not a.available)
             return (tuple(context.plan.actions), []) if not blockers else ((), blockers)
-        if scope.get("client") in {"qwenwork", "qoderwork"}:
+        if scope.get("client") == "qwenwork":
             from .office_cleanup import select_candidates
             return select_candidates(context, scope, self._blocker)
         if scope.get("client") == "workbuddy":
@@ -3560,7 +3475,7 @@ class OperationCoordinator:
         for observation in getattr(context.plan, "observations", ()):
             if str(getattr(observation, "observation_id", "")) in wanted:
                 platform = getattr(observation, "platform", "codex")
-                return "codex" if platform in {"native", "cindy", "aionui"} else normalize_engine(platform)
+                return "codex" if platform in {"native", "cindy"} else normalize_engine(platform)
         return "codex"
 
     def _make_plan_document(
@@ -3631,6 +3546,9 @@ class OperationCoordinator:
         for engine in engines:
             normalized_engine = normalize_engine(engine)
             capability = capability_for(str(scope["client"]), normalized_engine)
+            if builtin_delete(scope):
+                capability = replace(capability, frontend_session_delete=True, verify=True,
+                                     reason="Exact local built-in deletion; provider history preserved")
             if any(
                 self._action_engine(context, action) == normalized_engine
                 and str(
@@ -3798,9 +3716,12 @@ class OperationCoordinator:
     def _classification(context: Any, action: Any, manual_record: Any = None, client: str | None = None) -> str:
         from .inventory import ManagedConversation, classify_managed_conversation
 
-        if str(getattr(action.kind, "value", action.kind)) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend"}:
+        if str(getattr(action.kind, "value", action.kind)) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"}:
             payload = action.impact.external_action_payload or {}
-            return "healthy" if payload.get("requires_action_ids") else "orphan_frontend"
+            native_files = any(t.get('native_files', {}).get('changes') for t in payload.get('t3code_evidence', {}).get('native_targets', ()))
+            return "healthy" if payload.get("requires_action_ids") or native_files else "orphan_frontend"
+        if str(getattr(action.kind, "value", action.kind)) in {"delete_paseo_daemon_agent", "delete_t3code_server_thread"}:
+            return "unverified"
         if str(getattr(action.kind, "value", action.kind)) == "delete_schedule_run":
             return "healthy"
         if str(
@@ -3846,7 +3767,7 @@ class OperationCoordinator:
 
     @staticmethod
     def _default_engine(client: str) -> str:
-        return {"pi": "pi", "claude": "claude", "workbuddy": "workbuddy", "qwenwork": "qwenwork", "qoderwork": "qoderwork"}.get(client, "codex")
+        return {"pi": "pi", "claude": "claude", "workbuddy": "workbuddy", "qwenwork": "qwenwork"}.get(client, "codex")
 
     @staticmethod
     def _bound_workbuddy_roots(document, requested=()):
@@ -3943,9 +3864,19 @@ class OperationCoordinator:
             raise OperationCoordinatorError("authorized plan hash does not match")
         if operation_id is not None and str(operation_id) != str(document.get("operation_id")):
             raise OperationCoordinatorError("operation ID does not match plan")
+        from .retired_clients import require_active_plan
+        require_active_plan(document)
         validate_guard_sources(document)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(document)
+        from .paseo_daemon_delete import KIND as paseo_daemon_kind, approved_evidence
+        if (document.get("scope", {}).get("paseo_only")
+                or any(a.get("kind") == paseo_daemon_kind for a in document.get("actions", ()))):
+            approved_evidence(document)
+        from .t3code_server_delete import KIND as t3_server_kind, approved_evidence as t3_approved_evidence
+        if (document.get("scope", {}).get("t3code_only")
+                or any(a.get("kind") == t3_server_kind for a in document.get("actions", ()))):
+            t3_approved_evidence(document)
         return document
 
     @staticmethod
@@ -3961,7 +3892,7 @@ class OperationCoordinator:
         # supplied is compared against the immutable plan, not just client;
         # this prevents a valid hash from being replayed against another
         # project, record, or engine by a stale CLI invocation.
-        for key in ("client", "projects", "all_projects", "record_ids", "engines"):
+        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only", "t3code_only"):
             value = requested.get(key)
             if key == "all_projects":
                 if value is not True:
@@ -4003,7 +3934,7 @@ class OperationCoordinator:
             if isinstance(item, Mapping)
         }
         fresh_actions = tuple(getattr(context.plan, "actions", ()))
-        if document.get("scope", {}).get("client") in {"qwenwork", "qoderwork"}:
+        if document.get("scope", {}).get("client") == "qwenwork":
             from .office_cleanup import freeze_actions, operation_scope
             completed = {str(value) for value in skip_child_ids}
             pending_ids = {str(action_id) for batch in document.get("child_batches", ())
@@ -4619,6 +4550,15 @@ class OperationCoordinator:
         entered = False
         try:
             with mutation_roots(frozen_operation_roots(live.document)):
+                from .t3code_cleanup import evidence_from_document, execution_scope as t3code_execution_scope
+                if evidence_from_document(live.document) is not None:
+                    from .mutation_guard import check_operation_root_admission
+                    check_operation_root_admission(live.document)
+                    with t3code_execution_scope(live.document, live.candidates, clients_closed=live.clients_closed_ack,
+                                               context=live.context, manual_actions=live.manual_actions):
+                        entered = True
+                        return self._execute_live_locked(live, timeout=timeout, app_server_factory=app_server_factory,
+                            binary_resolver=binary_resolver, progress_callback=progress_callback)
                 from .paseo_cleanup import evidence_from_document, execution_scope as paseo_execution_scope
                 if evidence_from_document(live.document) is not None:
                     from .mutation_guard import check_operation_root_admission
@@ -4645,7 +4585,7 @@ class OperationCoordinator:
                     check_operation_root_admission(live.document)
                     for closure in orca_frontends.values():
                         require_closed(closure, client_inspector=self.service.client_inspector)
-                if live.document.get("scope", {}).get("client") in {"qwenwork", "qoderwork"}:
+                if live.document.get("scope", {}).get("client") == "qwenwork":
                     from .mutation_guard import check_operation_root_admission
                     from .office_cleanup import operation_scope
                     check_operation_root_admission(live.document)
@@ -4722,10 +4662,11 @@ class OperationCoordinator:
             )
             return result
 
-        current = self._with_current_guard_sources(live.adapters, live.client,
-            codex_home=self._bound_codex_home(live.document, None))
-        self._retain_live_guards(live, refresh_guard_sources(retain_guard_sources(
-            current, validate_guard_sources(live.document) if live.document.get("schema_version") in {PLAN_V2, PLAN_V3} else ())))
+        if not builtin_delete(live.document["scope"]):
+            current = self._with_current_guard_sources(live.adapters, live.client,
+                codex_home=self._bound_codex_home(live.document, None))
+            self._retain_live_guards(live, refresh_guard_sources(retain_guard_sources(
+                current, validate_guard_sources(live.document) if live.document.get("schema_version") in {PLAN_V2, PLAN_V3} else ())))
         source_errors = required_source_errors(live.document, live.adapters)
         if source_errors:
             result = self._result_document(live.document, live.document.get("scope", {}), goal_status="blocked",
@@ -5025,7 +4966,11 @@ class OperationCoordinator:
                                 "native deletion is positively verified: "
                                 + ", ".join(sorted(unreleased))
                             )
-                    if (
+                    if str(batch.mutation_family) in {"delete_paseo_daemon_agent", "delete_t3code_server_thread"}:
+                        module = builtin_delete(live.document["scope"])
+                        outcome = module.execute(live.document, batch.actions[0], checkpoint=checkpoint,
+                                          timeout=timeout, plan=live.context.plan)
+                    elif (
                         batch.actions
                         and all(
                             str(action.action_id) in manual_ids
@@ -5056,7 +5001,7 @@ class OperationCoordinator:
                                 (),
                             )
                         }
-                        typed = tuple(action if str(getattr(action.kind, "value", action.kind)) in {"delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend"}
+                        typed = tuple(action if str(getattr(action.kind, "value", action.kind)) in {"delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"}
                                       else typed_by_id.get(str(action.action_id), action) for action in batch.actions)
                         outcome = self.service.execute(
                             batch_context,
@@ -5328,6 +5273,8 @@ class OperationCoordinator:
                 operation_id=live.operation_id,
                 reason="recovery_required",
             )
+        elif builtin_delete(live.document["scope"]) and blocked_batches:
+            terminal, terminal_error = None, None
         else:
             self._emit_progress(
                 progress_callback,
@@ -5569,11 +5516,7 @@ class OperationCoordinator:
                     "frontend_reference_evidence", (),
                 ):
                     expected = evidence.get("expected", {})
-                    identity_key = (
-                        "session_id" if evidence.get("platform") == "aionui"
-                        else "native_session_id"
-                    )
-                    native_id = expected.get(identity_key)
+                    native_id = expected.get("native_session_id")
                     if native_id not in manual.affected_thread_ids:
                         raise OperationCoordinatorError(
                             "frontend reference is outside the frozen native cascade"
@@ -5732,6 +5675,8 @@ class OperationCoordinator:
         *, readonly_recovery: bool = False,
     ) -> tuple[Any | None, str | None]:
         try:
+            if builtin_delete(live.document["scope"]):
+                return live.context, None
             self._retain_live_guards(live, self._with_current_guard_sources(live.adapters, live.client,
                 codex_home=self._bound_codex_home(live.document, None)), readonly_recovery=readonly_recovery)
             self._retain_live_guards(live, refresh_guard_sources(retain_guard_sources(
@@ -6154,7 +6099,7 @@ class OperationCoordinator:
         # Exact WorkBuddy evidence distinguishes a missing row/usage/sidecar
         # from a value. Preserve its explicit nulls through plan persistence;
         # continue applying the ordinary body-key filter throughout the tree.
-        _workbuddy_nulls = _workbuddy_nulls or key in {"workbuddy_session_evidence", "office_session_evidence", "orca_frontend_evidence", "orca_target_evidence", "herdr_evidence", "paseo_evidence"}
+        _workbuddy_nulls = _workbuddy_nulls or key in {"workbuddy_session_evidence", "office_session_evidence", "orca_frontend_evidence", "orca_target_evidence", "herdr_evidence", "paseo_evidence", "t3code_evidence"}
         if key in {"title", "display_name", "thread_name", "name"}:
             from .display_metadata import display_title
             return display_title(value)

@@ -1,9 +1,122 @@
-# 本地 Agent 记录清理模型与安全边界
+# 本地 Agent 管理模型与安全边界
 
-本文档描述 0.2.0 的当前实现。项目只负责在已支持的适配器范围内找出失效或用户明确
-选择的本地 Agent 记录，展示精确影响，永久删除，再确认目标已消失。它不是恢复平台、
-长期备份库、rollout 隔离区或自动数据修复器；分类词汇不代表每个客户端都已实现全套
-发现和删除。
+项目在同一入口下管理本地 Agent 的环境证据与记录：环境盘点说明程序、客户端和存储
+之间的已知关系；记录清理在已支持的适配器范围内找出失效或用户明确选择的记录，展示
+精确影响，永久删除，再确认目标已消失。通用 Windows 磁盘和非 Agent 软件维护独立于
+本项目。项目不是长期备份库、rollout 隔离区或自动数据修复器；分类词汇不代表每个
+客户端都已实现全套发现和删除。
+
+## Agent 环境与记录的分工
+
+统一管理不等于共用修改授权。实现分为三个部分：
+
+| 部分 | 入口与职责 | 执行边界 |
+|---|---|---|
+| 环境盘点和诊断 | `environment inventory/doctor`；发现运行程序、版本线索、客户端及存储位置 | 有界、只读的元数据探测，不运行发现的程序、不读取登录凭据或聊天正文 |
+| 环境维护与接入 | `agent-management` skill；专用 `environment claude-connect/claude-import/cindy-memory`，以及安装升级、调用路径修复和旧运行时处理 | 连接配置、历史导入、记忆读取分别限定范围；按实际安装渠道及客户端接口执行并验证 |
+| 记录清理 | `records`、`delete`、`operation` 与现有 `CleanupService` | 沿用每种存储、记录和 mutation family 的精确协议 |
+
+`environment doctor` 检查环境事实及证据缺口；既有 `agent doctor` 检查记录操作的目标
+存储和客户端归属。二者不互相替代。环境清单是诊断输入，不会生成或批准记录删除动作。
+安装、升级、卸载和修复没有虚构的通用 `environment apply`；skill 使用当次核实的
+官方安装器、包管理器或客户端配置入口，记录操作仍进入既有 operation 协议。
+
+### Claude 接入边界
+
+专用接入命令使用显式路径和独立计划，不复用删除 manifest。`claude-connect` 冻结
+现有配置和目标路径，按核对过的 SHA-256 修改 Paseo 自定义 Claude provider 或 T3
+默认 `claudeAgent` 的程序与 home；不读取原生会话或证明认证。离线配置写入的
+`--clients-closed` 是调用方对相关 writer 已退出的断言，不是自动进程检查。
+
+`claude-import` 通过客户端官方接口创建前端记录，不直接写客户端数据库。Paseo
+支持完整 Claude UUID；T3 的已核实接口只有项目级近期历史导入，可能涉及多个引擎，
+不能用单条 Claude 授权代替。成功响应与实际原生引用核验分开，结果不明时先 verify。
+
+`cindy-memory inspect` 只读取项目归属元数据与文件属性；`export` 才读取精确选中的
+记忆分片并生成新快照。这是明确的内容导出能力，不受环境盘点的“仅元数据”描述覆盖。
+源记忆、项目指令和全局设置均不由导出命令修改；加载快照由技能按已有指令体系执行。
+固定来源、命令与验证说明见 [Claude 接入流程](../skills/agent-management/references/claude-connections.md)。
+
+### 环境发现与诊断
+
+运行时、前端与存储分别建模。独立 CLI、桌面内置引擎、Cindy 托管引擎和 T3 ACP
+即使产品名称相近，也保留各自的来源。环境报告必须区分：
+
+- 已发现的可执行文件，与有证据的客户端实际选择；
+- 路径中声明的版本，与执行程序核验的版本；
+- 当前进程 PATH，与客户端后台继承的环境；
+- 默认或已存在的数据根候选，与已验证的 native store 绑定；
+- 同一物理文件的路径别名，与内容相同但独立的文件；
+- 未发现、读取失败、未覆盖和已证明不存在。
+
+默认环境探测不启动程序，因而不会声称已核验程序版本、登录状态、模型列表或真实消息
+生成。最高版本目录、文件修改时间、同一账号和存在凭据文件都不足以证明上述事实。
+配置只按已支持的格式提取最小白名单字段；未知格式保留不确定性，不倾倒整个配置。
+报告使用独立的 `larj.environment-inventory.v1` schema，不修改旧记录计划和审批指纹。
+
+T3 的 ACP 协议家族与底层程序分开：自定义 `agy acp` 的绑定仍属 `antigravity-acp`，
+可执行文件候选属于 `antigravity-cli`，配置追加 `launch_mode_hint=cli_acp`。
+该线索不把 CLI 绑定到旧的 T3 哈希实例目录；原生根保持未知，原生清理状态为
+`unsupported_cli_acp`。受管双文件运行时及历史实例目录继续独立盘点。
+
+Cindy 的运行时发现同时识别旧 `codex/<version>/codex` 布局与
+`codex-package/<version>/bin/codex` 托管包布局；Windows 使用对应 `.exe` 文件。
+自动发现仅提供运行候选，显式程序路径保持优先。候选选择不授予清理旧版本的权限。
+
+### Windows 启动环境与 PATH 诊断
+
+CLI 已安装且 Windows 用户 PATH 已注册，仍可能无法被某个客户端启动。常驻启动器
+保留旧环境时，其后启动的客户端和服务端可能继续继承旧 PATH。T3 由 uTools 启动的
+排障案例说明：当前 Codex 任务内 `Get-Command codex` 成功，不证明 T3 的命令解析成功。
+父子关系也不能单独证明环境相同，启动器可以显式提供不同的环境块。
+[Windows 环境继承说明](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)
+
+诊断分别记录安装来源、持久用户/系统 PATH、当前检查进程环境、目标启动器/客户端/
+服务端环境，以及 frontend 显式命令覆盖。缺失安装证据、命令未注册、进程环境过期或
+被覆盖、显式 `binaryPath` 和独立/桌面捆绑 CLI 选择差异，不能合并为“CLI 未安装”。
+目标进程不可读时保留未知；使用 PID、启动时间和执行路径限定一次进程观察。
+
+当前 `environment inventory/doctor` 只读取调用进程或显式传入的 PATH，不自动读取
+持久 PATH、其他进程环境或继承链。Python API 的 `process_executables` 也仅表示外部
+提供的执行路径观察。上述进一步诊断与刷新由
+[Agent 技能操作流程](../skills/agent-management/references/runtime-and-migration.md#windows-path-inheritance)
+完成，不能声称 CLI 已实现自动过期环境检测。
+
+刷新范围覆盖实际启动链。先检查进行中的任务，优先正常退出；窗口关闭不等于托盘
+启动器退出。用目标用户的已验证环境重新启动后，检查新进程的实际选择。临时绝对路径
+覆盖与用户要求的最终配置分开；目标为恢复默认命令时，验证后撤回临时覆盖，同时保留
+原来的数据根和账号模式。命令解析、Provider 连接、认证、模型发现与实际生成分层验收。
+本机 PID、版本、模型数量和用户名路径属于当次观察，不写成永久匹配规则。
+
+### 环境维护工作流
+
+安装或升级先确定安装来源、实际消费者、稳定命令入口以及现有数据根；卸载引擎前检查
+仍依赖它的客户端。文件内容相同或全局已有一份引擎，不构成移除客户端托管副本的理由。
+升级验证分层报告：安装完成、可执行、客户端握手、模型发现、实际任务，各层分别给出
+证据，不能以 `--version` 成功代替最终使用验证。
+
+配置和数据迁移按任务决定保留策略，验证实际启动路径和生效配置后再处理原位置。
+可重建缓存与明确废弃残留可按用户授权直接删除；共享配置或数据库写入所需的临时回滚
+材料不等于长期备份。已有授权在相同范围内持续有效，改变产品、目标、数据保留或迁移
+策略时才需要新的选择。操作系统的提权提示与聊天中的任务授权分别说明。
+
+运行时卸载、解包缓存清理、旧实例整体弃用和逐条记录删除分别定义范围与完成条件。
+例如 T3 改用 `agy acp` 后，CLI 仍以 ACP 协议服务；卸载旧 server/helper 不等于旧实例
+的凭据、设置与历史记录已经清理。整体弃用须先确认实际消费者、活动数据根及用户选定
+的完整范围。实例内指向共享 skills 的链接与目标分别核对，不能递归穿过链接清理共享目录。
+当前项目没有通用 profile-retirement 命令；单次任务脚本和历史清理结果不构成通用能力。
+具体范围与验证方法见 [旧实例数据检查](../skills/agent-management/references/antigravity.md#distinguish-uninstall-results-from-discarded-instance-data)。
+
+### 多主机与验证
+
+代码和 skill 可以部署到多台主机；安装路径、环境变量、消费者、凭据及清理计划不在
+主机间复用。发现器可注入用户目录、AppData、PATH 和客户端选择，使测试只触及临时
+目录。每台主机分别发现、分别验证；环境报告不是远程执行协议。
+
+验收覆盖新旧运行时布局并存、显式路径优先、目录链接和硬链接、读取错误、扫描预算、
+缺失运行时、未知绑定、含秘密的配置和隔离用户目录。CLI 路由必须在加载记录适配器前
+进入环境入口，环境诊断不扫描会话正文。skill 另用模拟请求检查路由和操作范围；真实
+软件卸载、用户记录清理和真实凭据均不作为开发测试。
 
 ## 统一执行架构
 
@@ -26,7 +139,7 @@ Driver
 确认、执行前重验证和删除后验证。GUI 不提供全选。一次明确勾选和确认会额外绑定范围内
 精确 Codex Desktop 快照，并顺序编排 native thread 删除与 Desktop 状态清理；两者仍是
 独立物理修改批次，各自执行客户端归属检查、回滚保护和写后验证，不组成伪事务。
-Cindy/AionUI frontend mutation family 不在该组合授权内，仍明确保留并单独处理。
+Cindy frontend mutation family 不在该组合授权内，仍明确保留并单独处理。
 
 核心类型分工：
 
@@ -81,9 +194,7 @@ mutation family，跨批次不构成事务。新发现的动作须重新生成�
 - Codex SQLite 列表、活动/归档 rollout 首行 metadata 和旧索引；
 - 精确关系边与完整关联任务范围；
 - Codex Desktop 可探测的 local catalog/UI 结构化引用；
-- AionUI/Cindy 当前与历史 frontend reference；AionUI orphan project/conversations
-  row 仅在已探测支持 schema、完整不可变行证据且确认无 `acp_session` 引用时可执行，
-  其他 schema 保持 `inventory_only`；
+- Cindy 当前与历史 frontend reference；
 - Pi/Claude storage-qualified session manifest；
 - 读取失败、进程归属和 identity conflict。
 
@@ -101,8 +212,7 @@ action 生成完整目标、影响范围、schema/行/文件指纹、稳定 ID �
 | 孤立关联任务 thread | 展示完整级联范围后删除 |
 | 只剩无效关系边 | 精确删除一条已批准关系行 |
 | 只剩旧索引/Desktop 状态 | 精确清除残留 |
-| 只剩 Cindy/AionUI 映射 | 精确清除该映射；Cindy `status=deleted` 会话可作为独立批次物理删除 |
-| 只剩 AionUI project/conversations row | 仅在支持 schema、完整不可变行证据且无 `acp_session` 引用时按数据库集合精确删除；其他 schema 报告为 `orphan_project` / `inventory_only` |
+| 只剩 Cindy 映射 | 精确清除该映射；Cindy `status=deleted` 会话可作为独立批次物理删除 |
 | Pi/Claude session | 删除精确文件或 manifest |
 | 同一 ID 位于多个存储 | 每个物理存储分别选择 |
 | 活动引用、读取失败、身份冲突 | 阻止该目标并返回稳定原因 |
@@ -139,12 +249,6 @@ operation 仍可按冻结证据执行只读恢复。
 一个 app-server。若官方 API 已删除 thread 但留下已批准 rollout，只有在路径位于目标
 store、是唯一链接的普通文件、thread ID 与完整指纹仍匹配且已无 index/活动引用时，
 才能作为同一动作的残留清除。任何未知残留使结果成为 `partial` 或 `unknown`。
-
-### AionUI
-
-只删除孤立 `acp_session` 行。当前 schema 使用完整主键；无主键的旧 schema 仅接受
-执行前重新验证的 `rowid + 完整行指纹`。无法唯一定位、schema 漂移、存在 trigger
-或影响行数不是 1 时阻止该条。
 
 ### Cindy
 

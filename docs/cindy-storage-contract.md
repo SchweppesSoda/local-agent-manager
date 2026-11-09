@@ -1,8 +1,16 @@
 # Cindy storage contract
 
-This implementation is checked against [makecindy/cindy at
+The record-cleanup implementation is checked against [makecindy/cindy at
 8b512ba5396f83a242838d172dbd7afb19183265](https://github.com/makecindy/cindy/tree/8b512ba5396f83a242838d172dbd7afb19183265).
 It does not infer compatibility from the installed application version alone.
+
+Project-memory export is a separate, explicitly selected content operation.
+It uses the local `owners/<owner>/maker-memory/<scope>/meta.json.absPath` layout
+and curated shard names checked at [b6b6685](https://github.com/makecindy/cindy/tree/b6b668550e2cd276e047e666640ea3d727dac027).
+The lossy scope directory name locates a candidate; it does not prove project
+identity. `environment cindy-memory inspect/export` never changes Cindy's
+memory store or record references. See the [Claude connection workflow](../skills/agent-management/references/claude-connections.md)
+for selection and downstream instruction loading.
 
 ## Storage and selection
 
@@ -59,7 +67,10 @@ only projections whose session or lead is selected, and both foreign keys cascad
 when those sessions are deleted. The plan fingerprints the affected cache rows,
 checks them again before writing, and verifies both reference columns are empty
 after deletion. Unrelated projections remain unchanged. Reference-only cleanup
-does not yet enable this trigger generation.
+also qualifies the complete generation: current references update only
+`sdk_session_id`, and history references update only `content` on an unchanged
+`agent_switch` row belonging to the approved session. Neither update activates
+the auto-review triggers; projection revisions and payloads remain unchanged.
 
 On Windows, session cleanup discovers Cindy's bundled SQLite vector extension
 under the per-user installation or the standard Program Files installation roots.
@@ -72,6 +83,9 @@ triggers on the index dependencies block deletion. Reference plans run a set
 guard once per database before returning ready. Apply repeats its exact guards
 under the write transaction. Each business statement must affect exactly one
 approved row; FTS shadow writes do not count as extra business rows.
+The collection guard includes exact authorized soft-deleted rows together with
+all retained references to the selected native IDs. A mixed selection therefore
+keeps both sets under fingerprint checks while still rejecting new live references.
 
 Whole-session deletion still requires `status=deleted` or the exact explicit
 frontend session ID authorization described in [operation-cli.md](operation-cli.md).

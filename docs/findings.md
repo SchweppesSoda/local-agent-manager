@@ -8,17 +8,6 @@ Finding 是 adapter 的兼容证据格式，描述一个不一致状态，不等
 
 ## 前端残留
 
-### AionUI orphan mapping
-
-条件：
-
-- `acp_session.conversation_id` 找不到对应 `conversations.id`；
-- `session_id` 非空；
-- agent metadata 明确 backend 为 Codex，或 rollout originator 明确为 `aionui-session`；
-- Codex 索引或 rollout 至少存在一项。
-
-典型原因是 AionUI 删除了主对话，但映射清理失败，而且未调用 Codex 硬删除。
-
 ### Cindy soft-deleted session
 
 条件：
@@ -103,7 +92,7 @@ host、原生证据重新出现或快照漂移都会阻止修改。可执行动�
 
 | 字段 | 含义 |
 |---|---|
-| `platform` | `aionui`、`cindy`、`native` 或 `codex-desktop` |
+| `platform` | `cindy`、`native` 或 `codex-desktop` |
 | `platform_session_id` | 前端会话 ID；原生 Finding 可能使用对话自身标识 |
 | `thread_id` | 完整 Codex 对话 ID |
 | `reason` | 面向人的判断理由 |

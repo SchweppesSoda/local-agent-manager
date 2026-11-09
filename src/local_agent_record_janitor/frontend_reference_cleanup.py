@@ -73,7 +73,6 @@ class FrontendReferenceCleanupResult:
     database: Path
     platform: str
     removed_reference_count: int
-    deleted_aionui_rows: int = 0
     cleared_cindy_current_references: int = 0
     cleaned_cindy_historical_references: int = 0
     reference_results: tuple[Mapping[str, Any], ...] = ()
@@ -87,7 +86,6 @@ class FrontendReferenceCleanupResult:
             "database": str(self.database),
             "platform": self.platform,
             "removed_reference_count": self.removed_reference_count,
-            "deleted_aionui_rows": self.deleted_aionui_rows,
             "cleared_cindy_current_references": (
                 self.cleared_cindy_current_references
             ),
@@ -143,7 +141,7 @@ def execute_frontend_reference_cleanup(
         raise FrontendReferenceError(
             "One frontend cleanup batch must target one physical database"
         )
-    if len(platforms) != 1 or not platforms <= {"aionui", "cindy"}:
+    if len(platforms) != 1 or not platforms <= {"cindy"}:
         raise FrontendReferenceError(
             "One frontend cleanup batch must target one supported frontend"
         )
@@ -262,7 +260,6 @@ def execute_frontend_reference_cleanup(
         database=database,
         platform=platform,
         removed_reference_count=len(prepared),
-        deleted_aionui_rows=operations.count("delete_row"),
         cleared_cindy_current_references=operations.count(
             "clear_session_sdk_session_id"
         ),
@@ -308,7 +305,7 @@ def guard_frontend_reference_closure(
 
     ``evidence_by_native`` may be a mapping from native ID to exact evidence,
     or the already-flattened evidence sequence.  The guard performs one set
-    query per supported collection (AionUI rows; Cindy sessions and, when
+    query per supported collection (Cindy sessions and, when
     present, history messages), compares physical row locators/fingerprints,
     and rejects any newly-live reference before a mutation marker can be sent.
     """
@@ -328,7 +325,7 @@ def guard_frontend_reference_closure(
         raise FrontendReferenceGuardError(
             "A frontend closure guard must target one physical database"
         )
-    if platforms not in ({"aionui"}, {"cindy"}):
+    if platforms != {"cindy"}:
         raise FrontendReferenceGuardError(
             "A frontend closure guard must target one supported platform"
         )
@@ -339,18 +336,11 @@ def guard_frontend_reference_closure(
         with closing(connect_readonly(database)) as connection:
             connection.row_factory = sqlite3.Row
             prepared = _prepare_mutations(connection, evidence)
-            if platform == "aionui":
-                query_count = _guard_aionui_collection(
-                    connection,
-                    evidence,
-                    query_observer=query_observer,
-                )
-            else:
-                query_count = _guard_cindy_collection(
-                    connection,
-                    evidence,
-                    query_observer=query_observer,
-                )
+            query_count = _guard_cindy_collection(
+                connection,
+                evidence,
+                query_observer=query_observer,
+            )
     except FrontendReferenceGuardError:
         raise
     except FrontendReferenceError as exc:
@@ -365,9 +355,7 @@ def guard_frontend_reference_closure(
             {
                 str(
                     _mapping(item.get("expected")).get(
-                        "session_id"
-                        if platform == "aionui"
-                        else "native_session_id"
+                        'native_session_id'
                     )
                 )
                 for item in evidence
@@ -428,9 +416,7 @@ def _flatten_guard_evidence(
                         "Frontend closure evidence has no expected identity"
                     )
                 key = (
-                    expected.get("session_id")
-                    if str(evidence.get("platform") or "").casefold() == "aionui"
-                    else expected.get("native_session_id")
+                    expected.get('native_session_id')
                 )
                 if key != native_id:
                     raise FrontendReferenceGuardError(
@@ -449,124 +435,6 @@ def _flatten_guard_evidence(
             "Frontend closure evidence must contain mappings"
         )
     return tuple(dict(item) for item in items)
-
-
-def _guard_aionui_collection(
-    connection: sqlite3.Connection,
-    evidence: Sequence[Mapping[str, Any]],
-    *,
-    query_observer: Callable[[str], None] | None,
-) -> int:
-    schema = table_schema(connection, "acp_session")
-    columns = tuple(str(item["name"]) for item in schema)
-    if schema_fingerprint(schema) != str(evidence[0].get("schema_fingerprint") or ""):
-        raise FrontendReferenceGuardError(
-            "AionUI acp_session schema changed after authorization"
-        )
-    if not table_exists(connection, "conversations"):
-        raise FrontendReferenceGuardError(
-            "AionUI live-reference collection cannot prove conversations ownership"
-        )
-    primary_key = tuple(
-        str(item["name"])
-        for item in sorted(schema, key=lambda value: int(value["pk"]))
-        if int(item["pk"]) > 0
-    )
-    has_rowid = _guard_table_has_rowid(connection, "acp_session")
-    if not primary_key and not has_rowid:
-        raise FrontendReferenceGuardError(
-            "AionUI acp_session has no stable physical row identity"
-        )
-    native_ids = sorted(
-        {
-            str(_mapping(item.get("expected")).get("session_id"))
-            for item in evidence
-        }
-    )
-    if any(not value or value == "None" for value in native_ids):
-        raise FrontendReferenceGuardError(
-            "AionUI closure evidence has no native session ID"
-        )
-    placeholders = ", ".join("?" for _ in native_ids)
-    projection = (
-        'a.rowid AS "__larj_guard_rowid", a.*' if has_rowid else "a.*"
-    )
-    if query_observer is not None:
-        query_observer("aionui:live-reference-collection")
-    rows = connection.execute(
-        "SELECT "
-        + projection
-        + " FROM acp_session AS a"
-        + " INNER JOIN conversations AS c ON c.id = a.conversation_id"
-        + " WHERE a.session_id IN ("
-        + placeholders
-        + ")",
-        tuple(native_ids),
-    ).fetchall()
-    approved_tokens = {
-        _aionui_guard_token(item, primary_key)
-        for item in evidence
-    }
-    current_tokens = {
-        _aionui_row_guard_token(row, columns, primary_key, has_rowid)
-        for row in rows
-    }
-    if current_tokens != approved_tokens:
-        raise FrontendReferenceGuardError(
-            "AionUI live-reference collection changed after authorization"
-        )
-    return 1
-
-
-def _aionui_guard_token(
-    evidence: Mapping[str, Any],
-    primary_key: tuple[str, ...],
-) -> tuple[Any, ...]:
-    locator = _mapping(evidence.get("locator"))
-    row_fingerprint_value = evidence.get("row_fingerprint")
-    if not isinstance(row_fingerprint_value, str) or not row_fingerprint_value:
-        raise FrontendReferenceGuardError(
-            "AionUI closure evidence has no row fingerprint"
-        )
-    if locator.get("kind") == "rowid":
-        rowid = locator.get("rowid")
-        if not isinstance(rowid, int) or isinstance(rowid, bool):
-            raise FrontendReferenceGuardError("AionUI closure rowid is invalid")
-        return ("rowid", int(rowid), row_fingerprint_value)
-    if locator.get("kind") != "primary_key":
-        raise FrontendReferenceGuardError(
-            "AionUI closure evidence has no supported row locator"
-        )
-    columns = tuple(locator.get("columns") or ())
-    values = locator.get("values")
-    if columns != primary_key or not isinstance(values, list) or len(values) != len(columns):
-        raise FrontendReferenceGuardError(
-            "AionUI closure primary-key locator changed"
-        )
-    return (
-        "primary_key",
-        tuple(_decode_sqlite_value(value) for value in values),
-        row_fingerprint_value,
-    )
-
-
-def _aionui_row_guard_token(
-    row: sqlite3.Row,
-    columns: tuple[str, ...],
-    primary_key: tuple[str, ...],
-    has_rowid: bool,
-) -> tuple[Any, ...]:
-    fingerprint = row_fingerprint(row, columns)
-    if primary_key:
-        return ("primary_key", tuple(row[column] for column in primary_key), fingerprint)
-    if not has_rowid:
-        raise FrontendReferenceGuardError(
-            "AionUI closure row has no stable physical identity"
-        )
-    value = row["__larj_guard_rowid"]
-    if not isinstance(value, int):
-        raise FrontendReferenceGuardError("AionUI closure rowid is invalid")
-    return ("rowid", int(value), fingerprint)
 
 
 def _guard_cindy_collection(
@@ -593,13 +461,19 @@ def _guard_cindy_collection(
             "Cindy closure evidence has no native session ID"
         )
     placeholders = ", ".join("?" for _ in native_ids)
+    # Include every exact authorized row, including soft-deleted sessions.
+    # Retained rows outside that set still protect the native IDs. Filtering
+    # solely by live status would compare a subset against the whole approval.
+    session_ids = sorted({str(_mapping(item.get("locator")).get("cindy_session_id")) for item in evidence})
+    session_placeholders = ", ".join("?" for _ in session_ids)
     if query_observer is not None:
         query_observer("cindy:live-current-collection")
     current_rows = connection.execute(
         "SELECT * FROM sessions WHERE sdk_session_id IN ("
         + placeholders
-        + ") AND (status IS NULL OR lower(status) <> 'deleted')",
-        tuple(native_ids),
+        + ") AND (status IS NULL OR lower(status) <> 'deleted' OR id IN ("
+        + session_placeholders + "))",
+        (*native_ids, *session_ids),
     ).fetchall()
     approved_current = {
         (
@@ -650,7 +524,9 @@ def _guard_cindy_collection(
     message_rows = connection.execute(
         "SELECT m.* FROM messages AS m INNER JOIN sessions AS s ON s.id = m.session_id "
         "WHERE m.role = 'agent_switch' "
-        "AND (s.status IS NULL OR lower(s.status) <> 'deleted')"
+        "AND (s.status IS NULL OR lower(s.status) <> 'deleted' OR s.id IN ("
+        + session_placeholders + "))",
+        tuple(session_ids),
     ).fetchall()
     approved_history = {
         (
@@ -738,136 +614,9 @@ def _prepare_mutations(
             "A frontend transaction cannot mix frontend platforms"
         )
     platform = next(iter(platforms))
-    if platform == "aionui":
-        return _prepare_aionui_batch(connection, evidence)
     if platform == "cindy":
         return _prepare_cindy_batch(connection, evidence)
     raise FrontendReferenceError("Unsupported frontend reference platform")
-
-
-def _prepare_aionui_batch(
-    connection: sqlite3.Connection,
-    evidence: Sequence[Mapping[str, Any]],
-) -> tuple[_PreparedMutation, ...]:
-    first = evidence[0]
-    schema, columns = _validate_schema(
-        connection,
-        "acp_session",
-        str(first.get("schema_fingerprint") or ""),
-        required={
-            "conversation_id",
-            "session_id",
-            "agent_id",
-            "agent_source",
-            "session_status",
-            "last_active_at",
-        },
-    )
-    _ensure_no_triggers(connection, "acp_session")
-    schema_hash = schema_fingerprint(schema)
-    primary_key = tuple(
-        str(value["name"])
-        for value in sorted(schema, key=lambda value: int(value["pk"]))
-        if int(value["pk"]) > 0
-    )
-    locators: list[Mapping[str, Any]] = []
-    locator_keys: set[str] = set()
-    where_parts: list[str] = []
-    parameters: list[Any] = []
-    for item in evidence:
-        if str(item.get("schema_fingerprint") or "") != schema_hash:
-            raise FrontendReferenceError(
-                "AionUI evidence rows do not share one schema snapshot"
-            )
-        locator = _mapping(item.get("locator"))
-        kind = locator.get("kind")
-        if kind == "primary_key":
-            if tuple(locator.get("columns") or ()) != primary_key:
-                raise FrontendReferenceError(
-                    "AionUI primary-key locator no longer matches the schema"
-                )
-        elif kind == "rowid":
-            if not isinstance(locator.get("rowid"), int):
-                raise FrontendReferenceError("Invalid AionUI rowid locator")
-        else:
-            raise FrontendReferenceError(
-                "AionUI row lacks a stable primary-key or rowid locator"
-            )
-        locator_key = json.dumps(dict(locator), sort_keys=True, separators=(",", ":"))
-        if locator_key in locator_keys:
-            raise FrontendReferenceError(
-                "The authorized batch contains duplicate physical row mutations"
-            )
-        locator_keys.add(locator_key)
-        where, values = _aionui_where(locator)
-        where_parts.append("(" + where + ")")
-        parameters.extend(values)
-        locators.append(locator)
-    projection = "rowid AS \"__larj_rowid\", *" if any(
-        locator.get("kind") == "rowid" for locator in locators
-    ) else "*"
-    try:
-        rows = connection.execute(
-            "SELECT " + projection + " FROM acp_session WHERE "
-            + " OR ".join(where_parts),
-            tuple(parameters),
-        ).fetchall()
-    except sqlite3.Error as exc:
-        raise FrontendReferenceError(
-            "AionUI exact row guard query failed"
-        ) from exc
-    if len(rows) != len(locators):
-        raise FrontendReferenceError(
-            "AionUI exact row guard found a missing or duplicate row"
-        )
-    by_rowid = {
-        int(row["__larj_rowid"]): row
-        for row in rows
-        if "__larj_rowid" in row.keys()
-    }
-    by_primary_key = {
-        tuple(row[column] for column in primary_key): row
-        for row in rows
-    }
-    prepared: list[_PreparedMutation] = []
-    for item, locator in zip(evidence, locators):
-        row = (
-            by_rowid.get(int(locator["rowid"]))
-            if locator.get("kind") == "rowid"
-            else by_primary_key.get(
-                tuple(
-                    _decode_sqlite_value(value)
-                    for value in (locator.get("values") or ())
-                )
-            )
-        )
-        if row is None:
-            raise FrontendReferenceError(
-                "AionUI locator does not identify exactly one current row"
-            )
-        if row_fingerprint(row, columns) != item.get("row_fingerprint"):
-            raise FrontendReferenceError(
-                "AionUI acp_session row changed after authorization"
-            )
-        expected = _mapping(item.get("expected"))
-        if (
-            row["conversation_id"] != expected.get("conversation_id")
-            or row["session_id"] != expected.get("session_id")
-        ):
-            raise FrontendReferenceError(
-                "AionUI row identity no longer matches the approved mapping"
-            )
-        prepared.append(
-            _PreparedMutation(
-                platform="aionui",
-                operation="delete_row",
-                table="acp_session",
-                locator=locator,
-                original_row={column: row[column] for column in columns},
-                columns=columns,
-            )
-        )
-    return tuple(prepared)
 
 
 def _prepare_cindy_batch(
@@ -988,6 +737,8 @@ def _prepare_cindy_batch(
                 "Cindy history message row is missing"
             )
         message_row = messages[message_id]
+        if message_row["role"] != "agent_switch" or message_row["session_id"] != session_id:
+            raise FrontendReferenceError("Cindy history row is not the authorized agent_switch")
         content = message_row["content"]
         if not isinstance(content, str):
             raise FrontendReferenceError(
@@ -1047,22 +798,6 @@ def _verify_mutations(
     if not mutations:
         return
     platforms = {mutation.platform for mutation in mutations}
-    if platforms == {"aionui"}:
-        where_parts: list[str] = []
-        parameters: list[Any] = []
-        for mutation in mutations:
-            where, values = _aionui_where(mutation.locator)
-            where_parts.append("(" + where + ")")
-            parameters.extend(values)
-        rows = connection.execute(
-            "SELECT 1 FROM acp_session WHERE " + " OR ".join(where_parts),
-            tuple(parameters),
-        ).fetchall()
-        if rows:
-            raise FrontendReferenceError(
-                "AionUI approved rows remain after deletion"
-            )
-        return
     if platforms != {"cindy"}:
         raise FrontendReferenceError("Unsupported frontend verification platform")
     current = [
@@ -1104,8 +839,6 @@ def _verify_mutations(
 
 
 def _reference_id(mutation: _PreparedMutation) -> str:
-    if mutation.platform == "aionui":
-        return "aionui:" + str(mutation.original_row.get("conversation_id"))
     if mutation.operation == "clear_session_sdk_session_id":
         return "cindy:current:" + str(mutation.locator.get("cindy_session_id"))
     return "cindy:history:" + str(mutation.locator.get("message_id"))
@@ -1121,8 +854,6 @@ def _prepare_mutation(
         )
     platform = str(evidence.get("platform") or "")
     operation = str(evidence.get("operation") or "")
-    if platform == "aionui" and operation == "delete_row":
-        return _prepare_aionui_delete(connection, evidence)
     if platform == "cindy" and operation in {
         "clear_session_sdk_session_id",
         "remove_agent_switch_from_sdk_session_id",
@@ -1130,50 +861,6 @@ def _prepare_mutation(
         return _prepare_cindy_mutation(connection, evidence)
     raise FrontendReferenceError(
         f"Unsupported frontend reference operation: {platform}/{operation}"
-    )
-
-
-def _prepare_aionui_delete(
-    connection: sqlite3.Connection,
-    evidence: Mapping[str, Any],
-) -> _PreparedMutation:
-    if evidence.get("table") != "acp_session":
-        raise FrontendReferenceError("AionUI evidence targets an unknown table")
-    schema, columns = _validate_schema(
-        connection,
-        "acp_session",
-        str(evidence.get("schema_fingerprint") or ""),
-        required={
-            "conversation_id",
-            "session_id",
-            "agent_id",
-            "agent_source",
-            "session_status",
-            "last_active_at",
-        },
-    )
-    _ensure_no_triggers(connection, "acp_session")
-    locator = _mapping(evidence.get("locator"))
-    row = _select_aionui_row(connection, locator, schema)
-    if row_fingerprint(row, columns) != evidence.get("row_fingerprint"):
-        raise FrontendReferenceError(
-            "AionUI acp_session row changed after authorization"
-        )
-    expected = _mapping(evidence.get("expected"))
-    if (
-        row["conversation_id"] != expected.get("conversation_id")
-        or row["session_id"] != expected.get("session_id")
-    ):
-        raise FrontendReferenceError(
-            "AionUI row identity no longer matches the approved mapping"
-        )
-    return _PreparedMutation(
-        platform="aionui",
-        operation="delete_row",
-        table="acp_session",
-        locator=locator,
-        original_row={column: row[column] for column in columns},
-        columns=columns,
     )
 
 
@@ -1250,6 +937,8 @@ def _prepare_cindy_mutation(
         "id",
         message_id,
     )
+    if message_row["role"] != "agent_switch" or message_row["session_id"] != session_id:
+        raise FrontendReferenceError("Cindy history row is not the authorized agent_switch")
     content = message_row["content"]
     if not isinstance(content, str):
         raise FrontendReferenceError("Cindy agent_switch content is not text")
@@ -1281,13 +970,7 @@ def _apply_mutation(
     connection: sqlite3.Connection,
     mutation: _PreparedMutation,
 ) -> None:
-    if mutation.operation == "delete_row":
-        where, parameters = _aionui_where(mutation.locator)
-        cursor = connection.execute(
-            f"DELETE FROM acp_session WHERE {where}",
-            parameters,
-        )
-    elif mutation.operation == "clear_session_sdk_session_id":
+    if mutation.operation == "clear_session_sdk_session_id":
         cursor = connection.execute(
             "UPDATE sessions SET sdk_session_id = NULL "
             "WHERE id = ? AND sdk_session_id = ?",
@@ -1315,15 +998,6 @@ def _verify_mutation(
     connection: sqlite3.Connection,
     mutation: _PreparedMutation,
 ) -> None:
-    if mutation.operation == "delete_row":
-        where, parameters = _aionui_where(mutation.locator)
-        count = connection.execute(
-            f"SELECT COUNT(*) FROM acp_session WHERE {where}",
-            parameters,
-        ).fetchone()[0]
-        if count != 0:
-            raise FrontendReferenceError("AionUI row remains after deletion")
-        return
 
     table = "sessions" if mutation.table == "sessions" else "messages"
     locator_column = "id"
@@ -1352,14 +1026,6 @@ def _reference_is_present(
     platform = str(evidence.get("platform") or "")
     operation = str(evidence.get("operation") or "")
     locator = _mapping(evidence.get("locator"))
-    if platform == "aionui" and operation == "delete_row":
-        where, parameters = _aionui_where(locator)
-        return bool(
-            connection.execute(
-                f"SELECT 1 FROM acp_session WHERE {where} LIMIT 1",
-                parameters,
-            ).fetchone()
-        )
     expected = _mapping(evidence.get("expected"))
     native_id = expected.get("native_session_id")
     if operation == "clear_session_sdk_session_id":
@@ -1408,7 +1074,7 @@ def _validate_schema(
 
 def _guard_cindy_triggers(connection: sqlite3.Connection, table: str) -> None:
     try:
-        guard_cindy_triggers(connection, table)
+        guard_cindy_triggers(connection, table, reference_update=True)
     except CindySchemaError as exc:
         raise FrontendReferenceGuardError(str(exc)) from exc
 
@@ -1425,62 +1091,6 @@ def _ensure_no_triggers(
         raise FrontendReferenceError(
             f"Frontend table {table!r} has unsupported mutation triggers"
         )
-
-
-def _select_aionui_row(
-    connection: sqlite3.Connection,
-    locator: Mapping[str, Any],
-    schema: Sequence[Mapping[str, Any]],
-) -> sqlite3.Row:
-    where, parameters = _aionui_where(locator)
-    rows = connection.execute(
-        f"SELECT * FROM acp_session WHERE {where}",
-        parameters,
-    ).fetchall()
-    if len(rows) != 1:
-        raise FrontendReferenceError(
-            "AionUI locator does not identify exactly one current row"
-        )
-    if locator.get("kind") == "primary_key":
-        pk_columns = tuple(
-            str(value["name"])
-            for value in sorted(schema, key=lambda value: int(value["pk"]))
-            if int(value["pk"]) > 0
-        )
-        if tuple(locator.get("columns") or ()) != pk_columns:
-            raise FrontendReferenceError(
-                "AionUI primary-key locator no longer matches the schema"
-            )
-    return rows[0]
-
-
-def _aionui_where(
-    locator: Mapping[str, Any],
-) -> tuple[str, tuple[Any, ...]]:
-    kind = locator.get("kind")
-    if kind == "rowid" and isinstance(locator.get("rowid"), int):
-        return "rowid = ?", (int(locator["rowid"]),)
-    if kind == "primary_key":
-        columns = locator.get("columns")
-        values = locator.get("values")
-        if (
-            not isinstance(columns, list)
-            or not columns
-            or not isinstance(values, list)
-            or len(columns) != len(values)
-            or any(not isinstance(column, str) or not column for column in columns)
-        ):
-            raise FrontendReferenceError("Invalid AionUI primary-key locator")
-        decoded = tuple(_decode_sqlite_value(value) for value in values)
-        return (
-            " AND ".join(
-                f"{quote_identifier(column)} IS ?" for column in columns
-            ),
-            decoded,
-        )
-    raise FrontendReferenceError(
-        "AionUI row lacks a stable primary-key or rowid locator"
-    )
 
 
 def _select_unique(
@@ -1686,20 +1296,6 @@ def _discard_backup(backup: Path, directory: Path) -> None:
         raise FrontendReferenceError(
             f"Could not discard successful temporary backup: {exc}"
         ) from exc
-
-
-def _decode_sqlite_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float)):
-        return value
-    if (
-        isinstance(value, Mapping)
-        and value.get("type") == "blob"
-        and isinstance(value.get("base64"), str)
-    ):
-        import base64
-
-        return base64.b64decode(value["base64"], validate=True)
-    raise FrontendReferenceError("Unsupported SQLite locator value")
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

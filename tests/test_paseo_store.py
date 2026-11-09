@@ -97,7 +97,94 @@ class PaseoStoreTests(unittest.TestCase):
         code, result = self.invoke("records", "--client", "paseo", "--json")
         self.assertEqual(code, 0, result)
         self.assertEqual({row["record_id"] for row in result["targets"]}, {sample["record"]["id"] for sample in fixture["records"]})
-        self.assertTrue(all(row["record_metadata"]["upstream_commit"] == fixture["upstream_commit"] for row in result["targets"]))
+        self.assertTrue(all(fixture["upstream_commit"] in row["record_metadata"]["supported_upstream_commits"] for row in result["targets"]))
+
+    def test_0153_restart_and_private_launch_environment(self):
+        self.write(self.record(resumeOnStartup=True, launchEnv={"TOKEN": PRIVATE}))
+        code, result = self.invoke("records", "--client", "paseo", "--json")
+        self.assertEqual(code, 0, result)
+        row = result["targets"][0]["record_metadata"]["snapshots"][0]
+        self.assertTrue(row["resume_on_startup"])
+        self.assertTrue(row["launch_environment_present"])
+        self.assertNotIn("launchEnv", row)
+        for change in ({"resumeOnStartup": 1}, {"launchEnv": {"TOKEN": 3}}):
+            self.write(self.record(**change))
+            code, result = self.invoke("records", "--client", "paseo", "--json")
+            self.assertNotEqual(code, 0)
+
+    def test_custom_serialized_session_handles_are_opaque_metadata(self):
+        opaque = json.dumps({"session": "custom", "token": PRIVATE})
+        self.write(self.record(provider="antigravity",
+            persistence={"provider": "antigravity", "sessionId": opaque},
+            runtimeInfo={"provider": "antigravity", "sessionId": opaque}))
+        code, result = self.invoke("records", "--client", "paseo", "--json")
+        self.assertEqual(code, 0, result)
+        target = result["targets"][0]
+        self.assertEqual(target["engine"], "unsupported:antigravity")
+        self.assertEqual(target["references"], [])
+        self.assertTrue(target["record_metadata"]["snapshots"][0]["opaque_session_handle_present"])
+        self.assertEqual(target["record_metadata"]["provider_backend_family_hint"], "antigravity-cli")
+        self.assertEqual(target["record_metadata"]["native_cleanup_status"], "unsupported")
+        self.assertFalse(target["record_metadata"]["coverage"]["native_root_verified"])
+        self.assertFalse(target["record_metadata"]["coverage"]["full_record_closure"])
+        self.assertEqual(target["capability"]["mode"], "inventory_only")
+        self.assertFalse(target["capability"]["native_delete"])
+        self.assertFalse(target["capability"]["frontend_session_delete"])
+        self.assertFalse(target["capability"]["verify"])
+
+    def test_antigravity_plan_run_and_forged_bindings_preserve_mixed_profile(self):
+        opaque = json.dumps({"session": "shared-id", "token": PRIVATE})
+        selected = self.write(self.record("selected", "antigravity",
+            persistence={"provider": "antigravity", "sessionId": opaque},
+            runtimeInfo={"provider": "antigravity", "sessionId": opaque}),
+            relative="selected.json")
+        keeper = self.write(self.record("keeper", "codex",
+            persistence={"provider": "codex", "sessionId": "shared-id", "nativeHandle": "shared-id"},
+            runtimeInfo={"provider": "codex", "sessionId": "shared-id"}),
+            relative="keeper.json")
+        native_root = self.root / "synthetic-antigravity-store"
+        native_root.mkdir()
+        native = native_root / "session-data.bin"
+        native.write_text(PRIVATE, encoding="utf-8")
+        server_id = self.home / "server-id"
+        server_id.write_text("srv_fixture", encoding="utf-8")
+        runtime = self.root / "synthetic-paseo.exe"
+        runtime.touch()
+        before = {path: path.read_bytes() for path in (selected, keeper, native, server_id)}
+        base = ("--client", "paseo", "--paseo-root", str(self.home),
+            "--record-id", "selected", "--engine", "unsupported:antigravity", "--json")
+
+        with patch("local_agent_record_janitor.cleanup_service.CleanupService.execute",
+                   side_effect=AssertionError("Unexpected cleanup writer")) as execute:
+            for verb in ("plan", "run"):
+                options = ("--clients-closed",) if verb == "run" else ()
+                code, result = self.invoke("delete", verb, *base, *options,
+                    "--out", str(self.root / f"{verb}.json"))
+                self.assertNotEqual(code, 0, result)
+                self.assertEqual(result["goal_status"], "blocked", result)
+                self.assertEqual(result["actions"], [])
+                self.assertFalse(result.get("mutation_started", False))
+
+            manifest = {"schema_version": "larj.paseo-bindings.v1", "profile_root": str(self.home),
+                "server_id": "srv_fixture", "runtime_binaries": [str(runtime)], "desktop_profiles": [],
+                "native_stores": [{"agent_id": "keeper", "engine": "codex", "root": str(native_root)}]}
+            for engine, message in (
+                ("antigravity", "paseo_binding_store_invalid"),
+                ("codex", "paseo_agent_native_root_unbound"),
+            ):
+                with self.subTest(forged_engine=engine):
+                    forged = {**manifest, "native_stores": [*manifest["native_stores"],
+                        {"agent_id": "selected", "engine": engine, "root": str(native_root)}]}
+                    bindings = self.root / f"forged-{engine}.json"
+                    bindings.write_text(json.dumps(forged), encoding="utf-8")
+                    code, result = self.invoke("delete", "run", *base, "--clients-closed",
+                        "--paseo-bindings", str(bindings))
+                    self.assertNotEqual(code, 0, result)
+                    self.assertEqual(result["goal_status"], "blocked", result)
+                    self.assertFalse(result["mutation_started"])
+                    self.assertIn(message, {row["message"] for row in result["blockers"]})
+            execute.assert_not_called()
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
 
     def test_exact_parent_label_and_pi_path_are_observations_not_native_ownership(self):
         transcript = self.root / "foreign-provider" / "session.jsonl"

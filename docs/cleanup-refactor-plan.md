@@ -6,7 +6,7 @@ SQLite、SDK 文件和 Chromium 界面状态的双根删除及冷验证；Orca �
 显式绑定下的原生、窗格、历史和恢复副本清理；Paseo Windows 显式绑定已接通原生记录、
 服务端副本、调度、桌面 IndexedDB/文本草稿/布局及冷验证。此前 P5 的 Orca/Codex/Windows 原生组合与 P6
 平台验收仅代表当时范围，不能替代新增全流程的验收。本文承接已完成的 0.2.0 清理核心重构，
-规划现有客户端契约收口和 Orca、Herdr 接入；追加千问办公、QoderWork 与 Paseo 的独立适配。
+规划现有客户端契约收口和 Orca、Herdr 接入；追加千问办公与 Paseo 的独立适配。
 当前功能以 [设计与安全边界](design.md)、
 [Operation CLI](operation-cli.md) 和 [Adapter 贡献指南](adapters.md) 为准；
 下文拟新增的接口、字段和能力不是支持声明。
@@ -28,7 +28,7 @@ SDK 位置，再逐组合证明 SQLite、转录、草稿与恢复副本闭包。
 双根批次、LevelDB 草稿和界面引用清理、逐会话缓存、后台进程检查与持久恢复协议。
 共享 SDK UUID、所选会话的自动化/import/fork/ACP 引用仍逐项阻断。未知格式、
 远程关联及生成文档不进入自动删除；边界见
-[办公版适配](adapters.md#千问办公与-qoderworkcn-本地会话清理)。
+[办公版适配](adapters.md#千问办公cn-本地会话清理)。
 
 Paseo 默认盘点保留 profile 身份、归档和恢复引用，重复副本不覆盖。完整流程使用显式
 原生根、运行文件、server ID 与桌面目录绑定，先原生、后前端，固定格式及冻结引用之外
@@ -56,7 +56,6 @@ Paseo 默认盘点保留 profile 身份、归档和恢复引用，重复副本�
 | 对象 | 本轮施工目标 | 明确边界 |
 |---|---|---|
 | Cindy：Codex、Claude Code、Pi | 作为公共契约的主要验收样本，保持当前已验证能力 | 三种父子/分支语义分别处理；共享 root 不等于 Cindy 独占 |
-| AionUI | 同步迁移清单、引用与能力声明 | 未支持 schema 继续只读 |
 | 原生 Codex、Claude Code、Pi | 验证独立存储与第三方共享存储并存 | 没有前端引用不等于垃圾 |
 | Codex/ChatGPT Desktop 本地编码环境 | 保留已探测的本地 catalog、UI 引用和环境注册能力 | 不扩展为原生 ChatGPT 云端聊天或云端项目清理 |
 | Orca | 先接入本机 Codex 多 home 清单与桥接关系，再评估精确删除 | 其他引擎逐项取证；首版不执行 WSL/SSH/远端写入 |
@@ -132,7 +131,7 @@ mutation 已开始、unknown、partial 和终态回执。
 1. 为现有 adapter 的发现、引用、catalog、运行归属和能力提供明确类型边界；复用已有
    grouped catalog，保留每个来源的完整性和错误范围。
 2. 将关系类型和证据显式传递到清单，继续使用各引擎自己的分类和范围计算。
-3. 按 Cindy → AionUI → native/独立 Pi/Claude 的顺序迁移，移除本次实际替代的
+3. 按 Cindy → native/独立 Pi/Claude 的顺序迁移，移除本次实际替代的
    Codex 专属假设与重复分支；不同时重写 writer。
 4. CLI/Agent/GUI 只消费公共结果；用架构测试限制新依赖方向，避免品牌判断重新进入
    通用类型或另起一套清单逻辑。只有实际重复的 adapter 构建逻辑才抽成静态注册表。
@@ -169,7 +168,7 @@ Codex 已选原生 store 的 SQLite family/index 别名另由 `shared_store_file
   或 copies 完整；范围外目标、断链或失败为 incomplete。不遍历全盘寻找未知副本，
   不合并 logical stores，也不新增跨 store writer。
 - client owner root 与 native root 分开，运行证据区分 probe 与 coverage；当前
-  collector 仅覆盖 Windows Codex/ChatGPT/AionUI/Cindy 进程，未知 owner、Pi/Claude、
+  collector 仅覆盖 Windows Codex/ChatGPT/Cindy 进程，未知 owner、Pi/Claude、
   node/server 与非 Windows 保持 unknown。新增 adapter 的实际 server/session 和
   writer 检查仍是 P5 独立门槛，不能据进程名或“窗口已关”放行。
 - 对影响授权的新证据执行下节的版本兼容规则；受影响的身份、引用、别名、关系和

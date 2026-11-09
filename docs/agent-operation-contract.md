@@ -24,14 +24,18 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 
 1. Select one exact client and its physical stores. Official Codex/ChatGPT
    Desktop uses `native`/`codex-native` with the official native `CODEX_HOME`,
-   never a Cindy/AionUI substitute. Inventory and reports expose metadata only;
+   never a Cindy substitute. Inventory and reports expose metadata only;
    do not read or expose chat bodies.
 2. Review plan targets, counts, blockers, progress groups and `plan_sha256`.
    Each immutable child batch owns one physical store and mutation family.
    `delete plan/run` performs preflight; `agent doctor` is optional. Structured
    blockers must be resolved; unsupported backends or unproven schemas remain inventory-only.
-3. Apply only within the user's frozen authorization after the owning clients
-   are closed. Never invent a hash or `--clients-closed` acknowledgement.
+3. Apply only within the user's frozen authorization. Disk cleanup requires
+   the owning clients to be closed. [Paseo daemon deletion](operation-cli.md#只删-paseo-会话)
+   and [T3 built-in deletion](operation-cli.md#只删-t3-会话) require the selected local
+   service to be running and an explicit plan hash. These frontend-only modes
+   preserve provider history; T3 also detaches and preserves the worktree.
+   Never invent a hash or `--clients-closed` acknowledgement.
    Repeated scope selectors must match the full frozen scope. Within unchanged
    authorization, proceed without a second confirmation. Exact frontend-reference
    and relation writes require supported schemas, immutable row evidence,

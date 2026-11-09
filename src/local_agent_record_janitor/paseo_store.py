@@ -1,6 +1,6 @@
 """Bounded, read-only Paseo agent registry observations.
 
-Contract: getpaseo/paseo 05b074764dd1be4b7b04c7ab403ebeb88393aee3.
+Contracts: Paseo 0.11.0-beta.3 and 0.15.3 (see SUPPORTED_COMMITS).
 AgentStorage uses unversioned JSON at agents/*.json and agents/*/*.json.
 The registry is not a provider's native store. IDs, cwd and saved status never
 establish native ownership or prove the daemon and provider writers stopped.
@@ -20,7 +20,8 @@ from .client_contracts import ClientDescriptor, ClientReference, ReferenceKind, 
 from .path_identity import is_local_absolute_locator
 from .record_identity import EngineCapability, ProjectKey, RecordClassification, RecordKey, StoreKey, canonical_path, normalize_engine
 
-UPSTREAM_COMMIT = "05b074764dd1be4b7b04c7ab403ebeb88393aee3"
+UPSTREAM_COMMIT = "d91ae138cb931447635e94296023414a58bedcc5"
+SUPPORTED_COMMITS = ("05b074764dd1be4b7b04c7ab403ebeb88393aee3", UPSTREAM_COMMIT)
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 20000
@@ -29,7 +30,7 @@ _FIELDS = frozenset((
     "id", "provider", "cwd", "workspaceId", "createdAt", "updatedAt", "lastActivityAt",
     "lastUserMessageAt", "title", "labels", "lastStatus", "lastModeId", "config", "runtimeInfo",
     "features", "persistence", "lastError", "requiresAttention", "attentionReason",
-    "attentionTimestamp", "internal", "archivedAt", "owner",
+    "attentionTimestamp", "internal", "archivedAt", "owner", "resumeOnStartup", "launchEnv",
 ))
 _STATUSES = frozenset(("initializing", "idle", "running", "error", "closed"))
 
@@ -119,6 +120,14 @@ def _project(value):
     row["internal"] = value.get("internal", False)
     if type(row["internal"]) is not bool:
         raise PaseoInventoryError("paseo_metadata_shape_invalid")
+    if "resumeOnStartup" in value and type(value["resumeOnStartup"]) is not bool:
+        raise PaseoInventoryError("paseo_metadata_shape_invalid")
+    row["resume_on_startup"] = value.get("resumeOnStartup", False)
+    launch_env = value.get("launchEnv", {})
+    if not isinstance(launch_env, dict) or any(not isinstance(v, str) for v in launch_env.values()):
+        raise PaseoInventoryError("paseo_metadata_shape_invalid")
+    # Environment values can contain credentials. They are never projected.
+    row["launch_environment_present"] = bool(launch_env)
     labels = value.get("labels", {})
     if not isinstance(labels, dict):
         raise PaseoInventoryError("paseo_metadata_shape_invalid")
@@ -132,6 +141,7 @@ def _project(value):
         row["owner"] = {"kind": "daemon", **{name: _text(owner.get(name), identity=True)
                        for name in ("daemonId", "executionId")}}
     handles = []
+    opaque_session = False
     for field in ("persistence", "runtimeInfo"):
         item = value.get(field)
         if item is None and field == "persistence" or field not in value:
@@ -143,8 +153,14 @@ def _project(value):
         if "sessionId" not in item or session_id is None and field == "persistence":
             raise PaseoInventoryError("paseo_reference_shape_invalid")
         if session_id is not None:
-            handles.append({"provider": provider, "value": _text(session_id, identity=True),
-                            "kind": "id", "locator": field + "/sessionId"})
+            if (provider not in {"codex", "claude", "pi", "copilot", "opencode", "omp"}
+                    and isinstance(session_id, str) and not _ID.fullmatch(session_id)):
+                # Custom ACP providers may serialize an object in sessionId.
+                # Do not expose that private state or pretend it is a native ID.
+                opaque_session = True
+            else:
+                handles.append({"provider": provider, "value": _text(session_id, identity=True),
+                                "kind": "id", "locator": field + "/sessionId"})
         if field == "persistence" and isinstance(item.get("nativeHandle"), str):
             native = item["nativeHandle"]
             if provider in {"claude", "codex", "copilot", "opencode", "pi", "omp"}:
@@ -152,6 +168,7 @@ def _project(value):
                 handles.append({"provider": provider, "value": _text(native, identity=kind == "id"),
                                 "kind": kind, "locator": field + "/nativeHandle"})
     row["references"] = handles
+    row["opaque_session_handle_present"] = opaque_session
     # Unknown/object nativeHandle and metadata are provider-defined and may
     # contain full session state or secrets. Only the proven scalar built-in
     # handles above are exposed, never opened or treated as native roots.
@@ -269,6 +286,8 @@ class PaseoAdapter:
                 failure(source, "paseo_provider_reference_conflict")
             if row["opaque_native_handle_present"] and not row["native_handle_projected"]:
                 failure(source, "paseo_native_handle_opaque", blocks_inventory=False)
+            if row["opaque_session_handle_present"]:
+                failure(source, "paseo_session_handle_opaque", blocks_inventory=False)
         for copies in by_id.values():
             if len(copies) > 1:
                 for row in copies:
@@ -295,8 +314,11 @@ class PaseoAdapter:
 
 
 def _capability(engine):
-    return EngineCapability("paseo", engine, verify=False,
-        reason="Paseo registry metadata only; native roots, daemon writers and deletion effects are unverified")
+    reason = "Paseo registry metadata only; native roots, daemon writers and deletion effects are unverified"
+    if engine == "unsupported:antigravity":
+        reason = ("Paseo exposes Antigravity-labelled registry metadata. Native ownership and "
+                  "storage schema are unverified. Full local cleanup is unsupported.")
+    return EngineCapability("paseo", engine, verify=False, reason=reason)
 
 
 def build_inventory(adapters, *, engines=()):
@@ -341,19 +363,26 @@ def build_inventory(adapters, *, engines=()):
                 blockers = ["paseo_native_roots_and_writer_coverage_unverified"]
                 if len(copies) > 1:
                     blockers.append("paseo_duplicate_agent_snapshots")
+                metadata = {
+                    "scope": "persisted_agent_registry", "upstream_commit": UPSTREAM_COMMIT,
+                    "supported_upstream_commits": list(SUPPORTED_COMMITS),
+                    "snapshot_count": len(copies), "snapshots": rows,
+                    "coverage": {"native_root_verified": False, "writer_coverage_complete": False,
+                        "saved_status_is_live_probe": False, "native_transcripts_read": False,
+                        "full_record_closure": False, "remote_delete": False,
+                        "unscanned_stores": ["schedules", "projects_and_workspaces", "provider_histories",
+                                             "daemon_memory", "client_caches"]},
+                }
+                if any(row["provider"] == "antigravity" for row in rows):
+                    # The built-in provider's family is a hint. A custom provider
+                    # or command override may use a different launch implementation.
+                    metadata["provider_backend_family_hint"] = "antigravity-cli"
+                    metadata["native_cleanup_status"] = "unsupported"
                 targets.append(ClientTarget("paseo", engine, RecordKey(store, identifier, kind="paseo_agent"),
                     project, None, (identifier,), RecordClassification.UNVERIFIED, _capability(engine),
                     references=refs, frontend_binding_keys=tuple(ref.binding_key for ref in refs),
                     is_subagent=any(row["parent_agent_id"] for row in copies), lineage_status="unknown",
-                    blocker_codes=tuple(blockers), record_metadata={
-                        "scope": "persisted_agent_registry", "upstream_commit": UPSTREAM_COMMIT,
-                        "snapshot_count": len(copies), "snapshots": rows,
-                        "coverage": {"native_root_verified": False, "writer_coverage_complete": False,
-                            "saved_status_is_live_probe": False, "native_transcripts_read": False,
-                            "full_record_closure": False, "remote_delete": False,
-                            "unscanned_stores": ["schedules", "projects_and_workspaces", "provider_histories",
-                                                 "daemon_memory", "client_caches"]},
-                    }))
+                    blocker_codes=tuple(blockers), record_metadata=metadata))
     names = tuple(engines) or tuple(dict.fromkeys(observed_engines))
     return ClientInventory(client="paseo", engines=names, projects=tuple(projects.values()), records=(),
         frontend_sessions=(), unmapped_frontend_sessions=(), targets=tuple(targets),

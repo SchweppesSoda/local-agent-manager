@@ -10,7 +10,7 @@ from local_agent_record_janitor.cindy_schema import (
     CindySchemaError, FTS_TRIGGER_VERSIONS, guard_cindy_triggers,
 )
 from local_agent_record_janitor.frontend_reference_cleanup import (
-    FrontendReferenceError, execute_frontend_reference_cleanup,
+    FrontendReferenceError, execute_frontend_reference_cleanup, guard_frontend_reference_closure,
 )
 from local_agent_record_janitor.frontend_session_cleanup import (
     FrontendSessionGuardError, build_cindy_session_delete_evidence,
@@ -115,6 +115,83 @@ class CindySchemaTests(unittest.TestCase):
 
     def clean_reference(self, root, evidence):
         return execute_frontend_reference_cleanup(root, [evidence], client_inspector=lambda *_: (), owner_client="cindy")
+
+    def test_auto_review_current_and_history_reference_updates_leave_cache_unchanged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(strict=True)
+            database = self.auto_review_database(root)
+            with closing(sqlite3.connect(database)) as db:
+                db.execute("UPDATE sessions SET status='deleted' WHERE id='keep'")
+                db.commit()
+            adapter = CindyAdapter(database=database, codex_home=root / "codex-home", cindy_root=root)
+            evidence = [item.details["frontend_reference"] for item in adapter.scan()
+                        if item.thread_id in {"keep-native", "old-native"}]
+            self.assertEqual(len(evidence), 2)
+            self.assertEqual(guard_frontend_reference_closure(evidence).checked_reference_count, 2)
+            with closing(sqlite3.connect(database)) as db:
+                before = db.execute("SELECT * FROM auto_review_projections ORDER BY session_id,lead_id").fetchall()
+                search = db.execute("SELECT * FROM messages_fts WHERE session_id='keep'").fetchall()
+            execute_frontend_reference_cleanup(root, evidence, client_inspector=lambda *_: (), owner_client="cindy")
+            with closing(sqlite3.connect(database)) as db:
+                self.assertEqual(db.execute("SELECT * FROM auto_review_projections ORDER BY session_id,lead_id").fetchall(), before)
+                self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='keep'").fetchone(), (None,))
+                self.assertNotIn("fromSdkSessionId", json.loads(db.execute("SELECT content FROM messages WHERE id='m-switch'").fetchone()[0]))
+                self.assertEqual(db.execute("SELECT * FROM messages_fts WHERE session_id='keep'").fetchall(), search)
+
+    def test_auto_review_reference_updates_reject_modified_or_incomplete_triggers(self):
+        for sql in (
+            "DROP TRIGGER auto_review_message_update;",
+            "DROP TRIGGER auto_review_session_clear; CREATE TRIGGER auto_review_session_clear AFTER UPDATE OF sdk_session_id ON sessions BEGIN DELETE FROM auto_review_projections; END;",
+            "CREATE TRIGGER extra AFTER UPDATE ON auto_review_projections BEGIN DELETE FROM sessions; END;",
+            "DROP TRIGGER auto_review_message_update; DROP TRIGGER auto_review_message_insert; DROP TRIGGER auto_review_message_delete; DROP TRIGGER auto_review_session_clear;",
+        ):
+            with self.subTest(sql=sql), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(strict=True)
+                database = self.auto_review_database(root)
+                evidence = self.evidence(root, database)
+                with closing(sqlite3.connect(database)) as db:
+                    db.executescript(sql)
+                before = database.read_bytes()
+                with self.assertRaises(FrontendReferenceError):
+                    self.clean_reference(root, evidence)
+                self.assertEqual(database.read_bytes(), before)
+
+    def test_soft_deleted_closure_still_rejects_new_live_current_and_history_references(self):
+        for history in (False, True):
+            with self.subTest(history=history), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(strict=True)
+                database = self.auto_review_database(root)
+                evidence = self.evidence(root, database)
+                guard_frontend_reference_closure([evidence])
+                with closing(sqlite3.connect(database)) as db:
+                    if history:
+                        db.execute("INSERT INTO messages(id,session_id,role,content,created_at) VALUES ('new','keep','agent_switch',?,1)",
+                                   ('{"fromAgentKind":"codex","fromSdkSessionId":"old-native","toAgentKind":"pi"}',))
+                    else:
+                        db.execute("UPDATE sessions SET sdk_session_id='old-native' WHERE id='keep'")
+                    db.commit()
+                before = database.read_bytes()
+                with self.assertRaisesRegex(FrontendReferenceError, "collection changed"):
+                    guard_frontend_reference_closure([evidence])
+                self.assertEqual(database.read_bytes(), before)
+
+    def test_reference_role_and_owner_are_required_even_with_matching_fingerprint(self):
+        from local_agent_record_janitor.sqlite_identity import row_fingerprint
+        for column, value in (("role", "user"), ("session_id", "keep")):
+            with self.subTest(column=column), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(strict=True)
+                database = self.auto_review_database(root)
+                evidence = self.evidence(root, database)
+                with closing(sqlite3.connect(database)) as db:
+                    db.row_factory = sqlite3.Row
+                    db.execute(f"UPDATE messages SET {column}=? WHERE id='m-switch'", (value,))
+                    row = db.execute("SELECT * FROM messages WHERE id='m-switch'").fetchone()
+                    evidence["message_row_fingerprint"] = row_fingerprint(row, tuple(row.keys()))
+                    db.commit()
+                before = database.read_bytes()
+                with self.assertRaisesRegex(FrontendReferenceError, "authorized agent_switch"):
+                    self.clean_reference(root, evidence)
+                self.assertEqual(database.read_bytes(), before)
 
     def test_upstream_versions_preserve_neighbor_rows_and_search_results(self):
         for version in FTS_TRIGGER_VERSIONS:

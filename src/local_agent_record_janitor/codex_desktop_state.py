@@ -533,7 +533,7 @@ def _running_related_process_records(
     command = (
         "$ErrorActionPreference='Stop'; "
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
-        "$names=@('codex.exe','chatgpt.exe','aionui.exe','cindy.exe'); "
+        "$names=@('codex.exe','chatgpt.exe','cindy.exe'); "
         "$items=@(Get-CimInstance Win32_Process | "
         "Where-Object { $names -contains $_.Name.ToLowerInvariant() } | "
         "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine); "
@@ -602,7 +602,6 @@ def _running_related_process_records(
         if name.casefold() not in {
             "codex.exe",
             "chatgpt.exe",
-            "aionui.exe",
             "cindy.exe",
         }:
             raise DesktopStateError(
@@ -646,8 +645,8 @@ def inspect_client_ownership(
     raw_root = os.fspath(owner_process_root) if owner_process_root is not None else None
     owner = str(owner_client or "").strip().casefold()
     requested = tuple(dict.fromkeys(str(engine).strip().casefold() for engine in engines))
-    process_names = ("codex.exe", "chatgpt.exe", "aionui.exe", "cindy.exe")
-    owner_supported = owner in {"native", "codex", "chatgpt", "chatgpt-desktop", "aionui", "cindy"}
+    process_names = ("codex.exe", "chatgpt.exe", "cindy.exe")
+    owner_supported = owner in {"native", "codex", "chatgpt", "chatgpt-desktop", "cindy"}
     errors: list[str] = []
     root = None
     if raw_root is None:

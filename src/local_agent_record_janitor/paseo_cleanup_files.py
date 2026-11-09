@@ -108,7 +108,8 @@ def sources(root):
                 continue
             frozen_files._plain(child_info)
             atomic = ATOMIC.fullmatch(name)
-            if not name.endswith(".json") and not atomic:
+            claim = kind == "creation" and re.fullmatch(r"[0-9a-f]{64}\.claim", name)
+            if not name.endswith(".json") and not atomic and not claim:
                 fail("file_layout_unverified")
             if atomic:
                 import uuid
@@ -116,11 +117,13 @@ def sources(root):
                     uuid.UUID(atomic[4])
                 except ValueError:
                     fail("atomic_file_identity_unverified")
-            paths.append({"path": child_relative, "kind": kind, "atomic_base": atomic[1] if atomic else None})
+            paths.append({"path": child_relative, "kind": "claim" if claim else kind, "atomic_base": atomic[1] if atomic else None})
         if frozen_files._identity(path.lstat()) != frozen_files._identity(info) or sorted(i.name for i in path.iterdir()) != names:
             fail("file_closure_changed")
     visit("agents", "agent", 0)
     visit("schedules", "schedule", 1)
+    visit("agent-requests", "receipt", 1)
+    visit("creations", "creation", 1)
     return paths, directories
 
 
@@ -132,11 +135,36 @@ def rows(root):
         total += len(raw)
         if total > 64 * 1024 * 1024:
             fail("file_closure_budget_exceeded")
-        value = decode(raw)
-        row = _agent(value) if entry["kind"] == "agent" else _schedule(value)
-        if not ID.fullmatch(row["id"]) or entry["atomic_base"] is not None and entry["atomic_base"] != row["id"] + ".json":
+        value = raw.decode("utf-8") if entry["kind"] == "claim" else decode(raw)
+        parser = {"agent": _agent, "schedule": _schedule, "receipt": _receipt, "creation": _creation, "claim": _claim}[entry["kind"]]
+        row = parser(value)
+        basename = entry["atomic_base"] or Path(entry["path"]).name
+        expected_name = row["id"] + ".json" if entry["kind"] in {"agent", "schedule"} else None
+        if entry["kind"] == "creation":
+            expected_name = _request_digest([value["snapshot"]["kind"], value["snapshot"]["idempotencyKey"]]) + ".json"
+        if not ID.fullmatch(row["id"]) or (entry["atomic_base"] is not None or entry["kind"] == "creation") and expected_name and basename != expected_name:
             fail("file_identity_unverified")
+        if entry["kind"] == "receipt" and not re.fullmatch(r"[0-9a-f]{64}\.json", basename):
+            fail("receipt_identity_unverified")
         result.append({**entry, "before": proof, "value": value, "row": row, "raw": raw})
+    creations = {Path(e["path"]).stem: e for e in result if e["kind"] == "creation" and e["atomic_base"] is None}
+    for entry in result:
+        if entry["kind"] == "claim":
+            owner = creations.get(entry["value"])
+            if owner is None:
+                fail("creation_claim_owner_unverified")
+            snapshot = owner["value"]["snapshot"]
+            expected = {_request_digest([kind, snapshot[field]]) for kind, field in (("agent", "agentId"), ("workspace", "workspaceId"))
+                if snapshot.get(field) and (kind == "agent" or snapshot["kind"] == "workspace")}
+            if Path(entry["path"]).stem not in expected:
+                fail("creation_claim_identity_unverified")
+            entry["row"] = dict(owner["row"])
+        if entry["kind"] == "creation" and entry["row"].get("agent"):
+            agent = entry["row"]["agent"]
+            copies = [e["row"] for e in result if e["kind"] == "agent" and e["row"]["id"] == agent["id"]]
+            if not copies or any(c["provider"] != agent["provider"] for c in copies) or any(
+                    h not in [r for c in copies for r in c["references"]] for h in agent["references"]):
+                fail("creation_native_reference_unverified")
     if sources(root) != (paths, before):
         fail("file_closure_changed")
     return result, before
@@ -152,7 +180,7 @@ def _agent(value):
     for key in ("lastUserMessageAt", "title", "lastModeId", "lastError", "attentionTimestamp", "archivedAt"):
         if key in value:
             _text(value[key], nullable=True)
-    for key in ("requiresAttention", "internal"):
+    for key in ("requiresAttention", "internal", "resumeOnStartup"):
         if key in value and type(value[key]) is not bool:
             fail("agent_schema_unverified")
     if value.get("attentionReason") not in (None, "finished", "error", "permission"):
@@ -295,8 +323,78 @@ def _schedule(value):
     return {"id": value["id"]}
 
 
+def _request_digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def _receipt(value):
+    _object(value, {"fingerprint", "state", "agentId"}, {"fingerprint", "state", "agentId"})
+    if not isinstance(value["fingerprint"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["fingerprint"]):
+        fail("receipt_schema_unverified")
+    if value["state"] not in {"pending", "completed"}:
+        fail("receipt_schema_unverified")
+    _guid(value["agentId"])
+    return {"id": value["agentId"]}
+
+
+def _claim(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        fail("creation_claim_unverified")
+    return {"id": value}
+
+
+def _creation(value):
+    _object(value, {"fingerprint", "snapshot", "inFlight"}, {"fingerprint", "snapshot", "inFlight"})
+    if not isinstance(value["fingerprint"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["fingerprint"]):
+        fail("creation_schema_unverified")
+    if value["inFlight"] not in (None, "workspace", "agent", "prompt"):
+        fail("creation_schema_unverified")
+    s = value["snapshot"]
+    _object(s, {"kind", "idempotencyKey", "revision", "phase", "workspaceId", "agentId", "workspace", "agent", "error",
+        "setupSkippedReason", "errorCode", "failedStage", "outcomeUnknown"},
+        {"kind", "idempotencyKey", "revision", "phase", "workspaceId", "agentId", "error"})
+    if s["kind"] not in {"workspace", "agent"} or type(s["revision"]) is not int or s["revision"] < 0:
+        fail("creation_schema_unverified")
+    _nonempty(s["idempotencyKey"])
+    if s["phase"] not in {"accepted", "workspace_ready", "agent_ready", "prompt_started", "completed", "failed"}:
+        fail("creation_schema_unverified")
+    for key in ("workspaceId", "agentId", "error"):
+        _text(s[key], nullable=True)
+    if s["agentId"] is not None:
+        _guid(s["agentId"])
+    if "outcomeUnknown" in s and type(s["outcomeUnknown"]) is not bool:
+        fail("creation_schema_unverified")
+    agent = s.get("agent")
+    if agent is not None:
+        _object(agent, {"id", "provider", "cwd", "workspaceId", "model", "features", "thinkingOptionId",
+            "effectiveThinkingOptionId", "createdAt", "updatedAt", "lastUserMessageAt", "status", "activeTurn",
+            "capabilities", "currentModeId", "availableModes", "pendingPermissions", "persistence", "runtimeInfo",
+            "lastUsage", "lastError", "title", "labels", "requiresAttention", "attentionReason", "attentionTimestamp",
+            "archivedAt", "providerUnavailable", "internal"}, {"id", "provider", "cwd", "createdAt", "updatedAt"})
+        if not isinstance(agent, dict) or agent.get("id") != s["agentId"]:
+            fail("creation_agent_identity_unverified")
+        # Wire snapshots contain UI-only fields. Only the known native resume
+        # fields are projected, and must match the registered agent before use.
+        agent = paseo_store._project({key: item for key, item in agent.items() if key in paseo_store._FIELDS})
+    return {"id": s["agentId"] or _request_digest([s["kind"], s["idempotencyKey"]]), "agent": agent,
+        "creation_kind": s["kind"], "completed": s["phase"] == "completed" and value["inFlight"] is None and not s.get("outcomeUnknown", False)}
+
+
 def transform(entry, ids):
     value = entry["value"]
+    if entry["kind"] == "receipt":
+        if value["agentId"] in ids:
+            if value["state"] != "completed":
+                fail("request_outcome_unknown")
+            return None
+        return entry["raw"]
+    if entry["kind"] in {"creation", "claim"}:
+        row = entry["row"]
+        if row["id"] not in ids:
+            return entry["raw"]
+        if row["creation_kind"] != "agent" or not row["completed"]:
+            fail("creation_cleanup_unqualified")
+        return None
     if entry["kind"] == "agent":
         return None if value["id"] in ids else entry["raw"]
     owned = value["target"]["type"] == "agent" and value["target"]["agentId"] in ids

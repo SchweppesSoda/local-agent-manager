@@ -7,6 +7,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from .environment_paths import BoundedPathProbe, local_path
 from .path_identity import canonical_existing_path_key
 
 
@@ -36,58 +37,99 @@ def discover_path_codex() -> Path | None:
     return Path(executable) if executable else None
 
 
-def discover_cindy_codex(cindy_root: Path) -> Path | None:
+CINDY_PROFILE_NAMES = ("CindyGlobal", "Cindy", "CindyDev", "xdt-maker")
+_VERSION = re.compile(
+    r"v?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})"
+    r"(?:-([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*))?"
+    r"(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?"
+)
+
+
+def release_version(value: str) -> str | None:
+    """Recognize a complete version label without trusting arbitrary path names."""
+    if len(value) <= 64 and _VERSION.fullmatch(value):
+        return value.removeprefix("v")
+    return None
+
+
+def cindy_codex_candidates(
+    cindy_root: Path, probe: BoundedPathProbe
+) -> tuple[tuple[Path, str | None, str], ...]:
+    """Bounded known-layout candidates, separate from selection and stores."""
+    result: list[tuple[Path, str | None, str]] = []
+    binaries = ("codex.exe", "codex")
+
+    def add(directory: Path, version: str | None, layout: str) -> None:
+        for filename in binaries:
+            candidate = directory / filename
+            status, _ = probe.inspect(candidate, layout, directory=False)
+            if status == "present":
+                result.append((candidate, version, layout))
+
+    packaged = "cindy_codex_package"
+    for version_dir in probe.children(cindy_root / "codex-package", packaged):
+        if (version := release_version(version_dir.name)) is not None:
+            add(version_dir / "bin", version, packaged)
+
+    legacy = "cindy_codex_legacy"
     base = cindy_root / "codex"
-    if not base.is_dir():
+    if probe.inspect(base, legacy, directory=True)[0] == "present":
+        add(base, None, legacy)
+    for version_dir in probe.children(base, legacy):
+        status, info = probe.inspect(version_dir, legacy)
+        if status == "present" and info is not None and stat.S_ISDIR(info.st_mode):
+            version = release_version(version_dir.name)
+            add(version_dir, version, legacy)
+            # Older builds could leave a wrapper directory. Cover a fixed
+            # depth below the legacy layout instead of recursively globbing.
+            for child in probe.children(version_dir, legacy):
+                if child.name in binaries:
+                    continue
+                status, info = probe.inspect(child, legacy)
+                if status == "present" and info is not None and stat.S_ISDIR(info.st_mode):
+                    add(child, release_version(child.name) or version, legacy)
+    return tuple(result)
+
+
+def _release_sort_key(value: str | None) -> tuple:
+    if value is None:
+        return (0, 0, 0), False, ()
+    match = _VERSION.fullmatch(value)
+    assert match is not None
+    numbers = tuple(int(part) for part in match.group(1, 2, 3))
+    prerelease = match.group(4)
+    # SemVer compares numeric prerelease parts numerically and below text.
+    parts = tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in prerelease.split(".")
+    ) if prerelease else ()
+    return numbers, prerelease is None, parts
+
+
+def discover_cindy_codex(cindy_root: Path) -> Path | None:
+    """Choose an adapter fallback, without claiming Cindy uses that runtime."""
+    try:
+        root = cindy_root.expanduser()
+        if not root.is_absolute():
+            root = root.absolute()
+    except (OSError, RuntimeError):
         return None
-    candidates = list(base.glob("*/codex.exe")) + list(base.glob("*/codex"))
+    if local_path(root) is None:
+        return None
+    candidates = cindy_codex_candidates(root, BoundedPathProbe())
     if not candidates:
-        candidates = list(base.rglob("codex.exe")) + list(base.rglob("codex"))
-    return _newest_versioned_path(candidates)
-
-
-def discover_aionui_codex(local_appdata: Path | None = None) -> Path | None:
-    root = (local_appdata or default_local_appdata()) / "Programs" / "AionUi" / "resources"
-    if not root.is_dir():
         return None
-    candidates = list(root.rglob("codex.exe"))
-    return _newest_versioned_path(candidates)
-
-
-def discover_aionui_databases(appdata: Path | None = None) -> tuple[Path, ...]:
-    """Return existing current and legacy AionUI databases, newest layout first."""
-
-    roaming = (appdata or default_appdata()).expanduser()
-    candidates: list[Path] = []
-    seen_roots: set[tuple[int, int]] = set()
-    for brand in ("AionUi", "AionUI"):
-        root = roaming / brand
-        try:
-            root_status = root.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise RuntimeError(f"Could not inspect frontend profile {root}: {exc}") from exc
-        # macOS may use a case-insensitive volume even though normcase is a
-        # no-op. Merge only proven aliases of the directory, preserving the
-        # first spelling and layout order. File hardlinks remain separate:
-        # their SQLite sidecars can belong to different pathnames.
-        if (stat.S_ISDIR(root_status.st_mode) and root_status.st_ino
-                and not getattr(root_status, "st_file_attributes", 0) & 0x400):
-            identity = (root_status.st_dev, root_status.st_ino)
-            if identity in seen_roots:
-                continue
-            seen_roots.add(identity)
-        candidates.extend(
-            (
-                root / "aionui" / "aionui.db",
-                root / "aionui" / "aionui-backend.db",
-                root / "aionui.db",
-                root / "aionui-backend.db",
-            )
-        )
-    return _unique_existing_files(candidates)
-
+    preferred_name = "codex.exe" if os.name == "nt" else "codex"
+    # Exact stable tie-breaking also covers legacy folders without version
+    # labels. Inaccessible or redirected candidates do not become hints.
+    return max(
+        candidates,
+        key=lambda row: (
+            row[2] == "cindy_codex_package", row[1] is not None,
+            _release_sort_key(row[1]), -len(row[0].parts),
+            row[0].name == preferred_name, str(row[0]),
+        ),
+    )[0]
 
 @dataclass(frozen=True)
 class CindyProfile:
@@ -117,7 +159,7 @@ def discover_cindy_profiles(appdata: Path | None = None) -> tuple[CindyProfile, 
 
     roaming = (appdata or default_appdata()).expanduser()
     profiles: list[CindyProfile] = []
-    for brand in ("CindyGlobal", "Cindy", "CindyDev", "xdt-maker"):
+    for brand in CINDY_PROFILE_NAMES:
         root = roaming / brand
         if not _optional_directory_exists(root):
             continue
@@ -270,20 +312,6 @@ def choose_codex_binary(hint: Path | None = None) -> Path | None:
         return expanded_hint if expanded_hint.is_file() else None
     except (OSError, RuntimeError):
         return None
-
-
-def _newest_versioned_path(candidates: list[Path]) -> Path | None:
-    existing = [candidate for candidate in candidates if candidate.is_file()]
-    if not existing:
-        return None
-    return max(existing, key=lambda path: (_version_key(str(path)), path.stat().st_mtime))
-
-
-def _version_key(value: str) -> tuple[int, ...]:
-    versions = re.findall(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", value)
-    if not versions:
-        return (0, 0, 0)
-    return tuple(int(part) for part in versions[-1])
 
 
 def _unique_existing_files(candidates: list[Path]) -> tuple[Path, ...]:

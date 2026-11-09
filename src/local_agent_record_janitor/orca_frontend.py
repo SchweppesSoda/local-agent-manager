@@ -201,7 +201,7 @@ def _legacy_journals(root, records):
     return manifests
 
 
-def _hooks(root, native_ids, known_tabs=()):
+def _hooks(root, native_ids, known_tabs=(), *, require_empty=False):
     # Structured statuses are deliberately never persisted by the pinned host.
     # Qualify the actual terminal status/spool identities so a related TUI copy
     # cannot disappear behind that product-level distinction.
@@ -209,6 +209,8 @@ def _hooks(root, native_ids, known_tabs=()):
     namespace = re.compile(r"com\.stablyai\.orca(?:\.dev\.[0-9a-f]{10})?\Z")
     temporary = re.compile(r"\.(endpoint|last-status)-[1-9][0-9]*-" + _UUID4 + r"\.tmp\Z", re.I)
     def inspect_identity(item, key=None):
+        if require_empty:
+            fail("hook_session_state_present")
         item = mapping(item)
         pane = item.get("paneKey", key)
         if not text(pane) or key is not None and item.get("paneKey", key) != key:

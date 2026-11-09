@@ -111,6 +111,28 @@ class FrozenFilesTests(unittest.TestCase):
             files.apply_rewrite(self.root, frozen, lambda raw: b"[]")
         self.assertEqual(source.read_bytes(), b"{}")
 
+    def test_security_preparation_runs_before_content_and_failure_preserves_source(self):
+        source = self.write("state.json", b"ORIGINAL_PRIVATE")
+        frozen = files.freeze_rewrite(self.root, "state.json", lambda raw: b"NEW_PRIVATE")
+        def refused(temporary, target):
+            self.assertEqual(temporary.read_bytes(), b"")
+            self.assertEqual(target, source)
+            raise PermissionError("fixture ACL unavailable")
+        with self.assertRaises(PermissionError):
+            files.apply_rewrite(self.root, frozen, lambda raw: b"NEW_PRIVATE", prepare_file=refused)
+        self.assertEqual(source.read_bytes(), b"ORIGINAL_PRIVATE")
+        self.assertEqual(list(self.root.glob(".larj-write-*")), [])
+
+    def test_replacement_hook_cannot_bypass_post_write_verification(self):
+        source = self.write("state.json", b"ORIGINAL")
+        frozen = files.freeze_rewrite(self.root, "state.json", lambda raw: b"EXPECTED")
+        def no_replacement(temporary, target):
+            self.assertEqual(temporary.read_bytes(), b"EXPECTED")
+        with self.assertRaises(files.FrozenFilesError):
+            files.apply_rewrite(self.root, frozen, lambda raw: b"EXPECTED", replace_file=no_replacement)
+        self.assertEqual(source.read_bytes(), b"ORIGINAL")
+        self.assertEqual(list(self.root.glob(".larj-write-*")), [])
+
     def test_hardlinks_and_path_escape_are_rejected(self):
         self.write("source")
         os.link(self.root / "source", self.root / "alias")

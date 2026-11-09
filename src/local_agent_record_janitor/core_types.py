@@ -63,6 +63,9 @@ class MutationKind(str, Enum):
     DELETE_ORCA_FRONTEND = "delete_orca_frontend"
     DELETE_HERDR_FRONTEND = "delete_herdr_frontend"
     DELETE_PASEO_FRONTEND = "delete_paseo_frontend"
+    DELETE_PASEO_DAEMON_AGENT = "delete_paseo_daemon_agent"
+    DELETE_T3CODE_SERVER_THREAD = "delete_t3code_server_thread"
+    DELETE_T3CODE_FRONTEND = "delete_t3code_frontend"
     DELETE_OFFICE_ARTIFACTS = "delete_office_artifacts"
     KEEP = "keep"
 

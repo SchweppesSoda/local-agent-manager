@@ -328,7 +328,7 @@ def remaining(evidence, *, terminal_verified=False):
 
 
 def bound_adapters(document, supplied=None):
-    if document.get("scope", {}).get("client") not in {"qwenwork", "qoderwork"}:
+    if document.get("scope", {}).get("client") != "qwenwork":
         return supplied
     values = {}
     for action in document.get("actions", ()):

@@ -30,16 +30,14 @@
 | Cindy / Codex | 原生 `thread/delete`、精确 current/history 引用、软删除 session 行 | 正常原生父链保留；独立批次及关闭、范围重验证仍必需 |
 | Cindy / Pi | 精确 JSONL、精确引用、软删除 session 行 | 每个 profile 单独定位；`parentSession` 不级联 |
 | Cindy / Claude | session manifest、精确引用、软删除 session 行 | 共享 root 聚合所有 profile 引用；无 Cindy 归属的独立 session 不纳入 Cindy 删除范围 |
-| AionUI / Codex | 精确 ACP 引用及支持 schema 的孤立 project 行 | 原生写入仍须独立证明归属和 writer；未知 schema 只读 |
-| AionUI / Pi、Claude | 精确 ACP 引用 | 原生 root 未证明，不提供 native writer |
 | native / Codex、Pi、Claude | 对应引擎专用 writer | 无前端行的独立记录正常；每个物理 root 分别批准 |
 | Orca / Codex | journal 引用与已证明 homes 的原生清单；限定 Windows 原生删除 | 静态能力关闭，精确 v3 operation 逐目标资格见下文；未知来源保持 incomplete |
 | Orca / Claude、其他引擎 | 只读引用与来源错误 | 本机 Claude account root 仅用于精确保护，不提供 Orca native catalog/writer |
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
 | WorkBuddy / WorkBuddy | 独立 SQLite、精确会话 artifacts 和 UI 引用 | 仅支持已识别 5.6.2 本地终态范围，Windows writer 覆盖及完整冻结证据；未知副本只读 |
-| 千问办公 / QwenWork CN | 主/子会话元数据及已知 SDK 文件位置 | 已核实 1.2.5 CN schema；草稿/恢复/共享 SDK 范围未闭合，写入和 verify 关闭 |
-| QoderWork CN | 主/子会话元数据及已知 SDK 文件位置 | 已核实 0.9.18 CN schema；不与 Qoder IDE/CLI 混用，写入和 verify 关闭 |
-| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | 默认只读；Windows 显式绑定的 Codex/Pi/Claude、服务端和桌面完整操作见下文，未知 provider 关闭 |
+| 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
+| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 支持 daemon 单会话删除。显式绑定的完整清理支持 Codex/Pi/Claude |
+| T3 Code / Codex、Claude | v1/v2 thread 元数据及 provider 恢复 ID | 默认只读；Windows 显式绑定的 v2 本地记录支持原生依赖、事件/投影、终端及桌面清理，未知 schema 关闭 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
 
 兼容回归使用[固定 v1 样本](../tests/fixtures/operation_v1.json)及
@@ -134,7 +132,7 @@ native catalog 的目标不会据 locator 探测原生存储。
 `inspect_client_ownership()` 和 `--inspect-clients` 使用 descriptor 的真实 owner root，
 不从 native root 补造归属。`probe_complete` 表示枚举/探测成功，`coverage_complete`
 仅在支持的本机 Windows owner、Codex engine 和具备必要 metadata 的已注册进程范围
-内成立；仍不证明任意其他 writer 已停止。collector 当前只枚举 Codex/ChatGPT/AionUI/
+内成立；仍不证明任意其他 writer 已停止。collector 当前只枚举 Codex/ChatGPT/
 Cindy 四类 exe，复用 Cindy 的真实进程树/profile 证据。未知 owner、Pi/Claude runtime、
 非 Windows 或失败返回 unknown；明确的相关运行进程仍可返回 false。输出不含 command
 line。该观察不替代现有关闭 ack，也不修改既有 writer 的关闭检查。
@@ -311,6 +309,13 @@ runtime auth/transport 或 `journal_rows` 聊天内容。journal 的 record JSON
 `launchArgs`/options，reader 仅校验其形状和大小，不输出或执行这些内容；投影不包含
 argv、options、凭据或原始 record JSON。不启动产品、socket、迁移、bridge 或同步 helper。
 
+高层 operation 对仅用于保护、没有 journal 的 profile 另有严格的只读空引用证明：
+验证 profile index、每个 profile 的 v3 数据库及所有已登记 JSON/SQLite 恢复副本，
+并要求会话、恢复任务、自动化及 hooks namespace 中没有会话状态。仅接受已识别的
+普通终端布局；未知 domain、恢复文件、绑定对象、schema 或读取变化均继续阻挡。
+这不会改变上面的静态 inventory 能力，也不会清除运行验证错误。每次 plan/apply/verify
+重新检查，缺 journal 本身不构成空引用证据；客户端关闭仍须独立确认。
+
 数据库及已知侧文件先检查普通文件和目录；SQL 使用 `mode=ro`、`query_only` 及读事务，
 包含当前 WAL 中的引用。SQLite 的内部读锁可能创建或更新 WAL/SHM 侧文件，因此不承诺
 文件系统零写入；不在读取后清理侧文件，也不以 `immutable` 忽略活跃 WAL。
@@ -328,21 +333,18 @@ runtime、WSL/远端及桥接副本不具备全局发现保证。持久化 lease
 writer 已停。当前运行观察不提供全盘 writer 证明，macOS/Linux 和 Orca 产品实机运行
 归属尚未验收。
 
-### 千问办公与 QoderWork：CN 本地会话清理
+### 千问办公：CN 本地会话清理
 
-`OfficeAdapter` 以独立 `qwenwork` / `qoderwork` 客户端和引擎接入公共 records，
-共享盘点与删除基础设施，分别校验整套表、索引、外键和 FTS trigger schema。登记依据为
-2026-10-04 静态解包的官方 Windows 包：QwenWorkCN 1.2.5
-（SHA-256 `95a4a35cb4517fd145913233c171c211d00a84b4f2c84be7685db64fd6afc3c8`）与
-QoderWork CN 0.9.18（`085f668322572cca2c600f9a96e567f2f926f9830a78809966d9cc7c2e99242d`）。
-产品入口见[千问办公](https://help.aliyun.com/zh/qwenwork/desktop-usage)和
-[QoderWork](https://docs.qoder.cn/qoderwork/product-overview/what-is-qoderwork-cn)。
+`OfficeAdapter` 以独立 `qwenwork` 客户端和引擎接入公共 records，
+校验整套表、索引、外键和 FTS trigger schema。登记依据为 2026-10-04 静态解包的
+官方 Windows 包 QwenWorkCN 1.2.5（SHA-256
+`95a4a35cb4517fd145913233c171c211d00a84b4f2c84be7685db64fd6afc3c8`）。
+产品入口见[千问办公](https://help.aliyun.com/zh/qwenwork/desktop-usage)。
 国际版、其他版本和相似产品名不自动继承该资格。
 
-Windows 的数据库分别位于 `%APPDATA%/QwenWorkCN/data/agents.db` 与
-`%APPDATA%/QoderWork CN/data/agents.db`。发现同产品 stable/dev/canary profile 时
-分别列出；`--qwenwork-root` / `--qoderwork-root` 可重复指定。SDK 根分别为
-`~/.qwenworkcn`、`~/.qoderworkcn`，也可通过对应 `--*-sdk-root` 显式指定。
+Windows 数据库位于 `%APPDATA%/QwenWorkCN/data/agents.db`。发现 stable/dev/canary
+profile 时分别列出；`--qwenwork-root` 可重复指定。SDK 根默认为 `~/.qwenworkcn`，
+也可通过 `--qwenwork-sdk-root` 显式指定。
 同产品多个 profile 共享 SDK 根，不能从一个 profile 的会话 ID 推断 SDK 独占归属。
 
 公开记录身份是 `(client, profile, chats.id)`；`sub_chats.session_id` 才是 SDK UUID。
@@ -586,7 +588,9 @@ after，原生批次已完成而前端尚未开始时可冷继续。实际 Codex
 ### Paseo：agent 注册记录只读盘点
 
 固定依据为上游 `0.11.0-beta.3`、commit
-[`05b074764dd1be4b7b04c7ab403ebeb88393aee3`](https://github.com/getpaseo/paseo/tree/05b074764dd1be4b7b04c7ab403ebeb88393aee3)。
+[`05b074764dd1be4b7b04c7ab403ebeb88393aee3`](https://github.com/getpaseo/paseo/tree/05b074764dd1be4b7b04c7ab403ebeb88393aee3)，
+以及 `0.15.3`、commit
+[`d91ae138cb931447635e94296023414a58bedcc5`](https://github.com/getpaseo/paseo/tree/d91ae138cb931447635e94296023414a58bedcc5)。
 `paseo` 是独立客户端身份；记录 ID 属于 Paseo profile，不能替代提供者的 native ID。
 仅选中该客户端或显式传入 `--paseo-root` 才发现其根目录，默认 `PASEO_HOME` 或
 `~/.paseo`，不扫描其他主机或连接 daemon。相同物理 profile 的已证明路径别名合并，
@@ -607,10 +611,11 @@ archivedAt、internal、daemon owner ID、固定 parent-agent 标签、恢复 ID
 推断 native root。未知 provider 原名保留在元数据中，引擎投影为 `unsupported:*`；
 未知或对象类型的 nativeHandle 只报告存在与未解析状态。JSON 中的 title、任意 labels、
 config、provider metadata、runtime extra 和 lastError 不进入输出；原生转录不读取。
+`resumeOnStartup` 投影为布尔值，`launchEnv` 仅报告是否存在，不输出变量值；未知 provider
+使用 JSON 等不透明 sessionId 时只报告存在，不把私有内容当作 ID 输出。
 同 profile 重复 agent ID 保留每个快照与引用，并报告冲突，不采用上游缓存的最后覆盖值。
 
-默认无绑定 adapter 的删除与 verify 标志关闭，`delete plan/run/apply`、`operation status/verify`
-不会把只读结果升级为删除完成。`records --inspect-clients` 只说明持久元数据观察范围，
+默认无绑定 adapter 的完整删除与 verify 标志关闭。`records --inspect-clients` 只说明持久元数据观察范围，
 `clients_closed=null`、`coverage_complete=false`；保存的 `closed` 状态不是进程关闭证据。
 
 当前完整性只覆盖 `persisted_agent_registry`，不包含 schedules、project/workspace 注册表、
@@ -624,6 +629,23 @@ config、provider metadata、runtime extra 和 lastError 不进入输出；原�
 相关写入者停止并提供持久 journal/只读恢复，不能用归档或删除事件代替终验。下述显式绑定
 流程为已限定的本机组合提供这些证据；普通盘点不会自动获得该权限。
 
+### Paseo daemon 删除
+
+`--paseo-only` 使用 Windows Paseo 0.15.3 桌面分发包的客户端连接所选本机
+profile 的 daemon。计划冻结 profile 物理身份、`server-id`、分发文件指纹和
+唯一登记快照。执行使用同一连接验证服务器 ID 和协议实现版本，并通过
+`delete_agent_request` 发送精确 Paseo UUID。Paseo 的查询可以匹配前缀或标题，
+所以每次都对返回的 ID 做完整比较。相关 provider 的原生历史保留。
+
+Paseo 0.15.3 的标准 daemon 保存文件登记并管理内存中的时间线。
+删除回执后重新检查 daemon 的精确查询和磁盘登记。旧版持久时间线目录、非本机
+端点、无法确认的运行时或重复/不可读快照会阻挡操作。调度、桌面缓存、外部副本及
+provider 历史属于其他存储范围。无法确认删除结果时保留 journal，恢复只查询，
+直到能证实两个来源均已移除对应的登记。
+
+[Paseo 0.15.3 删除请求](https://github.com/getpaseo/paseo/blob/v0.15.3/packages/server/src/server/session.ts#L3227-L3262)
+· [操作命令](operation-cli.md#只删-paseo-会话)
+
 ### Paseo：Windows 显式绑定的完整清理
 
 `--paseo-bindings` 绑定一个服务端 profile、其 `server-id`、每个观察到的 agent 的实际
@@ -631,12 +653,17 @@ Codex/Pi/Claude 根目录，以及全部相关本机桌面 profile 与运行文�
 固定 parent-agent 标签的后代一起列入计划。cwd 不授予存储归属；未选 agent 共享同一
 原生记录、未知 provider、冲突恢复句柄或不完整清单阻挡计划。普通 provider metadata
 作为所属记录的一部分清理，不从配置内容推断路径或权限。
+若 `launchEnv` 覆盖了对应引擎的存储环境变量，其值必须与显式绑定一致。
 
 原生批次复用既有引擎写入器及其他客户端的引用保护。全部原生依赖缺失后，前端批次清理
 已冻结的平铺/项目注册 JSON 和严格匹配上游原子写入命名的副本。选中 agent 专属调度可
 删除；其他调度只将已结束且属于选中 agent 的 run 的 `agentId/output/error` 置空，
 保留执行次数、状态、时间与其他 run。运行中的相关任务、专属调度包含未选历史 run、
 旧 `agent-timelines` 或未知嵌套 schema 均阻挡。
+`0.15.3` 的 `agent-requests` 已完成回执、`creations` 已完成 agent 创建快照及其
+SHA-256 claim 一并冻结和移除；创建快照中的原生恢复引用必须已被注册记录覆盖。
+pending 回执、未完成/结果未知的创建、workspace 创建和不能证明归属的 claim 阻挡；
+不会通过移除回执把未知执行结果解释为成功。更新 helper 后应重新生成计划。
 
 绑定桌面使用 `paseo://app`：IndexedDB v1 `paseo-replica-row-store` 的精确
 `[serverId, kind, agentId]` agent/timeline 行、v5 canonical 文本草稿和 v2 workspace
@@ -660,6 +687,163 @@ cache、autoIncrement object store、不安全数值或未知 schema 不提供�
 macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平台资格。
 
 绑定格式与依赖准备见 [完整本地操作](operation-cli.md#paseo-完整本地操作)。
+
+### T3 Code：本机数据库与完整清理
+
+依据 `0.1.8-nightly.20261107.4301`、commit
+[`4cb6945dc60ed03f567dc5daafd083e52308e82b`](https://github.com/pingdotgg/t3code/tree/4cb6945dc60ed03f567dc5daafd083e52308e82b)。
+`--client t3code` 或显式 `--t3code-root` 才发现其存储，默认 `T3CODE_HOME`，否则
+`~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持当前固定
+schema 的 v1/v2 元数据投影。SQLite 只读事务保留 WAL 可见性；文件/侧文件禁止链接、
+reparse 与硬链接，单文件上限 512 MiB，元数据查询上限 20,000 行并有限时。
+
+T3 数据库操作所用的 Python `sqlite3` 需链接启用 FTS5 的 SQLite 3.45 或更新版本，
+以支持该 schema 的 `contentless_delete` 与 trigram `remove_diacritics`。可用
+`python -c "import sqlite3; print(sqlite3.sqlite_version)"` 查看实际链接的版本。
+
+报告包含 profile、thread/project ID、cwd、provider、时间、归档/删除标记、消息计数和
+原生恢复 ID，不读取消息正文、标题、token 或完整事件 payload。不同 profile 的同 ID
+保持独立，T3 thread ID 不等于 provider native ID。未知 schema、孤立投影、无效 ID 或
+不完整扫描不会输出“零记录成功”。普通盘点范围为 `database_metadata`；不证明 writer
+已关闭，也不授予 native delete 或完整 verify 能力。
+
+`--t3code-only` 提供单条自带软删除，并保留原生会话及工作树，见
+[命令与核验语义](operation-cli.md#只删-t3-会话)。固定数据库结构也已在
+`0.1.8-nightly.20261108.4353` 验证；未知结构或服务版本拒绝该模式。
+
+`--t3code-bindings` 为整个 profile 的每个已观察 thread 明确绑定 Codex home、Claude
+config dir 或已验证的 T3 Antigravity ACP 实例，同时绑定 `environment-id`、所有相关本机桌面 profile 和实际运行文件。
+完整删除目前限定 v2，且原生引用必须为 `strong`；历史事件和其他 per-thread payload
+中的 `nativeThreadRef` 也检查，不能只删除当前投影。v1 恢复记录、provider 切换造成的
+多引擎历史、弱引用、缺失原生归属、peer 环境及未选 thread 共享 native ID 会阻挡。
+计划列出所选 thread 的后代和实际原生依赖，不以 cwd 或相似 ID 猜测归属。
+
+上游的 `thread.deleted` 是事件/软删除，不能用它证明本机历史消失。这里先复用既有
+Codex/Claude writer 与跨客户端保护，或清理绑定 ACP 实例的精确会话文件，再事务删除对应 command receipts、effects、events、
+runtime 与 projection 行；FTS 触发器同步移除搜索数据。模拟副本预先计算 before/after
+逻辑摘要，原库核对 schema、完整性、外键、行数和批准摘要后提交，冷读再验。
+未选中的 JSON 恢复关系、跨选择边界的 handoff/subagent、共享 provider session、
+scheduled task、待执行 effect 或额外恢复数据库阻挡。未选 thread、project、凭据与设置保留。
+
+终端历史只移除命名能证明归属的文件，涵盖 legacy、base64url 和 SHA-256 命名；保留
+其他 thread 文件及摘要，无法归属的终端文件阻挡。非空附件、browser-artifacts、backups 或 snapshots 目录目前阻挡。
+显式桌面 profile 的 `t3code://app` Local Storage 在私有副本上使用固定 ClassicLevel 3
+改写并冷读，支持 composer v9、terminal v4、right-panel v14、diff-panel v2、closed-view
+v2 及 ui-state v1。按 `environmentId:threadId` 精确匹配；远程同 ID 与未选记录保留。
+旧 renderer 状态、未知版本、外部附件、browser 恢复快照或未选布局中的 side-chat 引用阻挡。
+prompt-stash 中的共享线程上下文只检查，不自动删除共享用户内容。
+
+Windows 执行期间持有全部绑定运行文件及永久 `userdata/server-owner.sqlite` 的同一个
+`BEGIN EXCLUSIVE` 锁，执行前后检查进程枚举；不 unlink 锁文件、不自动停应用。
+此边界限定标准启动路径和声明的本地运行文件，不覆盖自定义 writer、远程或未绑定浏览器。
+`desktop_profiles: []` 仅声明 headless 范围。用户工作区、worktree、浏览器页面内容、诊断日志、
+登录凭据与外部备份不在记录删除范围；这是逻辑记录删除，不承诺介质取证级擦除。
+
+原生完成、前端未开始可通过同一计划冷继续；前端 mutation_started 后失败保持 unknown，
+禁止自动重发，只能通过精确 after 冷验证判定完成。桌面替换采用持久 after 副本及封存目录，
+中断后保留恢复证据。相关依赖、绑定格式与命令见 [T3 Code 完整本地操作](operation-cli.md#t3-code-完整本地操作)。
+
+### Antigravity
+
+| 入口 | 可核实的默认布局 | 归属边界 |
+|---|---|---|
+| 独立 Antigravity CLI | `agy`、`~/.gemini/antigravity-cli/` | 按实际运行路径、用户与数据根区分 |
+| Paseo 内置 Antigravity | Paseo profile 的 agent 注册快照，以及 daemon 启动的 `agy` | Paseo agent ID 与 CLI conversation ID 分开。配置可覆盖命令和启动环境 |
+| T3 Code Antigravity | 受管双文件 ACP，或自定义 `agy acp` | 启动方式与实际 profile 分别核实；传入 `GEMINI_HOME` 不证明 CLI 遵守它 |
+| Antigravity App / IDE | 独立 App / IDE 及其 profile | CLI 的 `Other` 分页可将桌面对话导入为 CLI 副本。导入关联不构成共享物理存储证据 |
+
+**CLI 与 Paseo。** 已核对 Paseo 内置 provider 的命令行采用 `stream-json`，收到
+`conversation_id` 后保留恢复引用，重启以 `--conversation` 恢复。daemon 可以通过
+`agents.providers.antigravity.command` 及 provider 环境覆盖默认选择。前端注册行、
+配置命令、运行进程与 native 根需要分别验证。同一 `agy` 路径可以在不同主机、用户或
+profile 下运行。[Paseo 内置配置](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/public-docs/supported-providers.md#antigravity)
+· [Paseo 启动与恢复](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/plugins/antigravity-provider/server/internal/process.ts#L34-L56)
+· [Paseo 持久引用](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/plugins/antigravity-provider/server/internal/session.ts#L218-L232)
+
+Google CLI 在 1.0.4 加入 SQLite 会话格式。已观察到的布局包括
+`conversations/<id>.db`、SQLite 侧文件、`brain/<id>/` 和 profile 级
+`conversation_summaries.db`。这些名称是布局线索。本项目尚未验证可用于写入的
+schema 和完整关系契约。官方文档定义的 `cache/last_conversations.json`
+是 workspace 到最近会话的选择缓存。将它与会话、共享摘要、父子会话、生成 artifacts
+和原始工作区区分。`settings.json`、`keybindings.json`、`~/.gemini/config/` 中的
+共享配置、认证数据及 runtime 均在会话清理范围之外。
+[CLI 版本记录](https://github.com/google-antigravity/antigravity-cli/blob/099f43f0b0b7a9ffe17b549d80aac1f1ff6e2bb5/CHANGELOG.md#104)
+· [CLI 会话选择与缓存](https://antigravity.google/docs/cli/commands/resume)
+· [CLI 与共享设置](https://antigravity.google/docs/settings?tab=cli)
+
+**T3 Code ACP。** T3 在受管模式下通过
+`<T3 home>/tools/antigravity-acp/<platform>-<arch>/active.json` 选择
+`versions/<releaseId>/` 下由 `.install-complete.json` 记录的 ACP executable 与 `localharness_external`。
+手动 binary 或 PATH 是独立选择。T3 从 Nightly `0.1.8-nightly.20261108.4353` 起允许
+`binaryPath` 指向 CLI 1.5.0+ 的 `agy` / `antigravity`（Windows 也支持 `.exe/.cmd/.bat`），
+自动增加 `acp` 参数，不再要求旁边存在 helper。默认受管选择没有改变；清空路径不会自动
+改用 PATH 上的 `agy`。[接入实现](https://github.com/pingdotgg/t3code/pull/32503)
+
+T3 按 provider instance ID 的 SHA-256 在
+`<stateDir>/providers/antigravity/<hash>/` 建立隔离的 `GEMINI_HOME`。
+发行构建的 `stateDir` 通常为 `<T3 home>/userdata`。其中 `antigravity-acp/`
+存放实例数据，`acp_token.json` 是凭据，`settings.json` 是配置。
+`<stateDir>/antigravity-tmp/` 中的运行时解包文件与会话不同。全局 skills
+可能通过符号链接或 Windows junction 暴露在实例内，链接目标仍属于共享设置。
+T3 的下载 runtime 由同一环境的实例共享，受管 ACP 的登录按实例隔离。
+[T3 路径与环境](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityAuthSupport.ts#L171-L247)
+· [T3 实例凭据路径](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityAuthSupport.ts#L374-L382)
+· [T3 受管安装](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/AntigravityInstallation.ts#L167-L174)
+· [T3 provider 操作](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/docs/user/providers-antigravity.md)
+
+T3 的临时探测清理会在进程关闭后，以 UUIDv4 和 `.meta` 中的唯一临时 cwd
+证明归属，再移除 `antigravity-acp/conversations/<id>` 对应的
+`.db`、`.db-wal`、`.db-shm`、`.db-journal`、`.meta` 及 `brain/<id>`。
+这是上游对一次性会话的实现证据。普通 thread 的完整影响范围、共享索引、后代或远程
+副本仍需独立确认。
+[T3 临时会话清理](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/acp/AntigravitySessionFiles.ts#L5-L41)
+· [Google CLI 的 ACP 模式](https://antigravity.google/docs/ide/extensions/acp/)
+
+**CLI 的 ACP 模式。** T3 仍传入实例 `GEMINI_HOME` 与 `AGY_ACP_FORCE_FILE_STORAGE=1`，
+但 Windows CLI 1.5.3 已验证构建（SHA-256 `47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6`）
+在隔离用户测试中仍于 `<USERPROFILE>/.gemini/antigravity-cli` 创建共享摘要数据库，
+未采用指定的旧 ACP 目录。握手成功不证明登录、会话创建或生成成功；该构建也未声明
+`session/delete`。此结论来自 [临时 profile 验收](../tests/test_t3code_runtime_acceptance.py)，
+不推广到其他平台或构建。实际存储可能与独立 CLI 共用，不能按旧实例哈希推导新会话位置，
+也不能承诺旧会话可以直接恢复或登录继续隔离。切换不迁移或删除旧实例数据。
+
+**环境发现。** `environment inventory` 的 `storage_artifacts` 只记录固定布局路径
+和文件状态。T3 按观察到的隔离实例分别输出 `native_profile`，该布局线索不把
+实例绑定到某个运行程序。Paseo profile 下的 `antigravity-provider.bak` 若
+manifest 符合已知插件 ID，则记录为 `legacy_plugin_candidate`，其余保持
+`unclassified_artifact`。该分类不证明来源、在用状态、历史记录归属或可删除性。
+自定义 CLI 的配置绑定保留 `engine=antigravity-acp`，程序候选标为 `antigravity-cli`，
+并给出 `launch_mode_hint=cli_acp` / `native_cleanup_status=unsupported_cli_acp`。
+命令名只是线索（`antigravity` 也可能是 IDE 启动器），绝对路径只证明配置选择；原生根保持未知。
+
+**记录能力。** Paseo 和 T3 的 Antigravity 记录保留 `unsupported:antigravity`
+引擎身份。`provider_backend_family_hint` 仅指各自内置集成的运行时家族，
+Paseo 的 `native_cleanup_status=unsupported` 表明当前缺少 native 清理资格；T3 为
+`requires_t3code_binding`，普通盘点不能自动授予删除能力。
+Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Google CLI
+自己的会话历史保留。
+
+T3 的完整清理另支持 Windows 托管 ACP 1.4.5 的固定运行文件摘要与原生数据库 DDL。
+同时冻结 provider 设置及默认受管选择的 `active.json`；旧程序仍在磁盘上不构成当前选择证据。
+切换到 CLI、自定义程序不匹配或计划后的选择漂移均在写入前阻挡。CLI 1.5.3 模式未取得
+完整原生删除资格，保留旧双文件适配不意味着 CLI 可以使用它。
+实例路径由 provider instance ID 的 SHA-256 决定；当前及历史强引用、数据库内 trajectory/cascade
+ID 和精确 UUID 文件名共同证明归属，不能仅凭 cwd 删除。原生清理与 T3 数据清理共享一个
+批准动作和 writer 边界。删除所选 `.db`、SQLite 侧文件、`.meta`、`brain/<UUID>`；保留
+设置、凭据、skills、运行文件、工作树及未选会话。未知顶层文件、备份、schema、父引用或
+子轨迹关系阻挡。ACP 1.4.5 未声明 `session/delete`，这里没有伪造该 RPC。
+见 [绑定和验收方法](operation-cli.md#antigravity-acp-完整删除绑定)。
+
+Google CLI 的官方 `/resume` 界面支持选定会话删除。操作前核对 CLI 版本与
+picker 显示的快捷键。1.1.13 起改为 `F4`，1.4.8 修正删除时遗漏运行中子代理、
+其历史和工作区的问题。上游记录也显示 annotations、子代理元数据和重建空数据库的
+行为随版本变化。界面确认只支持报告该版本的可见结果，无法证明所有本地副本或远程
+数据均清除。ACP v1 的 `session/delete` 需该实例在 `initialize` 明确声明能力，
+只定义 `session/list` 可见性，允许软删除。janitor 的自动删除在 native schema、
+写入者与完整影响范围都取得证据前保持关闭。
+[Google 删除入口](https://antigravity.google/docs/cli/commands/resume#deleting-a-conversation)
+· [CLI 版本记录](https://github.com/google-antigravity/antigravity-cli/blob/099f43f0b0b7a9ffe17b549d80aac1f1ff6e2bb5/CHANGELOG.md#148)
+· [ACP v1 删除语义](https://agentclientprotocol.com/protocol/v1/session-delete)
 
 ## 既有 Codex Finding adapter
 

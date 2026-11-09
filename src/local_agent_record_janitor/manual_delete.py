@@ -320,7 +320,7 @@ def build_manual_delete_closure(
         unavailable_reason: str | None = None
         owner_client: str | None = None
         owner_process_root: str | None = None
-        if platforms != {"aionui"} and platforms != {"cindy"}:
+        if platforms != {"cindy"}:
             unavailable_reason = (
                 "A frontend physical database cannot mix unsupported or "
                 "different frontend platforms in one transaction"
@@ -546,7 +546,7 @@ def execute_manual_delete(
     and ``targeted_guards_only`` after it has already compared one immutable
     catalog snapshot. In that mode this function never rebuilds a full
     catalog per action; callers may provide ``targeted_guard`` for an exact
-    row/path check. No Cindy/AionUI database is ever modified.
+    row/path check. No Cindy database is ever modified.
     """
 
     if not clients_closed:
@@ -1408,43 +1408,12 @@ def _exact_frontend_reference_evidence(
     expected = evidence.get("expected")
     if not isinstance(expected, Mapping):
         return None, f"{platform} frontend evidence has no expected identity"
-    expected_native_id = (
-        expected.get("session_id")
-        if platform == "aionui"
-        else expected.get("native_session_id")
-    )
+    expected_native_id = expected.get("native_session_id")
     if expected_native_id != payload["thread_id"]:
         return None, f"{platform} frontend evidence has a mismatched native ID"
     locator = evidence.get("locator")
     if not isinstance(locator, Mapping):
         return None, f"{platform} frontend evidence has no physical locator"
-    if platform == "aionui":
-        if evidence.get("table") != "acp_session" or evidence.get("operation") != "delete_row":
-            return None, "AionUI live reference uses an unsupported cleanup operation"
-        if not isinstance(evidence.get("schema_fingerprint"), str) or not evidence.get("schema_fingerprint"):
-            return None, "AionUI live reference has no schema fingerprint"
-        if not isinstance(evidence.get("row_fingerprint"), str) or not evidence.get("row_fingerprint"):
-            return None, "AionUI live reference has no row fingerprint"
-        kind = locator.get("kind")
-        if kind == "rowid":
-            if not isinstance(locator.get("rowid"), int) or isinstance(locator.get("rowid"), bool):
-                return None, "AionUI live reference has an invalid rowid locator"
-        elif kind == "primary_key":
-            columns = locator.get("columns")
-            values = locator.get("values")
-            if (
-                not isinstance(columns, list)
-                or not columns
-                or not isinstance(values, list)
-                or len(columns) != len(values)
-                or any(not isinstance(column, str) or not column for column in columns)
-            ):
-                return None, "AionUI live reference has an invalid primary-key locator"
-        else:
-            return None, "AionUI live reference has no supported physical locator"
-        if expected.get("session_id") != payload["thread_id"]:
-            return None, "AionUI live reference expected identity is not exact"
-        return evidence, None
     if platform == "cindy":
         if evidence.get("exact") is not True:
             return None, "Cindy live reference does not have exact cleanup evidence"

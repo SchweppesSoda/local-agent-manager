@@ -132,7 +132,7 @@ class ClientCapabilityGuardTests(unittest.TestCase):
             with ExitStack() as stack:
                 for name in ("repair_legacy_index", "execute_desktop_state_cleanup", "execute_relation_cleanup",
                              "execute_frontend_reference_cleanup", "execute_cindy_session_cleanup",
-                             "execute_native_project_cleanup", "execute_aionui_project_cleanup"):
+                             "execute_native_project_cleanup"):
                     stack.enter_context(patch("local_agent_record_janitor.execution." + name, writer))
                 self._assert_families_blocked(adapter, service, base, writer)
             writer.assert_not_called()

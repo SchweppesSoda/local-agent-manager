@@ -124,10 +124,10 @@ def make_catalog() -> tuple[SessionCatalog, FrontendSessionRecord]:
         is_live=True,
     )
     unmapped = FrontendSessionRecord(
-        platform="aionui",
-        platform_session_id="aion-unassigned",
+        platform="cindy",
+        platform_session_id="cindy-unassigned",
         thread_id=None,
-        database=Path("C:/AionUi/aionui.db"),
+        database=Path("C:/Cindy/cindy.db"),
         codex_home=home,
         backend="codex",
         status="active",
@@ -267,7 +267,7 @@ class RecordsCliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertEqual(status, EXIT_OK)
         self.assertIn("正常会话", text)
-        self.assertIn("aion-unassigned", text)
+        self.assertIn("cindy-unassigned", text)
         self.assertIn("前端引用（只读保留）", text)
 
     def test_frontend_platform_view_only_contains_mapped_records(self) -> None:

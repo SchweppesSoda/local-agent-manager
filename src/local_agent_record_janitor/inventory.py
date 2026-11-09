@@ -375,18 +375,8 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
         for session in _deduplicate_frontend(frontend_by_home.get(home_key, [])):
             thread_id = session.thread_id
             if not _valid_thread_id(thread_id):
-                # Only an explicitly identified Codex backend can classify an
-                # unassigned AionUI row as a Codex record.
-                if session.platform != "aionui" or session.backend == "codex":
-                    unmapped.append(session)
+                unmapped.append(session)
                 continue
-            if session.platform == "aionui" and session.backend is None:
-                originators = {
-                    _normalized_string(record.originator)
-                    for record in rollouts_by_thread.get(thread_id, ())
-                }
-                if "aionui-session" not in originators:
-                    continue
             accepted_frontend.append(session)
 
         frontend_by_thread: dict[str, list[FrontendSessionRecord]] = defaultdict(list)

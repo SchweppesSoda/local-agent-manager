@@ -8,7 +8,7 @@ protocol. This is a separate `delete_native_project` mutation family; no
 
 ## Selection and evidence
 
-Use the official native `CODEX_HOME`, never a Cindy/AionUI substitute. Select a
+Use the official native `CODEX_HOME`, never a Cindy substitute. Select a
 complete project ID with `--record-id`, or a unique project name/path with
 `--project`. Partial project IDs are not accepted as record selectors. Two
 registrations with the same name remain ambiguous. `--all-projects` includes

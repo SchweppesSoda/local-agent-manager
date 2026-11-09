@@ -130,7 +130,7 @@ def refresh_guard_sources(adapters: Iterable[object]) -> tuple[object, ...]:
         from .herdr_bound_adapter import HerdrBoundAdapter
         from .paseo_bound_adapter import PaseoBoundAdapter
         client = describe_adapter(adapter).client
-        if client in {"cindy", "aionui"}:
+        if client == "cindy":
             invalidate = getattr(adapter, "invalidate_frontend_snapshot", None)
             if callable(invalidate):
                 invalidate()
@@ -163,8 +163,12 @@ def required_source_errors(document: Mapping[str, Any], adapters: Iterable[objec
         roots.discard(canonical_path(descriptor.profile_root))
         snapshot = adapter.snapshot_references()
         closure = frontends.get(canonical_path(descriptor.profile_root))
+        from .orca_empty_guard import COVERED_ERRORS, proves_no_sessions
+        empty = (not snapshot.references and any(error.message in COVERED_ERRORS for error in snapshot.errors)
+                 and proves_no_sessions(descriptor.profile_root))
         errors.extend(error.message for error in snapshot.errors if error.blocks_delete
                       and (error.store is None or (error.store.backend, error.store.canonical_path) in targets)
+                      and not (empty and error.store is None and error.message in COVERED_ERRORS)
                       and not (closure is not None and covers_error(closure, error)))
     if roots:
         errors.append("frozen_guard_source_unavailable")

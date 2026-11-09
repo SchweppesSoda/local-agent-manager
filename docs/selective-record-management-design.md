@@ -12,12 +12,12 @@
 在现有“扫描异常并保守清理”的能力之外，增加一条独立的人工管理路径：
 
 - 列出指定 Codex 数据目录中的正常与异常对话；
-- 将 Cindy、AionUI 中的 Codex 会话映射关联到对应 Codex 对话；
+- 将 Cindy 中的 Codex 会话映射关联到对应 Codex 对话；
 - 允许用户逐项选择任意仍有 Codex 本地数据的对话并永久删除；
 - 保留现有 scan/clean 的异常修复语义和低风险批量规则，不把正常记录混进 clean。
 
 这里的删除目标是 storage-qualified Codex thread，即
-(codex_home, thread_id)。Cindy/AionUI 数据库中的行是来源与引用证据，
+(codex_home, thread_id)。Cindy 数据库中的行是来源与引用证据，
 第一阶段只读展示，不直接改写第三方数据库。执行后若第三方仍保留引用，
 输出必须明确报告该引用被保留以及可能形成前端孤立映射。
 
@@ -66,51 +66,6 @@ CindyGlobal、Cindy、CindyDev、xdt-maker。
 - https://github.com/makecindy/cindy/blob/main/apps/desktop/src/main/localDb/index.ts
 - https://github.com/makecindy/cindy/blob/main/packages/maker-shared/src/brandIdentity.ts
 
-### 2.3 AionUI
-
-当前 AionUI 桌面端启动捆绑的 AionCore。AionCore 作为 ACP client 启动受管的
-Codex ACP adapter；当前迁移将内置 Codex adapter 固定到
-@agentclientprotocol/codex-acp@1.1.2。外部 codex CLI 负责自身认证与配置。
-
-AionCore SQLite 的 acp_session 表保存：
-
-- conversation_id：AionUI 对话 ID；
-- agent_backend='codex'：当前 schema 中的直接后端标识；
-- agent_id/agent_source：Agent 定义；
-- session_id：ACP 下游分配并用于恢复的 Codex session/thread ID；
-- session_status、last_active_at：前端生命周期与时间。
-
-Codex ACP adapter 的 newSession 将 thread/start 返回的 response.thread.id
-原样作为 ACP sessionId，resumeSession 又把该 sessionId 原样传给
-thread/resume。因此 AionCore 持久化的 session_id 对内置 Codex backend
-就是 Codex thread ID，不是只能展示而无法反查的另一层随机 ID。
-
-当前数据库位于 <Electron userData>/aionui/aionui.db。较老版本曾使用其他文件名，
-包括本项目原默认值 aionui-backend.db。当前 schema 可直接读取
-acp_session.agent_backend；旧 schema 才需要通过 agent_metadata.backend 关联，
-且关联键在版本间可能是 agent_metadata.id 或 agent_metadata.agent_id。
-
-主要上游证据：
-
-- https://github.com/iOfficeAI/AionUi/wiki/ACP-Setup
-- https://github.com/iOfficeAI/AionUi/blob/main/packages/desktop/src/process/utils/utils.ts
-- https://github.com/iOfficeAI/AionUi/blob/main/packages/desktop/src/process/services/database/runLegacyDatabaseMigrations.ts
-- https://github.com/iOfficeAI/AionCore/blob/main/crates/aionui-db/migrations/001_initial_schema.sql
-- https://github.com/iOfficeAI/AionCore/blob/main/crates/aionui-db/migrations/020_update_codex_acp_package_scope.sql
-- https://github.com/iOfficeAI/AionCore/blob/main/crates/aionui-db/src/models/acp_session.rs
-- https://github.com/agentclientprotocol/codex-acp/blob/main/src/CodexAcpClient.ts
-
-接入链路：
-
-~~~text
-Cindy session ── sdk_session_id ──> Cindy codex-home / Codex thread
-
-AionUI conversation
-  └─ AionCore acp_session.session_id
-       └─ managed Codex ACP adapter
-            └─ native CODEX_HOME / Codex thread
-~~~
-
 ## 3. 用户接口
 
 增加两个独立子命令：
@@ -122,15 +77,14 @@ local-agent-record-janitor delete  [通用来源/路径参数] [选择与确认�
 
 records 始终只读：
 
-- 默认聚合 native、Cindy、AionUI；
+- 默认聚合 native、Cindy；
 - 支持 --platform、--thread-id、--limit 和 --json；
 - 人类输出按 Codex 数据目录分组，显示名称、项目、完整 ID、状态、来源、
-  Cindy/AionUI 引用、索引/rollout/归档信息和级联后代；
+  Cindy 引用、索引/rollout/归档信息和级联后代；
 - JSON 输出完整、稳定且不受 --limit 截断。
 
 平台视图中，Cindy 当前使用独立 codex-home，因此该 storage 中未保留 SQLite
-映射的残留 thread 仍归入 Cindy；AionUI 与原生 Codex 共享 home，只有明确的
-AionUI 前端映射才能用于平台归属，避免把全部原生记录误标成 AionUI。
+映射的残留 thread 仍归入 Cindy。
 
 delete 是高风险人工管理：
 
@@ -159,7 +113,7 @@ delete 是高风险人工管理：
 - select_managed_conversations(...)：按 action ID/thread selector 唯一选择。
 
 FrontendAdapter 增加非抽象 list_sessions()，默认返回空列表，避免破坏现有
-第三方/测试 adapter。CindyAdapter 与 AionUIAdapter 实现它；native adapter
+第三方/测试 adapter。CindyAdapter 实现它；native adapter
 由 Codex 本地并集自然产生记录。
 
 新增 manual_delete.py，提供：
@@ -209,17 +163,12 @@ updated/last-active 时间和是否 live；标题只用于显示，不作为唯�
 
 自动发现优先兼容当前布局，同时保留显式路径覆盖：
 
-- AionUI：优先 aionui/aionui.db，并读取存在的旧 aionui-backend.db；
 - Cindy：检查 CindyGlobal、Cindy、CindyDev、xdt-maker，读取匹配
   cindy-*.db、xdt-maker-*.db 和已知早期固定数据库；忽略 wal/shm/backup；
 - Cindy 的每个 profile 使用同目录 codex-home；
 - 若已知 Cindy profile 的数据库已移除但 codex-home 仍存在，仍将该 storage
   纳入原生清单，只是不再声称有可读取的前端映射；
-- AionUI 默认关联显式 CODEX_HOME 或 ~/.codex；
 - 多个数据库或保存位置分别保留来源，不以 thread ID 跨目录合并。
-
-AionUI adapter 的现有异常扫描也同步改为动态 schema 解析，支持当前
-acp_session.agent_backend + agent_metadata.id，以及旧 metadata 关联形式。
 
 ## 7. 删除执行
 
@@ -238,7 +187,7 @@ acp_session.agent_backend + agent_metadata.id，以及旧 metadata 关联形式�
 10. 调用 thread/delete。
 11. 验证根与批准后代的 SQLite、活动/归档 rollout 是否全部消失，报告
     deleted、not_deleted、partial 或 unknown。
-12. 输出仍保留的 Cindy/AionUI 行；本功能不把它们误报为已删除。
+12. 输出仍保留的 Cindy 行；本功能不把它们误报为已删除。
 
 ## 8. 并行实现边界
 
@@ -256,7 +205,7 @@ Review 日期：2026-07-31。
 
 Review 门槛：
 
-1. 需求覆盖：正常/异常 Codex thread 与 Cindy/AionUI 映射均可见、可逐项选。
+1. 需求覆盖：正常/异常 Codex thread 与 Cindy 映射均可见、可逐项选。
 2. 当前上游兼容：接入链路、数据库布局和当前/旧 schema 均有源码依据。
 3. 只读完整性：清单不启动删除、不读聊天正文、不因单一失败静默漏项。
 4. 删除安全：永久性、级联、前端残留、并发漂移和自动化误选均 fail-closed。

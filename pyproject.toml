@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "local-agent-record-janitor"
 version = "0.2.0"
-description = "Audit storage-qualified Codex threads, Pi Agent and Claude Code sessions, and frontend references; safely clean explicitly approved local agent records."
+description = "Inventory and diagnose local Agent environments; audit and safely clean explicitly approved storage-qualified records and frontend references."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
   { name = "Fang Jun" }
 ]
-keywords = ["codex", "pi", "pi-agent", "claude", "claude-code", "aionui", "cindy", "thread", "session", "record", "local-agent", "consistency", "cleanup"]
+keywords = ["codex", "pi", "pi-agent", "claude", "claude-code", "cindy", "thread", "session", "record", "local-agent", "consistency", "cleanup"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -38,4 +38,4 @@ Issues = "https://github.com/SchweppesSoda/local-agent-record-janitor/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_agent_record_janitor = ["workbuddy_schema_562.json", "orca_startup_0160.json", "office_schemas.json", "leveldb_runtime/*.cjs", "leveldb_runtime/*.json"]
+local_agent_record_janitor = ["workbuddy_schema_562.json", "orca_startup_0160.json", "office_schemas.json", "t3code_schema.json", "antigravity_acp_schema.json", "paseo_daemon_rpc.cjs", "t3code_server_rpc.cjs", "t3code_session_import_rpc.cjs", "leveldb_runtime/*.cjs", "leveldb_runtime/*.json"]

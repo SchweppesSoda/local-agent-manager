@@ -1,0 +1,59 @@
+{
+  "version": "1.4.5",
+  "objects": [
+    [
+      "index",
+      "idx_steps_status",
+      "steps",
+      "CREATE INDEX `idx_steps_status` ON `steps`(`status`)"
+    ],
+    [
+      "index",
+      "idx_steps_step_type",
+      "steps",
+      "CREATE INDEX `idx_steps_step_type` ON `steps`(`step_type`)"
+    ],
+    [
+      "table",
+      "battle_mode_infos",
+      "battle_mode_infos",
+      "CREATE TABLE `battle_mode_infos` (`idx` integer,`data` blob,PRIMARY KEY (`idx`))"
+    ],
+    [
+      "table",
+      "executor_metadata",
+      "executor_metadata",
+      "CREATE TABLE `executor_metadata` (`idx` integer,`data` blob,PRIMARY KEY (`idx`))"
+    ],
+    [
+      "table",
+      "gen_metadata",
+      "gen_metadata",
+      "CREATE TABLE `gen_metadata` (`idx` integer,`data` blob,`size` integer NOT NULL DEFAULT 0,PRIMARY KEY (`idx`))"
+    ],
+    [
+      "table",
+      "parent_references",
+      "parent_references",
+      "CREATE TABLE `parent_references` (`idx` integer,`data` blob,PRIMARY KEY (`idx`))"
+    ],
+    [
+      "table",
+      "steps",
+      "steps",
+      "CREATE TABLE `steps` (`idx` integer,`step_type` integer NOT NULL DEFAULT 0,`status` integer NOT NULL DEFAULT 0,`has_subtrajectory` numeric NOT NULL DEFAULT false,`metadata` blob,`error_details` blob,`permissions` blob,`task_details` blob,`render_info` blob,`step_payload` blob,`step_format` integer NOT NULL DEFAULT 0,PRIMARY KEY (`idx`))"
+    ],
+    [
+      "table",
+      "trajectory_meta",
+      "trajectory_meta",
+      "CREATE TABLE `trajectory_meta` (`trajectory_id` text,`cascade_id` text,`trajectory_type` integer,`source` integer,PRIMARY KEY (`trajectory_id`))"
+    ],
+    [
+      "table",
+      "trajectory_metadata_blob",
+      "trajectory_metadata_blob",
+      "CREATE TABLE `trajectory_metadata_blob` (`id` text DEFAULT \"main\",`data` blob,PRIMARY KEY (`id`))"
+    ]
+  ]
+}

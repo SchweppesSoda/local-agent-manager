@@ -282,6 +282,13 @@ def frozen_operation_roots(document: Mapping[str, Any]) -> tuple[Path, ...]:
     if involved - paths.keys():
         raise OperationStoreError("Frozen operation has an unresolved mutation root")
     extra = set()
+    from .t3code_cleanup import evidence_from_document as t3code_evidence, validate as validate_t3code
+    t3code = t3code_evidence(document)
+    if t3code is not None:
+        validate_t3code(t3code)
+        for target in t3code["native_targets"]:
+            extra.add(Path(target["root"]))
+        extra.update(Path(item["root"]) for item in t3code["binding_manifest"]["desktop_profiles"])
     from .paseo_cleanup import evidence_from_document as paseo_evidence, validate as validate_paseo
     paseo = paseo_evidence(document)
     if paseo is not None:

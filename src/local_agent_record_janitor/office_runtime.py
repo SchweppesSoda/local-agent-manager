@@ -1,4 +1,4 @@
-"""Private bounded process checks for the two registered Office products."""
+"""Private bounded process checks for the registered QwenWork product."""
 from __future__ import annotations
 
 import json
@@ -14,7 +14,8 @@ from .office_database import OfficeDatabaseError
 _RUNTIMES = {"node", "node.exe", "bun", "bun.exe", "deno", "deno.exe", "electron", "electron.exe"}
 _CLI = {"qoderclicn", "qoderclicn.exe", "qodercli", "qodercli.exe"}
 _SHELLS = {"powershell.exe", "pwsh.exe", "cmd.exe", "bash", "sh", "zsh"}
-_PRODUCT = re.compile(r"(?:qwenwork(?:cn)?|qoderwork(?:cn)?)(?:dev|canary)?(?:\.exe|\.app|\.appimage)?\Z", re.I)
+_PRODUCT = re.compile(r"qwenwork(?:cn)?(?:dev|canary)?(?:\.exe|\.app|\.appimage)?\Z", re.I)
+# QwenWork also ships this shared SDK worker; it remains a possible writer.
 _WORKER = re.compile(r"(?:^|[/\\\s\"'])qoder-worker-runtime(?:\.obf)?\.mjs(?:$|[\s\"'])", re.I)
 
 
