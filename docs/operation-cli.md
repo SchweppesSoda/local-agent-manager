@@ -385,7 +385,8 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 Windows `--t3code-only` 使用本机已安装 T3 Nightly 的 CLI 发放短期凭证，通过该 profile
 的回环服务调用 `thread.delete`。要求服务运行、所选 thread 空闲、完整 ID 精确匹配，
 并显式指定一个 T3 home；不接受 ID 前缀、批量 project 范围或 native bindings。
-支持已验证的 `0.1.8-nightly.20261107.4301` / `0.1.8-nightly.20261108.4353` 和固定数据库结构。
+支持已验证的 Nightly `0.1.8-nightly.20261107.4301`、`0.1.8-nightly.20261108.4353`、
+`0.1.8-nightly.20261108.4380` 和固定数据库结构。
 
 ```powershell
 local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json
