@@ -324,7 +324,7 @@ broken 的完整发现仍走 anomaly scan，不保证从 `records` 统一进入�
 
 ```powershell
 git clone https://github.com/SchweppesSoda/local-agent-manager.git
-Set-Location local-agent-record-janitor
+Set-Location local-agent-manager
 python -m pip install -e .
 
 local-agent-record-janitor scan --platform native
@@ -339,7 +339,7 @@ python -m local_agent_record_janitor scan --platform native
 
 ```bat
 git clone https://github.com/SchweppesSoda/local-agent-manager.git
-cd /d local-agent-record-janitor
+cd /d local-agent-manager
 python -m pip install -e .
 
 local-agent-record-janitor scan --platform native
@@ -354,7 +354,7 @@ python -m local_agent_record_janitor scan --platform native
 
 ```sh
 git clone https://github.com/SchweppesSoda/local-agent-manager.git
-cd local-agent-record-janitor
+cd local-agent-manager
 python3 -m pip install -e .
 
 local-agent-record-janitor scan --platform native
