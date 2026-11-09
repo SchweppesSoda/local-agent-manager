@@ -462,6 +462,18 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 记录和未证明的共享关系会明确阻挡。工作区、诊断日志、凭据及外部备份保留。
 具体边界见 [T3 Code 适配说明](adapters.md#t3-code本机数据库与完整清理)。
 
+### 已退役 Antigravity 的 T3 数据库清理
+
+只清理共享 `statev2.sqlite` 时，可通过 `--t3code-bindings` 提供
+`larj.t3code-antigravity-database.v1` 绑定。沿用上文的 `profile_root`、`environment_id`
+和 `runtime_binaries`，将 `native_stores` 与 `desktop_profiles` 都设为 `[]`，并填写
+`provider_instance_id`。用可重复的 `--record-id` 逐条指定完整的 T3 thread ID。
+
+要求 Windows、已禁用的 Antigravity 实例、已移除的托管运行时和实例目录，以及同一实例
+下已软删除且无活动会话的记录。计划冻结对应的事件、消息和投影行，并拒绝仍有共享依赖
+或关联文件待处理的选区。执行持有 T3 写入锁，按行数及数据库摘要验证提交，并截断 SQLite
+WAL。范围限于选中的数据库记录，原生存储和桌面缓存属于其他操作范围。
+
 ### Antigravity ACP 完整删除绑定
 
 此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**，不是独立 `agy` CLI 或

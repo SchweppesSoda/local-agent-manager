@@ -174,7 +174,17 @@ def _fence(root, path, identity):
             os.close(fd)
 
 
-def apply(evidence, *, phase_callback):
+def require_wal_truncated(evidence):
+    _, path = validate(evidence)
+    try:
+        wal = Path(str(path) + "-wal").lstat()
+    except FileNotFoundError:
+        return
+    if wal.st_size:
+        fail("database_wal_not_truncated")
+
+
+def apply(evidence, *, phase_callback, truncate_wal=False):
     root, path = validate(evidence)
     started = False
     try:
@@ -195,8 +205,13 @@ def apply(evidence, *, phase_callback):
             if logical_hash(db) != evidence["staged_sha256"]:
                 fail("database_after_state_unverified")
             db.commit()
+            if truncate_wal and db.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+                if tuple(db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()) != (0, 0, 0):
+                    fail("database_wal_not_truncated")
         if remaining(evidence):
             fail("database_targets_remain")
+        if truncate_wal:
+            require_wal_truncated(evidence)
     except Exception as exc:
         raise T3CodeError(getattr(exc, "kind", "t3code_database_transaction_failed"), unknown=started) from exc
 

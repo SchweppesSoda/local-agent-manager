@@ -15,6 +15,7 @@ from .sqlite_utils import connect_readonly
 from contextlib import closing
 
 SCHEMA = "larj.t3code-bindings.v1"
+DATABASE_ONLY_SCHEMA = "larj.t3code-antigravity-database.v1"
 _NATIVE_ENGINES = frozenset(("codex", "claude", "antigravity"))
 
 
@@ -26,7 +27,12 @@ def engine(provider):
 
 def validate_manifest(value):
     fields = {"schema_version", "profile_root", "environment_id", "runtime_binaries", "native_stores", "desktop_profiles"}
-    if not isinstance(value, dict) or set(value) != fields or value["schema_version"] != SCHEMA:
+    if not isinstance(value, dict):
+        fail("binding_manifest_invalid")
+    database_only = value.get("schema_version") == DATABASE_ONLY_SCHEMA
+    if database_only:
+        fields.add("provider_instance_id")
+    if set(value) != fields or value["schema_version"] not in {SCHEMA, DATABASE_ONLY_SCHEMA}:
         fail("binding_manifest_invalid")
     local_root(value["profile_root"])
     identifier(value["environment_id"])
@@ -34,6 +40,11 @@ def validate_manifest(value):
         fail("binding_runtime_required")
     for path in value["runtime_binaries"]:
         local_root(path)
+    if database_only:
+        identifier(value["provider_instance_id"])
+        if value["native_stores"] != [] or value["desktop_profiles"] != []:
+            fail("database_only_binding_scope_invalid")
+        return value
     if not isinstance(value["native_stores"], list) or not value["native_stores"]:
         fail("binding_native_stores_required")
     seen = set()
@@ -143,6 +154,8 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         snapshot = super().snapshot_references(refresh=True)
         if snapshot.errors or self.observation is None:
             fail("database_inventory_incomplete")
+        if self.manifest["schema_version"] == DATABASE_ONLY_SCHEMA:
+            return snapshot
         data = self.observation
         if data["peer_count"]:
             fail("peer_environment_closure_unqualified")

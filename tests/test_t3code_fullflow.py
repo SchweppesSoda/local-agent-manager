@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from local_agent_record_janitor import t3code_cleanup as cleanup, t3code_database as database
 from local_agent_record_janitor import t3code_cleanup_files as files, t3code_lifecycle as lifecycle
-from local_agent_record_janitor.t3code_bound_adapter import T3CodeBoundAdapter, SCHEMA
+from local_agent_record_janitor.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, T3CodeBoundAdapter, SCHEMA
 from local_agent_record_janitor.cleanup_service import CleanupService
 from local_agent_record_janitor.operation_coordinator import OperationCoordinator
 from tests.orca_native_support import create_native_schema, add_native_record
@@ -79,6 +79,56 @@ class T3CodeFullflowTests(unittest.TestCase):
         self.assertEqual(database.remaining(cleanup.evidence_from_document(plan)["files"]["database"]), 0)
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
+
+    def retired_adapter(self, db):
+        db.execute(f"DELETE FROM {V2}provider_threads WHERE thread_id=?", (THREAD,))
+        db.execute(f"UPDATE {V2}threads SET default_provider='antigravity', provider_instance_id='antigravity',"
+                   " deleted_at='retired', payload_json=json_set(payload_json,'$.deletedAt','retired') WHERE thread_id=?", (THREAD,))
+        (self.root / "userdata/settings.json").write_text(json.dumps({"providerInstances": {
+            "antigravity": {"driver": "antigravity", "enabled": False}}}), encoding="utf-8")
+        return T3CodeBoundAdapter({**self.manifest, "schema_version": DATABASE_ONLY_SCHEMA,
+            "native_stores": [], "provider_instance_id": "antigravity"})
+
+    def test_retired_database_only_purges_legacy_rows_and_truncates_wal(self):
+        path = self.root / "userdata/statev2.sqlite"
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            adapter = self.retired_adapter(db)
+            for tid in (THREAD, KEEP):
+                insert(db, "orchestration_events", event_id="legacy-" + tid, stream_id=tid,
+                       aggregate_kind="thread", payload_json=json.dumps({"threadId": tid, "text": PRIVATE}))
+            db.commit()
+        plan = self.coordinator().plan_operation(client="t3code", record_ids=(THREAD,), adapters=(adapter,),
+            plan_path=self.plan_path, operation_id="t3-retired-database")
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        self.assertNotIn(PRIVATE, json.dumps(plan))
+        evidence = cleanup.evidence_from_document(plan)
+        self.assertEqual(evidence["files"]["database"]["counts"]["orchestration_events"], 1)
+        self.assertEqual(evidence["native_targets"], [])
+        self.assertEqual(evidence["desktop"], [])
+        result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "complete", result)
+        database.require_wal_truncated(evidence["files"]["database"])
+        with closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute("SELECT stream_id FROM orchestration_events").fetchall(), [(KEEP,)])
+            self.assertEqual(db.execute(f"SELECT thread_id FROM {V2}messages").fetchall(), [(KEEP,)])
+        result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
+        self.assertEqual(result["goal_status"], "complete", result)
+
+    def test_retired_database_only_rejects_other_threads_and_reappeared_runtime(self):
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            adapter = self.retired_adapter(db)
+            db.commit()
+        result = self.coordinator().plan_operation(client="t3code", record_ids=(KEEP,), adapters=(adapter,),
+            plan_path=self.plan_path)
+        self.assertEqual(result["blockers"][0]["blocker_code"], "t3code_database_only_thread_unqualified", result)
+        plan = self.coordinator().plan_operation(client="t3code", record_ids=(THREAD,), adapters=(adapter,),
+            plan_path=self.plan_path)
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        (self.root / "tools/antigravity-acp").mkdir(parents=True)
+        result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "blocked", result)
+        self.assertFalse(result["mutation_started"], result)
 
     def test_native_dependency_and_exact_ticket(self):
         add_native_record(self.home, NATIVE)
