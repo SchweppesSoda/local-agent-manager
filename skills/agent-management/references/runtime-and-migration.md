@@ -52,7 +52,17 @@ Choose the finding supported by the evidence:
 | The frontend explicitly selects another executable | Inspect that override; changing PATH alone may not affect it. |
 | The target resolves a Desktop-bundled CLI while another context resolves the standalone CLI | Report the two selections and their version evidence; this does not authorize removing either installation. |
 
-An absolute-path override can test command lookup when configuration changes are in scope. Label it as a temporary diagnostic or an intentional final setting. If the user's goal is normal PATH lookup, restore the product's default command semantics after refreshing the launch environment; in T3 this can mean removing the temporary `binaryPath` field. Preserve the chosen data root and account mode. A launch failure by itself does not justify changing `CODEX_HOME`, reinstalling, or resetting authentication.
+An absolute-path override can test command lookup when configuration changes are in scope. Label it as a temporary diagnostic or an intentional final setting. If the user's goal is normal PATH lookup, verify the provider's default command semantics before removing a temporary override. T3 Antigravity's empty Binary path selects its managed-runtime resolver in the qualified builds, so retain an explicit CLI selection when that is the intended runtime. Preserve the chosen data root and account mode. A launch failure by itself does not justify changing `CODEX_HOME`, reinstalling, or resetting authentication.
+
+### Windows file visibility and AppData redirection
+
+Use this branch when the target receives an explicit path but reports `ENOENT` or access failure while the same path works inside the inspecting Agent. Windows can redirect AppData writes into a packaged app's private storage and merge those files into that app's view. Even a normal-looking `LOCALAPPDATA` value and identical absolute path strings can refer to different physical files in different process contexts. [Windows packaged-app file behavior](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes#appdata-operations-on-windows-10-version-1903-and-later)
+
+Establish the actual user's launcher, client and plugin/backend host, including account, package identity and elevation. Compare exact-path visibility in those contexts. For an identified local file, a read-only handle can provide its final path through `GetFinalPathNameByHandleW` and its volume/file identity. These observations belong to the inspecting process. Matching hashes establish matching content, while matching physical file identities can establish a shared file. Keep unavailable observations unknown. [Windows final-path API](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)
+
+`CreateEnvironmentBlock` refreshes environment variables. It does not change the new process's package identity or establish the target's filesystem view. Elevation differences are another diagnostic observation, and require the same visibility check. The environment CLI currently reports supplied roots and observed file identities without automatically resolving package virtualization or other processes' final paths.
+
+If installation repair is requested, run the verified installer in the intended user's host context and verify the actual destination there. Test through the user's usual launcher, including the real plugin host when relevant, before removing the old executable. Compare configuration roots by physical identity before deciding whether migration is needed. A shared physical profile can be reused directly. Separate profiles require the [selected-state migration](#migrate-the-selected-state) checks.
 
 ### Refresh the affected launch chain
 

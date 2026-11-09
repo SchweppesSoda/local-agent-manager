@@ -10,6 +10,48 @@ Use `environment inventory --json --client antigravity --client paseo --client t
 - **CLI ACP storage caveat.** Passing `GEMINI_HOME` is not proof the executable honors it. The qualified Windows CLI 1.5.3 build created `<USERPROFILE>/.gemini/antigravity-cli/conversation_summaries.db` in an isolated test despite T3-style `GEMINI_HOME` and `AGY_ACP_FORCE_FILE_STORAGE=1`. It did not use the old instance directory. Native data and credentials may therefore be shared with the standalone CLI. Do not promise isolated accounts, automatic history migration or resumed-thread compatibility. Verify other builds independently; the repository's `tests/test_t3code_runtime_acceptance.py` pins this observation to the exact build.
 - **Other launchers.** Identify an installed Antigravity App, IDE, custom Paseo plugin, or Google `agy acp` launch separately. Google documents cached CLI credentials for `agy acp`. That evidence applies to the CLI mode. T3's managed ACP provider has its own profile. Presence of a directory, auth file, or managed binary establishes only that observation. [Google CLI ACP](https://antigravity.google/docs/ide/extensions/acp/)
 
+For credential-location questions, distinguish the managed instance's
+`antigravity-acp/acp_token.json` from CLI authentication. The CLI can use the OS
+credential store, including Windows Credential Manager, depending on its build
+and authentication mode. Check current Google authentication guidance and
+supported account status. A missing JSON file alone cannot establish sign-out,
+and an old managed token does not establish CLI authentication. Inspect file
+presence and nonsecret status without displaying credential contents.
+[Google CLI authentication](https://antigravity.google/docs/install?tab=cli#local-silent-keyring-sign-in)
+
+## Diagnose T3 CLI selection and permission modes
+
+In the qualified T3 builds, an empty Binary path uses managed ACP resolution.
+CLI support does not make it automatically select the standalone `agy`. Set the
+verified CLI executable explicitly when that is the user's chosen runtime.
+T3 appends `acp`. Check actual launch selection after updates or provider changes.
+If an explicit path works only inside the inspecting Agent, use the
+[Windows file-visibility checks](runtime-and-migration.md#windows-file-visibility-and-appdata-redirection).
+
+If the CLI starts but rejects `auto_edit` or `yolo`, check the installed T3
+permission-mode implementation. Official PR #33143 maps those managed mode IDs
+to CLI `default`, with T3 answering approval requests from its live policy.
+Verify that the installed release includes that fix and test the requested
+permission modes separately. A prior local patch or a merged PR alone does not
+establish the installed behavior. [T3 permission-mode fix](https://github.com/pingdotgg/t3code/pull/33143)
+
+## Identify the Magpie integration
+
+Magpie's Agent integration for running a CLI through Magpie and the `agy-cli`
+supplier plugin for serving models from that CLI have separate entry points.
+Identify the selected integration before changing settings. The supplier
+plugin supports `AGY_PATH`, and its Bun/plugin host must receive the intended
+path and be able to open it. A shell environment override affects that shell
+and its children. Use the installed plugin's documented configuration for a
+persistent override. [Magpie supplier plugin](https://github.com/magpie-community/plugins/tree/main/packages/agy-cli)
+
+Verify through the user's actual Magpie launch chain. A saved sign-in entry,
+quota response, model list and generated reply each establish a separate
+result. When the desktop/plugin host cannot open a path that works in this
+task, compare physical file visibility, package context and elevation before
+choosing a repair. An Agent-launched replacement instance may have a different
+filesystem view.
+
 ## Match the action to the requested layer
 
 - **Inspection.** Report the host/profile, observed runtime and version evidence, effective binding if known, and whether each storage path is a candidate or tied to a selected record. `storage_artifacts` identifies layout metadata. In the frontend record report, `provider_backend_family_hint` describes the built-in integration family and `native_cleanup_status` shows the available native capability. Confirm the actual instance and store independently. Keep credential values, command-line arguments, and transcript bodies out of diagnostic output. Start a provider process only if the user has included that layer of verification.
@@ -42,3 +84,18 @@ Before planning disposal of an entire obsolete instance, establish its exact abs
 Inspect directory links without following them. For an instance-local `config/skills` junction pointing to shared skills, disposal concerns the link itself, not the shared target. Freeze the selected file/link inventory, exclude live writers, and compare retained CLI data, T3 configuration and shared targets before and after any authorized operation. Unknown ownership, unresolved operation journals, changing contents or unverified writer exclusion block mutation; an unknown result requires recovery rather than a blind retry. Report remaining files and empty directories from observed evidence, not from the uninstall result alone.
 
 Whole-instance disposal is distinct from exact-record deletion and from `--t3code-only`. Follow the applicable record operation contract when records are involved. Janitor currently exposes no generic profile-retirement command; a task-specific disposal script or a successful historical cleanup does not add that capability or qualify other profiles. Do not reuse an old manifest, authorization hash, process observation or machine-specific path for a later task.
+
+### Retired T3 database records
+
+After a managed instance has been retired, Janitor supports exact database
+cleanup through a `larj.t3code-antigravity-database.v1` manifest passed with
+`--t3code-bindings`. Read the matching checkout's operation contract and the
+"已退役 Antigravity 的 T3 数据库清理" section of `docs/operation-cli.md` for the
+binding and plan/apply/verify route.
+
+This requires the selected instance to be disabled with an empty custom binary,
+its managed runtime and instance directory removed, and each full T3 thread ID
+explicitly selected. Threads must already be soft-deleted, with no active
+sessions or worktrees, and all frozen dependency checks must pass. The scope is
+the selected shared-database records. Recheck retirement for each new plan.
+Do not clear an active CLI binding to manufacture retirement eligibility.

@@ -16,4 +16,6 @@ Check current official product documentation for the requested channel, platform
 
 Use the exact paths and identities again when checking the result. Refresh the shell or frontend if it inherited old environment variables. For uninstall, check package and launcher absence separately and check that any intended retained consumer still resolves. For install/update, verify version and selection, then verify provider use at the layer requested by the user. Follow [runtime and migration](runtime-and-migration.md) for verification steps.
 
+For an installer launched from a packaged Agent, verify its physical destination and accessibility through the user's actual launcher. A successful version probe inside the installing Agent covers that context. Follow [AppData redirection checks](runtime-and-migration.md#windows-file-visibility-and-appdata-redirection) when an external consumer cannot see the same path.
+
 Report uninstall scope precisely: program files, extraction caches, retained profiles and shared resources have separate outcomes. Removing a runtime does not establish that its old instance data was removed. For T3 Antigravity, use the [instance-data scope checks](antigravity.md#distinguish-uninstall-results-from-discarded-instance-data) before treating an old profile as a selected disposal target.

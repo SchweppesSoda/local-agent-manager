@@ -35,6 +35,8 @@
 `cindy-memory inspect` 只读取项目归属元数据与文件属性；`export` 才读取精确选中的
 记忆分片并生成新快照。这是明确的内容导出能力，不受环境盘点的“仅元数据”描述覆盖。
 源记忆、项目指令和全局设置均不由导出命令修改；加载快照由技能按已有指令体系执行。
+需要原文件直读时，技能复用 inspect 的项目归属检查，再核对原 `MEMORY.md` 并通过
+已有项目指令按需读取相关分片。入口配置与模型实际读取分别验收。
 固定来源、命令与验证说明见 [Claude 接入流程](../skills/agent-management/references/claude-connections.md)。
 
 ### 环境发现与诊断
@@ -87,6 +89,12 @@ CLI 已安装且 Windows 用户 PATH 已注册，仍可能无法被某个客户�
 覆盖与用户要求的最终配置分开；目标为恢复默认命令时，验证后撤回临时覆盖，同时保留
 原来的数据根和账号模式。命令解析、Provider 连接、认证、模型发现与实际生成分层验收。
 本机 PID、版本、模型数量和用户名路径属于当次观察，不写成永久匹配规则。
+
+显式绝对路径在检查进程可用、在实际客户端不可见时，还需检查 Windows 包身份与
+AppData 文件重定向。相同路径和环境变量不证明同一物理文件，刷新环境块也不证明
+文件命名空间相同。句柄最终路径和文件标识只描述观察进程所见，仍须从用户实际入口
+验证。环境 CLI 尚未自动探测这种重定向，具体操作见
+[Windows 文件可见性](../skills/agent-management/references/runtime-and-migration.md#windows-file-visibility-and-appdata-redirection)。
 
 ### 环境维护工作流
 

@@ -25,7 +25,12 @@ from .t3code_store import V2, database_path, engine, identifier, local_root, qua
 
 KIND = 'delete_t3code_server_thread'
 SCHEMA = 'larj.t3code-server-delete.v1'
-VERSIONS = ('0.1.8-nightly.20261107.4301', '0.1.8-nightly.20261108.4353', '0.1.8-nightly.20261108.4380')
+VERSIONS = (
+    '0.1.8-nightly.20261107.4301',
+    '0.1.8-nightly.20261108.4353',
+    '0.1.8-nightly.20261108.4380',
+    '0.1.8-nightly.20261109.4399',
+)
 _ENTRY = 'resources/server.asar/apps/server/dist/bin.mjs'
 _RUNTIME_FILES = ('T3 Code (Nightly).exe', 'resources/app.asar', 'resources/server.asar')
 

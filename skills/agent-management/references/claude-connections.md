@@ -1,10 +1,18 @@
-# Reuse Claude in Paseo or T3 Code
+# Reuse Claude and Cindy state in another client
 
 Use this workflow when connecting a chosen Claude executable, native history,
 or Cindy project memory to another Agent client. These are three independent
 choices. A request to implement or test connection support does not ask to
 connect the current host. Use temporary profiles and synthetic records for
 development; do not import the user's real history as an acceptance test.
+
+T3 can also use an independently installed Codex executable with Cindy's
+Codex home. Its Binary path and CODEX_HOME path settings select those two
+resources separately. Verify the standalone executable and the exact Cindy
+`codex-home` before saving the binding. The selected home also supplies Codex
+configuration and authentication storage. Cindy's project memory uses its own
+`maker-memory` scope and needs the memory-loading step below.
+[T3 Codex configuration](https://github.com/pingdotgg/t3code/blob/v0.1.8-nightly.20261109.4399/docs/user/providers-codex.md)
 
 ## Establish the requested scope
 
@@ -90,6 +98,10 @@ explicit binary/home binding. Paseo import requires an executable-only command
 without extra launcher flags. Unknown versions, profiles and schemas need
 qualification before this writer can use them.
 
+The T3 built-in deletion versions are qualified separately. A newer version
+accepted for deletion does not extend this import writer's 4353 qualification.
+For another version, qualify its import interface with synthetic history first.
+
 ```powershell
 local-agent-record-janitor environment claude-import prepare `
     --target paseo --executable 'D:\apps\Paseo\Paseo.exe' `
@@ -141,6 +153,34 @@ T3 verification reports observed strong references in the selected project's
 projection. It cannot prove that every eligible native session was imported,
 because the scanner exposes aggregate counts rather than an exact ID manifest.
 `observed` reports this evidence, not a claim that the entire import is complete.
+
+## Read original project memory
+
+When the user wants current Cindy memory without exporting a snapshot, use
+`environment cindy-memory inspect` with the selected owner root and project as
+shown below. Its `store` identifies a scope verified through `meta.json.absPath`.
+It lists curated shard metadata without reading their bodies. Check the original
+`MEMORY.md` separately within that store, including its physical location and
+link status. Missing or redirected files require resolving the intended source.
+
+Add an instruction through the project's existing, verified loading entry point
+to read that original index when the task needs Cindy memory, then read only
+the relevant Markdown shards within the verified project scope. Preserve the
+effective `AGENTS.md` and `CLAUDE.md` import chain. For a local-only entry point,
+verify that the selected runtime actually loads it and keep host-specific paths
+private and untracked. A new file name alone does not establish loading.
+
+For example, the project instruction can say, with the path replaced by the
+verified original index for this owner and project, "When this task needs Cindy
+project memory, read D:/private/owner/maker-memory/project/MEMORY.md, then open
+the relevant Markdown shards in that project memory directory."
+
+Treat memory as contextual instructions and reconcile conflicts with current
+project rules. An index reference to another directory needs its own scope
+check. Each later read obtains the source's then-current content. Verify the
+instruction chain and report actual model loading separately. This workflow
+uses the original files through project instructions. Use the snapshot route
+below when a fixed selected copy is requested.
 
 ## Export selected project memory
 

@@ -386,7 +386,8 @@ Windows `--t3code-only` 使用本机已安装 T3 Nightly 的 CLI 发放短期凭
 的回环服务调用 `thread.delete`。要求服务运行、所选 thread 空闲、完整 ID 精确匹配，
 并显式指定一个 T3 home；不接受 ID 前缀、批量 project 范围或 native bindings。
 支持已验证的 Nightly `0.1.8-nightly.20261107.4301`、`0.1.8-nightly.20261108.4353`、
-`0.1.8-nightly.20261108.4380` 和固定数据库结构。
+`0.1.8-nightly.20261108.4380`、`0.1.8-nightly.20261109.4399` 和固定数据库结构。
+此版本资格限于内置删除，历史导入和原生记录清理分别验证。
 
 ```powershell
 local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json

@@ -25,6 +25,8 @@ local-agent-record-janitor environment inventory --home 'D:\profiles\example' --
 
 客户端提示找不到已安装 CLI 时，按 [Windows PATH 继承排查](skills/agent-management/references/runtime-and-migration.md#windows-path-inheritance)
 核对启动器、客户端与服务端；当前环境命令不会自动读取其他进程的 PATH。
+显式路径只在 Agent 内可见时，继续检查
+[Windows 文件重定向](skills/agent-management/references/runtime-and-migration.md#windows-file-visibility-and-appdata-redirection)。
 
 `inventory` 成功生成报告返回 `0`，报告中的 coverage 仍可能不完整。`doctor` 按发现
 报告 `error`、`attention`、`inconclusive` 或 `no_issues_observed`；`error` 返回 `1`，
@@ -57,6 +59,8 @@ Paseo 支持按完整 Claude 会话 ID 导入；T3 仅支持明确接受的项�
 `environment cindy-memory inspect/export` 按显式 owner 存储与项目盘点记忆元数据，
 或将精确选定的分片导出为新 Markdown 快照。导出会读取选定的记忆正文，不改源文件，
 也不自动启用项目指令。启用时须保留已有 `CLAUDE.md`／`AGENTS.md` 的加载行为。
+需要读取 Cindy 当前记忆时，skill 也支持核对项目归属后，通过现有指令入口按需读取
+原 `MEMORY.md` 及相关分片。该流程由助手执行，源文件与快照分别选择。
 命令示例、会话导入范围与验证方式见 [Claude 接入流程](skills/agent-management/references/claude-connections.md)。
 
 ## 记录清理

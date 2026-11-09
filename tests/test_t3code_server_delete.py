@@ -144,6 +144,12 @@ class T3ServerDeleteTests(unittest.TestCase):
         self.assertNotEqual(self.plan(THREAD,'--paseo-only')[0],0)
         self.assertEqual(self.calls,[])
 
+    def test_unqualified_server_version_is_rejected_before_rpc(self):
+        self.server['serverVersion'] = '0.1.8-nightly.20261109.9999'
+        (self.root / 'userdata/server-runtime.json').write_text(json.dumps(self.server))
+        self.assertNotEqual(self.plan()[0], 0)
+        self.assertEqual(self.calls, [])
+
     def test_busy_or_shared_provider_session_blocks_and_ready_session_can_stop(self):
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
             insert(db,V2+'provider_sessions',provider_session_id='provider-session',thread_id=THREAD,status='running')
