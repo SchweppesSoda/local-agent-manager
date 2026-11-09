@@ -67,8 +67,8 @@ class NumberSelectionTests(unittest.TestCase):
     def test_codex_location_arguments_are_public_and_explained(self) -> None:
         parser = build_parser()
         root_help = parser.format_help()
-        self.assertEqual(parser.prog, "local-agent-record-janitor")
-        self.assertIn("local-agent-record-janitor", root_help)
+        self.assertEqual(parser.prog, "local-agent-manager")
+        self.assertIn("local-agent-manager", root_help)
         self.assertIn("检查前端残留", root_help)
         self.assertIn("用法：", root_help)
         self.assertIn("命令", root_help)

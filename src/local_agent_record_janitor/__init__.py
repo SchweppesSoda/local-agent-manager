@@ -1,16 +1,8 @@
-"""Inventory local Agent environments and safely clean storage-qualified records.
+"""Compatibility exports for the Local Agent Manager package."""
+from importlib import import_module as _import_module
 
-Codex records are threads; Pi Agent and Claude Code records are sessions.
-Cindy rows are frontend references to native records; exact stale
-references can be cleaned as separately authorized mutations.
-"""
-
-from .models import ConversationSummary, Finding, RolloutRecord, ThreadSourceInfo
-
-__all__ = [
-    "ConversationSummary",
-    "Finding",
-    "RolloutRecord",
-    "ThreadSourceInfo",
-]
-__version__ = "0.2.0"
+_implementation = _import_module('local_agent_manager')
+__all__ = _implementation.__all__
+globals().update({name: getattr(_implementation, name) for name in __all__})
+def __getattr__(name):
+    return getattr(_implementation, name)

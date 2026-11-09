@@ -40,7 +40,7 @@ settings are required; use the product's normal setup if no settings exist.
 Do not initialize a fabricated config shape to bypass validation.
 
 ```powershell
-local-agent-record-janitor environment claude-connect prepare `
+local-agent-manager environment claude-connect prepare `
     --target paseo --config 'D:\profiles\paseo\config.json' `
     --claude-binary 'D:\apps\Cindy\claude-code\2.1.312\claude.exe' `
     --claude-home 'D:\profiles\claude' --provider claude-cindy `
@@ -57,7 +57,7 @@ Review the plan against the user's existing scope. Once the frontend and its
 configuration writers are stopped, apply the exact reviewed hash:
 
 ```powershell
-local-agent-record-janitor environment claude-connect apply `
+local-agent-manager environment claude-connect apply `
     --plan 'D:\private\paseo-claude-plan.json' `
     --approve '<plan_sha256>' --clients-closed --json
 ```
@@ -105,15 +105,15 @@ prepare a fresh plan for the current server. For another version, qualify its
 import interface with synthetic history first.
 
 ```powershell
-local-agent-record-janitor environment claude-import prepare `
+local-agent-manager environment claude-import prepare `
     --target paseo --executable 'D:\apps\Paseo\Paseo.exe' `
     --profile 'D:\profiles\paseo' --project 'D:\work\project' `
     --native-id '<complete-Claude-UUID>' --provider claude-cindy `
     --native-transcript 'D:\profiles\claude\projects\PROJECT_KEY\UUID.jsonl' `
     --out 'D:\private\history-plan.json' --json
-local-agent-record-janitor environment claude-import apply `
+local-agent-manager environment claude-import apply `
     --plan 'D:\private\history-plan.json' --approve '<plan_sha256>' --json
-local-agent-record-janitor environment claude-import verify `
+local-agent-manager environment claude-import verify `
     --plan 'D:\private\history-plan.json' --json
 ```
 
@@ -195,7 +195,7 @@ Inspect only the selected owner's project metadata first. This command reports
 eligible file names and sizes without reading their contents:
 
 ```powershell
-local-agent-record-janitor environment cindy-memory inspect `
+local-agent-manager environment cindy-memory inspect `
     --maker-memory-root 'D:\profiles\Cindy\owners\OWNER\maker-memory' `
     --project 'D:\work\project' --json
 ```
@@ -206,7 +206,7 @@ user has already chosen the project memories, select the matching listed
 files without another blanket confirmation.
 
 ```powershell
-local-agent-record-janitor environment cindy-memory export `
+local-agent-manager environment cindy-memory export `
     --maker-memory-root 'D:\profiles\Cindy\owners\OWNER\maker-memory' `
     --project 'D:\work\project' --shard project_conventions.md `
     --shard feedback_review.md --out 'D:\private\cindy-project-memory.md' --json

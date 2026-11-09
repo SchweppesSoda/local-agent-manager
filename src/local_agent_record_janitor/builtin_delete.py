@@ -1,14 +1,5 @@
-"""Select only an explicitly frozen, qualified built-in deletion mode."""
+"""Compatibility module. Implementation lives in local_agent_manager."""
+from importlib import import_module as _import_module
+import sys as _sys
 
-
-def module_for(scope):
-    paseo, t3 = scope.get('paseo_only'), scope.get('t3code_only')
-    if paseo and t3:
-        raise ValueError('builtin_delete_modes_conflict')
-    if paseo:
-        from . import paseo_daemon_delete
-        return paseo_daemon_delete
-    if t3:
-        from . import t3code_server_delete
-        return t3code_server_delete
-    return None
+_sys.modules[__name__] = _import_module('local_agent_manager.builtin_delete')

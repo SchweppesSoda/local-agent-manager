@@ -2,8 +2,8 @@
 // Pure synthetic, independently encoded counterexamples; no native store reads.
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const f=require('./office_leveldb_physical.cjs');
-const a=require('../../src/local_agent_record_janitor/leveldb_runtime/idb_audit.cjs');
-const idb=require('../../src/local_agent_record_janitor/leveldb_runtime/idb_keys.cjs');
+const a=require('../../src/local_agent_manager/leveldb_runtime/idb_audit.cjs');
+const idb=require('../../src/local_agent_manager/leveldb_runtime/idb_keys.cjs');
 function text(value) { const raw=Buffer.from(value,'utf16le'); raw.swap16(); return Buffer.concat([f.vi(value.length),raw]); }
 function user(value) { return Buffer.concat([Buffer.from([0,1,1,1,1]),text(value)]); }
 function meta(tag) { return Buffer.from([0,0,0,0,tag]); }

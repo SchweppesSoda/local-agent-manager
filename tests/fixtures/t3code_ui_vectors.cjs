@@ -1,7 +1,7 @@
 'use strict'
 const path = require('node:path')
 const assert = require('node:assert/strict')
-const dir = path.resolve(__dirname, '../../src/local_agent_record_janitor/leveldb_runtime')
+const dir = path.resolve(__dirname, '../../src/local_agent_manager/leveldb_runtime')
 const helper = require(path.join(dir, 'office_drafts.cjs'))
 const cleaner = require(path.join(dir, 't3code_ui.cjs'))({ ...helper, fail: code => { throw new Error(code) } })
 const selected = new Set(['thread-1'])

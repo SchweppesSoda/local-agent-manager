@@ -1,9 +1,18 @@
-# Local Agent Record Janitor / 本地 Agent 记录清理器
+# Local Agent Manager / 本地 Agent 管理器
 
-`local-agent-record-janitor` 是本项目统一使用的仓库名、发行包名和 CLI 命令；Python
-模块名统一为 `local_agent_record_janitor`。它提供本地 Agent 环境盘点、诊断和多引擎记录
-清理：处理 Codex thread、Pi Agent、Claude Code 和 WorkBuddy session，也能精确清除
-Cindy 中已经失效的 frontend reference；前端映射不是另一份 native record。
+`local-agent-manager` 是统一的发行包和 CLI，Python 模块为 `local_agent_manager`。工具包含环境盘点与接入、Skill 源与部署、记录管理三个模块。
+
+```powershell
+local-agent-manager environment inventory --json
+local-agent-manager skills plan --repo-root '<Skill 源仓库>' --target '<adapter>'
+local-agent-manager resources --json
+```
+
+两个权威管理 Skill 位于 `skills/agent-management` 与 `skills/skill-management`。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。工作业务内容与客户端本机配置由各自的源仓库维护。
+
+旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量、控制目录和恢复数据保留原契约。实现和运行路径改变后，受绑定的未执行计划须重新生成。
+
+完整边界和迁移方法见 [整合设计](docs/manager-integration.md)。
 
 ## Agent 环境管理
 
@@ -66,12 +75,11 @@ T3 导入支持已验证的 Windows Nightly `4353` 和 `4399`，计划绑定实�
 
 ## 记录清理
 
-### 命名迁移
+### 命名兼容
 
-这次统一命名是一次破坏性迁移：现有可编辑安装需要先卸载先前发行包，再安装
-`local-agent-record-janitor`；脚本和集成应改用 `local-agent-record-janitor` 命令以及
-`local_agent_record_janitor` Python 模块。改名前版本生成的旧版聚合索引备份，应继续
-使用生成该备份的对应版本执行还原。
+新安装使用 `local-agent-manager`。从旧 editable 安装迁移时，先核对原解释器和源码位置，卸载旧发行包，再安装新发行包，避免两个包同时拥有兼容命令。旧 CLI 与 Python 子模块入口由新包提供。
+
+历史 operation 文档、控制目录、恢复证据和相关 schema 保持原有读取与验证契约。具体兼容范围见 [整合设计](docs/manager-integration.md)。
 
 它主要处理两类问题：
 
@@ -315,7 +323,7 @@ broken 的完整发现仍走 anomaly scan，不保证从 `records` 统一进入�
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/SchweppesSoda/local-agent-record-janitor.git
+git clone https://github.com/SchweppesSoda/local-agent-manager.git
 Set-Location local-agent-record-janitor
 python -m pip install -e .
 
@@ -330,7 +338,7 @@ python -m local_agent_record_janitor scan --platform native
 ### Windows cmd.exe
 
 ```bat
-git clone https://github.com/SchweppesSoda/local-agent-record-janitor.git
+git clone https://github.com/SchweppesSoda/local-agent-manager.git
 cd /d local-agent-record-janitor
 python -m pip install -e .
 
@@ -345,7 +353,7 @@ python -m local_agent_record_janitor scan --platform native
 ### macOS / Linux sh
 
 ```sh
-git clone https://github.com/SchweppesSoda/local-agent-record-janitor.git
+git clone https://github.com/SchweppesSoda/local-agent-manager.git
 cd local-agent-record-janitor
 python3 -m pip install -e .
 

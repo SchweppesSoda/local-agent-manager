@@ -1,20 +1,8 @@
-from .base import AdapterScanError
-from .cindy import CindyAdapter
-from .native import NativeIntegrityAdapter, NativeIntegrityError
-from .orca import OrcaAdapter
-from .herdr import HerdrAdapter
-from ..workbuddy_store import WorkBuddyAdapter
-from ..office_store import OfficeAdapter
-from ..paseo_store import PaseoAdapter
+"""Compatibility exports for the Local Agent Manager package."""
+from importlib import import_module as _import_module
 
-__all__ = [
-    "AdapterScanError",
-    "CindyAdapter",
-    "NativeIntegrityAdapter",
-    "NativeIntegrityError",
-    "OrcaAdapter",
-    "HerdrAdapter",
-    "WorkBuddyAdapter",
-    "OfficeAdapter",
-    "PaseoAdapter",
-]
+_implementation = _import_module('local_agent_manager.adapters')
+__all__ = _implementation.__all__
+globals().update({name: getattr(_implementation, name) for name in __all__})
+def __getattr__(name):
+    return getattr(_implementation, name)

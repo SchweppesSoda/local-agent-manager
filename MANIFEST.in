@@ -1,0 +1,6 @@
+include resource-manifest.json
+recursive-include skills *.md *.yaml *.json
+recursive-include docs *.md
+recursive-include src *.json *.cjs
+include AGENTS.md
+include SECURITY.md

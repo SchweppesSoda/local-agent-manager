@@ -12,7 +12,7 @@ If a supplied profile defines the entire scope, pass its actual application-data
 
 ```powershell
 $profileRoot = 'D:\path\to\profile'
-local-agent-record-janitor environment inventory --json `
+local-agent-manager environment inventory --json `
     --home $profileRoot `
     --appdata (Join-Path $profileRoot 'AppData/Roaming') `
     --local-appdata (Join-Path $profileRoot 'AppData/Local') `

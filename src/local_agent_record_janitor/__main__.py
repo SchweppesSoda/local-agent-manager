@@ -1,4 +1,3 @@
-from .cli import main
+from local_agent_manager.entrypoint import main
 
 raise SystemExit(main())
-

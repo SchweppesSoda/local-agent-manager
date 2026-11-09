@@ -1,16 +1,5 @@
-"""Bounded display strings; identity evidence is fingerprinted separately."""
-from __future__ import annotations
+"""Compatibility module. Implementation lives in local_agent_manager."""
+from importlib import import_module as _import_module
+import sys as _sys
 
-import re
-
-
-def display_title(value: object, limit: int = 240) -> str | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    if any(marker in value.casefold() for marker in (
-        "transcript start", "the following is the codex agent history",
-        ">>> approval request", "reviewed codex session id:",
-    )):
-        return "自动审查记录"
-    text = re.sub(r"\s+", " ", value).strip()
-    return text if len(text) <= limit else text[:limit - 1] + "…"
+_sys.modules[__name__] = _import_module('local_agent_manager.display_metadata')

@@ -1,0 +1,1316 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import sqlite3
+import stat
+import subprocess
+import tempfile
+import uuid
+from contextlib import closing
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
+
+from .codex_state import find_thread_rollouts, read_thread_index
+from .client_contracts import require_local_location
+from .path_identity import canonical_existing_path_key, is_local_absolute_locator
+from .sqlite_utils import connect_readonly, table_exists
+
+
+class DesktopStateError(RuntimeError):
+    """Codex Desktop host state could not be inspected or changed safely."""
+
+
+# Process inspection is a safety guard.  A hung CIM query must fail closed
+# within a bounded interval instead of holding a cleanup operation forever.
+PROCESS_INSPECTION_TIMEOUT_SECONDS = 15.0
+
+
+@dataclass(frozen=True)
+class DesktopCatalogRecord:
+    host_id: str
+    thread_id: str
+    title: str | None
+    database: Path
+    row: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "host_id": self.host_id,
+            "thread_id": self.thread_id,
+            "title": self.title,
+            "database": str(self.database),
+            "row": _json_value(dict(self.row)),
+        }
+
+
+@dataclass(frozen=True)
+class DesktopThreadState:
+    thread_id: str
+    catalog_records: tuple[DesktopCatalogRecord, ...]
+    global_state_references: Mapping[str, tuple[str, ...]]
+    catalog_revision: int | None
+    state_file_sha256: Mapping[str, str]
+    snapshot_fingerprint: str
+    catalog_revisions: Mapping[str, int | None] = field(default_factory=dict)
+
+    @property
+    def exact_reference_count(self) -> int:
+        return sum(len(items) for items in self.global_state_references.values())
+
+    @property
+    def present(self) -> bool:
+        return bool(self.catalog_records) or bool(self.exact_reference_count)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "thread_id": self.thread_id,
+            "catalog_records": [item.to_dict() for item in self.catalog_records],
+            "global_state_references": {
+                path: list(references)
+                for path, references in self.global_state_references.items()
+            },
+            "exact_reference_count": self.exact_reference_count,
+            "catalog_revision": self.catalog_revision,
+            "state_file_sha256": dict(self.state_file_sha256),
+            "snapshot_fingerprint": self.snapshot_fingerprint,
+            **({"catalog_revisions": dict(self.catalog_revisions)}
+               if len(self.catalog_revisions) > 1 else {}),
+        }
+
+
+@dataclass(frozen=True)
+class DesktopStateSnapshot:
+    codex_home: Path
+    database: Path | None
+    state_paths: tuple[Path, ...]
+    threads: Mapping[str, DesktopThreadState]
+    databases: tuple[Path, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "codex_home": str(self.codex_home),
+            "database": str(self.database) if self.database is not None else None,
+            "databases": [str(path) for path in self.databases],
+            "state_paths": [str(path) for path in self.state_paths],
+            "threads": {
+                thread_id: state.to_dict()
+                for thread_id, state in sorted(self.threads.items())
+            },
+        }
+
+
+@dataclass(frozen=True)
+class DesktopCleanupResult:
+    codex_home: Path
+    thread_ids: tuple[str, ...]
+    deleted_catalog_rows: int
+    removed_global_state_references: int
+    backup_id: str
+    backup_directory: Path
+    temporary_backup_retained: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": "cleaned",
+            "codex_home": str(self.codex_home),
+            "thread_ids": list(self.thread_ids),
+            "deleted_catalog_rows": self.deleted_catalog_rows,
+            "removed_global_state_references": (
+                self.removed_global_state_references
+            ),
+            "backup_id": self.backup_id,
+            "backup_directory": str(self.backup_directory),
+            "temporary_backup_retained": self.temporary_backup_retained,
+            "verification": {
+                "remaining_catalog_rows": 0,
+                "remaining_exact_global_state_references": 0,
+            },
+        }
+
+
+ClientInspector = Callable[..., tuple[str, ...]]
+
+
+def read_desktop_state(
+    codex_home: Path,
+    thread_ids: Iterable[str] | None = None,
+) -> DesktopStateSnapshot:
+    """Read the optional Codex Desktop host catalog and exact UI references.
+
+    These files are host implementation details, not part of the documented
+    app-server protocol.  Discovery is therefore schema-probed and optional;
+    a present but incompatible catalog fails closed instead of being treated
+    as empty.
+    """
+
+    home = codex_home.expanduser().resolve()
+    databases = _discover_catalog_databases(home)
+    # Preserve the legacy single-database field without presenting an arbitrary
+    # member of a multi-database snapshot as the only authoritative catalog.
+    database = databases[0] if len(databases) == 1 else None
+    state_paths = _global_state_paths(home)
+    requested = {
+        value for value in (thread_ids or ()) if isinstance(value, str) and value
+    }
+
+    catalog_records: list[DesktopCatalogRecord] = []
+    catalog_revisions: dict[str, int | None] = {}
+    for catalog_database in databases:
+        records, revision = _read_catalog_records(
+            catalog_database,
+            requested or None,
+        )
+        catalog_records.extend(records)
+        catalog_revisions[str(catalog_database)] = revision
+    catalog_revision = catalog_revisions.get(str(database))
+
+    target_ids = requested or {record.thread_id for record in catalog_records}
+    state_values: dict[Path, Any] = {}
+    state_hashes: dict[str, str] = {}
+    refs_by_thread: dict[str, dict[str, tuple[str, ...]]] = {
+        thread_id: {} for thread_id in target_ids
+    }
+    for path in state_paths:
+        value = _read_json(path)
+        state_values[path] = value
+        rendered = str(path)
+        state_hashes[rendered] = sha256_file(path)
+        for thread_id in target_ids:
+            references = tuple(find_state_references(value, {thread_id}))
+            if references:
+                refs_by_thread[thread_id][rendered] = references
+
+    records_by_thread: dict[str, list[DesktopCatalogRecord]] = {
+        thread_id: [] for thread_id in target_ids
+    }
+    for record in catalog_records:
+        records_by_thread.setdefault(record.thread_id, []).append(record)
+
+    states: dict[str, DesktopThreadState] = {}
+    for thread_id in sorted(target_ids):
+        records = tuple(
+            sorted(
+                records_by_thread.get(thread_id, ()),
+                key=lambda item: (item.host_id, str(item.database)),
+            )
+        )
+        references = refs_by_thread.get(thread_id, {})
+        payload = {
+            "schema": "codex-desktop-thread-state-v1",
+            "codex_home": _normalized_path(home),
+            "database": str(database) if database is not None else None,
+            "catalog_records": [record.to_dict() for record in records],
+            "catalog_revision": catalog_revision,
+            "state_file_sha256": state_hashes,
+            "global_state_references": {
+                path: list(items) for path, items in sorted(references.items())
+            },
+        }
+        if len(databases) > 1:
+            payload.update(
+                schema="codex-desktop-thread-state-v2",
+                databases=[str(path) for path in databases],
+                catalog_revisions=catalog_revisions,
+            )
+        states[thread_id] = DesktopThreadState(
+            thread_id=thread_id,
+            catalog_records=records,
+            global_state_references=references,
+            catalog_revision=catalog_revision,
+            state_file_sha256=state_hashes,
+            snapshot_fingerprint=("desktop:v2:" if len(databases) > 1 else "desktop:v1:")
+            + _sha256_json(payload),
+            catalog_revisions=catalog_revisions,
+        )
+    return DesktopStateSnapshot(
+        codex_home=home,
+        database=database,
+        state_paths=state_paths,
+        threads=states,
+        databases=databases,
+    )
+
+
+def native_evidence_for_threads(
+    codex_home: Path,
+    thread_ids: Iterable[str],
+) -> dict[str, tuple[str, ...]]:
+    ids = tuple(sorted({thread_id for thread_id in thread_ids if thread_id}))
+    indexed = read_thread_index(codex_home, ids, strict=True)
+    rollout_paths = {
+        str(record.path)
+        for thread_id in ids
+        for record in find_thread_rollouts(codex_home, thread_id)
+    }
+    return {
+        "indexed_thread_ids": tuple(
+            thread_id for thread_id in ids if thread_id in indexed
+        ),
+        "rollout_paths": tuple(sorted(rollout_paths, key=os.path.normcase)),
+    }
+
+
+def remaining_desktop_state_markers(
+    codex_home: Path,
+    thread_ids: Iterable[str],
+) -> tuple[str, ...]:
+    snapshot = read_desktop_state(codex_home, thread_ids)
+    markers: list[str] = []
+    for thread_id, state in sorted(snapshot.threads.items()):
+        for record in state.catalog_records:
+            markers.append(
+                f"desktop-catalog:{record.database}:{record.host_id}:{thread_id}"
+            )
+        for path, references in sorted(state.global_state_references.items()):
+            for reference in references:
+                markers.append(f"desktop-state:{path}:{thread_id}:{reference}")
+    return tuple(markers)
+
+
+def execute_desktop_state_cleanup(
+    codex_home: Path,
+    approved_snapshot_fingerprints: Mapping[str, str],
+    *,
+    client_inspector: ClientInspector | None = None,
+) -> DesktopCleanupResult:
+    """Remove exact Desktop-only thread state after strict revalidation."""
+
+    home = codex_home.expanduser().resolve()
+    targets = tuple(sorted(approved_snapshot_fingerprints))
+    if not targets:
+        raise DesktopStateError("No Codex Desktop thread IDs were selected")
+
+    evidence = native_evidence_for_threads(home, targets)
+    if any(evidence.values()):
+        raise DesktopStateError(
+            "Native thread evidence reappeared; refusing Desktop-only cleanup: "
+            + json.dumps(evidence, ensure_ascii=False)
+        )
+
+    snapshot = read_desktop_state(home, targets)
+    if not snapshot.databases:
+        raise DesktopStateError("No compatible Codex Desktop catalog was found")
+    for thread_id in targets:
+        current = snapshot.threads.get(thread_id)
+        if current is None or not current.present:
+            raise DesktopStateError(
+                f"The approved local Desktop state disappeared: {thread_id}"
+            )
+        if any(record.host_id != "local" for record in current.catalog_records):
+            raise DesktopStateError(
+                f"The target is not exclusively local Desktop state: {thread_id}"
+            )
+        expected = approved_snapshot_fingerprints.get(thread_id)
+        if current.snapshot_fingerprint != expected:
+            raise DesktopStateError(
+                f"Codex Desktop state changed after approval: {thread_id}"
+            )
+
+    inspect_clients = client_inspector or running_related_clients
+    clients = inspect_clients(home)
+    if clients:
+        raise DesktopStateError(
+            "Related clients are still running: " + ", ".join(clients)
+        )
+
+    manifest = {
+        "schema_version": 2 if len(snapshot.databases) > 1 else 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "codex_home": str(home),
+        "database": str(snapshot.database) if snapshot.database else None,
+        "databases_sha256_before": {
+            str(path): sha256_file(path) for path in snapshot.databases
+        },
+        "targets": {
+            thread_id: snapshot.threads[thread_id].to_dict()
+            for thread_id in targets
+        },
+        "state_files_before": {
+            str(path): sha256_file(path) for path in snapshot.state_paths
+        },
+    }
+    if snapshot.database is not None:
+        manifest["database_sha256_before"] = manifest["databases_sha256_before"][str(snapshot.database)]
+    backup_id, backup_directory = _create_backup(snapshot, manifest)
+    deleted_rows = 0
+    removed_references = 0
+    modified_databases: set[Path] = set()
+    modified_state_paths: set[Path] = set()
+    try:
+        for database in snapshot.databases:
+            expected_records = tuple(
+                record for thread_id in targets
+                for record in snapshot.threads[thread_id].catalog_records
+                if record.database == database
+            )
+            if expected_records:
+                deleted_rows += _delete_catalog_rows(
+                    database, expected_records,
+                    snapshot.threads[targets[0]].catalog_revisions[str(database)],
+                    lambda: modified_databases.add(database),
+                )
+        for path in snapshot.state_paths:
+            expected_hash = manifest["state_files_before"][str(path)]
+            if sha256_file(path) != expected_hash:
+                raise DesktopStateError(
+                    f"Codex Desktop global state changed after backup: {path}"
+                )
+            value = _read_json(path)
+            cleaned, removed = strip_state_references(value, set(targets))
+            modified_state_paths.add(path)
+            _atomic_write_json(path, cleaned)
+            removed_references += len(removed)
+
+        remaining = read_desktop_state(home, targets)
+        if remaining.databases != snapshot.databases:
+            raise DesktopStateError("Codex Desktop catalog membership changed during cleanup")
+        leftovers = {
+            thread_id: state.to_dict()
+            for thread_id, state in remaining.threads.items()
+            if state.present
+        }
+        if leftovers:
+            raise DesktopStateError(
+                "Post-write verification found remaining Desktop state: "
+                + json.dumps(leftovers, ensure_ascii=False)
+            )
+    except Exception as exc:
+        restore_error = _restore_backup(
+            snapshot, backup_directory, modified_databases, modified_state_paths
+        )
+        if restore_error is not None:
+            raise DesktopStateError(
+                f"Desktop cleanup failed ({exc}); automatic restore also failed "
+                f"({restore_error}). Backup: {backup_directory}"
+            ) from exc
+        discard_error = _discard_backup(snapshot, backup_directory)
+        if discard_error is not None:
+            raise DesktopStateError(
+                f"Desktop cleanup failed ({exc}); all changed files were "
+                "restored, but the temporary rollback copy could not be "
+                f"removed ({discard_error}): {backup_directory}"
+            ) from exc
+        if isinstance(exc, DesktopStateError):
+            raise DesktopStateError(
+                f"{exc}; all changed Desktop files were restored"
+            ) from exc
+        raise DesktopStateError(
+            f"Desktop cleanup failed ({exc}); all changed Desktop files were "
+            "restored"
+        ) from exc
+
+    discard_error = _discard_backup(snapshot, backup_directory)
+    if discard_error is not None:
+        raise DesktopStateError(
+            "Desktop cleanup was verified, but its temporary rollback copy "
+            f"could not be removed ({discard_error}): {backup_directory}"
+        )
+
+    return DesktopCleanupResult(
+        codex_home=home,
+        thread_ids=targets,
+        deleted_catalog_rows=deleted_rows,
+        removed_global_state_references=removed_references,
+        backup_id=backup_id,
+        backup_directory=backup_directory,
+        temporary_backup_retained=False,
+    )
+
+
+def find_state_references(
+    value: Any,
+    targets: set[str],
+    path: str = "$",
+) -> list[str]:
+    """Find structured exact-ID references without matching prompt text."""
+
+    references: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if any(target in str(key) for target in targets):
+                references.append(f"key:{child_path}")
+                continue
+            if isinstance(child, str) and child in targets:
+                references.append(f"value:{child_path}")
+                continue
+            references.extend(find_state_references(child, targets, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            if isinstance(child, str) and child in targets:
+                references.append(f"value:{child_path}")
+                continue
+            references.extend(find_state_references(child, targets, child_path))
+    return references
+
+
+def strip_state_references(
+    value: Any,
+    targets: set[str],
+    path: str = "$",
+) -> tuple[Any, list[str]]:
+    """Remove only exact scalar/list references and ID-bearing object keys."""
+
+    removed: list[str] = []
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            if any(target in str(key) for target in targets):
+                removed.append(f"key:{child_path}")
+                continue
+            if isinstance(child, str) and child in targets:
+                removed.append(f"value:{child_path}")
+                continue
+            cleaned_child, child_removed = strip_state_references(
+                child, targets, child_path
+            )
+            cleaned[key] = cleaned_child
+            removed.extend(child_removed)
+        return cleaned, removed
+    if isinstance(value, list):
+        cleaned_list: list[Any] = []
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            if isinstance(child, str) and child in targets:
+                removed.append(f"value:{child_path}")
+                continue
+            cleaned_child, child_removed = strip_state_references(
+                child, targets, child_path
+            )
+            cleaned_list.append(cleaned_child)
+            removed.extend(child_removed)
+        return cleaned_list, removed
+    return value, removed
+
+
+def running_related_clients(
+    owner_process_root: Path | None = None,
+    *,
+    owner_client: str | None = None,
+) -> tuple[str, ...]:
+    if os.name != "nt":
+        return ()
+    records = _running_related_process_records()
+    if owner_process_root is None:
+        return tuple(
+            sorted({str(item["name"]) for item in records}, key=str.casefold)
+        )
+    return _relevant_client_names(
+        owner_process_root,
+        records,
+        owner_client=owner_client,
+    )
+
+
+def _running_related_process_records(
+    *,
+    timeout: float = PROCESS_INSPECTION_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], ...]:
+    try:
+        effective_timeout = float(timeout)
+    except (TypeError, ValueError) as exc:
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        ) from exc
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        )
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+    if powershell is None:
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        )
+    command = (
+        "$ErrorActionPreference='Stop'; "
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+        "$names=@('codex.exe','chatgpt.exe','cindy.exe'); "
+        "$items=@(Get-CimInstance Win32_Process | "
+        "Where-Object { $names -contains $_.Name.ToLowerInvariant() } | "
+        "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine); "
+        "$items | ConvertTo-Json -Compress -Depth 3"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                command,
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=effective_timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A timeout or launch failure is an inability to prove that clients
+        # are closed.  Keep the existing fail-closed blocker surface.
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed: "
+            "process inspection timed out"
+        ) from exc
+    except OSError as exc:
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        ) from exc
+    if completed.returncode != 0:
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        )
+    try:
+        payload = json.loads(completed.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        ) from exc
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
+        raise DesktopStateError(
+            "Could not verify whether Codex Desktop clients are closed"
+        )
+    records: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise DesktopStateError(
+                "Could not verify whether Codex Desktop clients are closed"
+            )
+        try:
+            process_id = int(item["ProcessId"])
+            parent_process_id = int(item["ParentProcessId"])
+            name = str(item["Name"]).strip()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DesktopStateError(
+                "Could not verify whether Codex Desktop clients are closed"
+            ) from exc
+        if name.casefold() not in {
+            "codex.exe",
+            "chatgpt.exe",
+            "cindy.exe",
+        }:
+            raise DesktopStateError(
+                "Could not verify whether Codex Desktop clients are closed"
+            )
+        executable_path = item.get("ExecutablePath")
+        command_line = item.get("CommandLine")
+        records.append(
+            {
+                "process_id": process_id,
+                "parent_process_id": parent_process_id,
+                "name": name,
+                "executable_path": (
+                    str(executable_path).strip() if executable_path else None
+                ),
+                "command_line": str(command_line) if command_line else None,
+            }
+        )
+    return tuple(records)
+
+
+def _relevant_client_names(owner_process_root: Path, records: Iterable[Mapping[str, Any]], *, owner_client: str | None = None) -> tuple[str, ...]:
+    items = tuple(records)
+    relevant = set(_relevant_process_ids(owner_process_root, items, owner_client=owner_client))
+    return tuple(sorted({str(item.get("name") or "unknown") for item in items
+        if _integer_or_minus_one(item.get("process_id")) in relevant}, key=str.casefold))
+
+
+def inspect_client_ownership(
+    owner_process_root: Path | str | None, *, owner_client: str | None = None,
+    records: Iterable[Mapping[str, Any]] | None = None,
+    engines: Iterable[str] = ("codex",), host: str = "local", path_namespace: str = "local",
+) -> dict[str, Any]:
+    """Observe supported Windows client processes without changing write guards.
+
+    Enumeration success is separate from owner/engine coverage. Empty output
+    cannot prove an unsupported owner, Pi/Claude runtime or non-Windows client
+    closed. This projection never exposes command lines or acts as an ack.
+    """
+    require_local_location(host, path_namespace)
+    raw_root = os.fspath(owner_process_root) if owner_process_root is not None else None
+    owner = str(owner_client or "").strip().casefold()
+    requested = tuple(dict.fromkeys(str(engine).strip().casefold() for engine in engines))
+    process_names = ("codex.exe", "chatgpt.exe", "cindy.exe")
+    owner_supported = owner in {"native", "codex", "chatgpt", "chatgpt-desktop", "cindy"}
+    errors: list[str] = []
+    root = None
+    if raw_root is None:
+        errors.append("owner_process_root_missing")
+    elif not is_local_absolute_locator(raw_root):
+        errors.append("opaque_owner_process_root")
+    else:
+        root = owner_process_root if isinstance(owner_process_root, Path) else Path(raw_root)
+        try:
+            value = root.lstat()
+            if (not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode)
+                    or getattr(value, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                raise ValueError("unproven_owner_directory")
+        except (OSError, ValueError) as exc:
+            errors.append(f"owner_root_probe_failed:{exc}")
+            root = None
+    probe_complete = False
+    items: tuple[Mapping[str, Any], ...] = ()
+    if root is not None:
+        try:
+            if records is not None:
+                items = tuple(records)
+                if any(not isinstance(item, Mapping) for item in items):
+                    items = ()
+                    raise ValueError("invalid_process_snapshot")
+                probe_complete = True
+            elif os.name == "nt":
+                items = _running_related_process_records()
+                probe_complete = True
+            else:
+                errors.append("process_probe_unsupported_platform")
+        except (DesktopStateError, OSError, ValueError, TypeError) as exc:
+            errors.append(f"process_probe_failed:{exc}")
+    relevant: set[int] = set()
+    if root is not None and probe_complete:
+        try:
+            relevant = set(_relevant_process_ids(root, items, owner_client=owner_client))
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as exc:
+            errors.append(f"process_attribution_failed:{exc}")
+            probe_complete = False
+    metadata_complete = all(
+        _integer_or_minus_one(item.get("process_id")) >= 0
+        and _integer_or_minus_one(item.get("parent_process_id")) >= 0
+        and item.get("executable_path") and item.get("command_line") for item in items)
+    coverage_complete = bool(
+        probe_complete and os.name == "nt" and owner_supported and requested
+        and all(engine == "codex" for engine in requested)
+        and metadata_complete
+        and all(str(item.get("name") or "").casefold() in process_names for item in items)
+    )
+    return {
+        "owner_client": owner_client,
+        "owner_process_root": raw_root,
+        "check_mode": "process_attribution" if os.name == "nt" else "explicit_acknowledgement_required",
+        "probe_source": ("supplied_process_snapshot" if records is not None else
+                         "windows_named_processes" if os.name == "nt" else "unsupported_platform"),
+        "probe_complete": probe_complete,
+        "coverage_complete": coverage_complete,
+        "coverage": {"owner_supported": owner_supported, "engines": list(requested),
+                     "process_metadata_complete": metadata_complete,
+                     "process_names": list(process_names), "scope": "named_windows_client_processes",
+                     "other_runtime_writers": "not_proven"},
+        "clients_closed": (not relevant if coverage_complete else
+                           False if relevant and owner_supported and os.name == "nt" and probe_complete else None),
+        "errors": errors,
+        "processes": [{"process_id": item.get("process_id"), "parent_process_id": item.get("parent_process_id"),
+            "name": item.get("name"), "executable_path": item.get("executable_path"),
+            "relation": "target_or_unproven" if _integer_or_minus_one(item.get("process_id")) in relevant else "separate_store"}
+            for item in items],
+    }
+
+
+def _relevant_process_ids(
+    owner_process_root: Path,
+    records: Iterable[Mapping[str, Any]],
+    *,
+    owner_client: str | None = None,
+) -> tuple[int, ...]:
+    """Return process names relevant to one explicit owner identity.
+
+    Cindy ownership is proven from the process family's executable identity
+    and its literal ``--user-data-dir`` value. The caller supplies that exact
+    data root and the stable owner client; this function never appends a
+    profile directory name or inspects a sibling bundle to guess ownership.
+    """
+
+    home = owner_process_root.expanduser()
+    owner_is_cindy = str(owner_client or "").strip().casefold() == "cindy"
+    items = tuple(records)
+    by_pid: dict[int, Mapping[str, Any]] = {}
+    invalid_process_metadata = False
+    for item in items:
+        try:
+            by_pid[int(item["process_id"])] = item
+        except (KeyError, TypeError, ValueError):
+            invalid_process_metadata = True
+    if invalid_process_metadata and not owner_is_cindy:
+        # The generic guard has no owning-client identity and therefore keeps
+        # its conservative fail-closed behavior for incomplete snapshots.
+        return tuple(
+            sorted({_integer_or_minus_one(item.get("process_id")) for item in items})
+        )
+
+    cindy_root_by_pid: dict[int, int] = {}
+    for item in items:
+        if str(item.get("name") or "").casefold() != "cindy.exe":
+            continue
+        try:
+            process_id = int(item["process_id"])
+            parent_id = int(item["parent_process_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        root_id = process_id
+        seen = {process_id}
+        while parent_id in by_pid:
+            parent = by_pid[parent_id]
+            if str(parent.get("name") or "").casefold() != "cindy.exe":
+                break
+            if parent_id in seen:
+                root_id = -1
+                break
+            seen.add(parent_id)
+            root_id = parent_id
+            try:
+                parent_id = int(parent["parent_process_id"])
+            except (KeyError, TypeError, ValueError):
+                root_id = -1
+                break
+        cindy_root_by_pid[process_id] = root_id
+
+    valid_cindy_families: dict[int, Path] = {}
+    for root_id in sorted(set(cindy_root_by_pid.values())):
+        if root_id < 0:
+            continue
+        family = tuple(
+            item
+            for item in items
+            if cindy_root_by_pid.get(_integer_or_minus_one(item.get("process_id")))
+            == root_id
+        )
+        executable_paths = [
+            Path(str(item["executable_path"]))
+            for item in family
+            if item.get("executable_path")
+        ]
+        if len(executable_paths) != len(family) or not executable_paths:
+            continue
+        if any(not path.is_absolute() for path in executable_paths):
+            continue
+        if any(
+            _same_existing_path(executable_paths[0], candidate) is not True
+            for candidate in executable_paths[1:]
+        ):
+            continue
+        try:
+            executable = executable_paths[0].resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not str(executable).casefold().endswith((
+            "\\programs\\cindy\\cindy.exe",
+            "\\program files\\cindy\\cindy.exe",
+            "\\program files (x86)\\cindy\\cindy.exe",
+        )):
+            continue
+
+        user_data_dirs: list[Path] = []
+        for item in family:
+            command_line = str(item.get("command_line") or "")
+            match = re.search(
+                r'--user-data-dir=(?:"([^"]+)"|(\S+))',
+                command_line,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                user_data_dir = Path(match.group(1) or match.group(2))
+                if not user_data_dir.is_absolute():
+                    user_data_dirs = []
+                    break
+                user_data_dirs.append(user_data_dir)
+        if not user_data_dirs:
+            continue
+        if any(
+            _same_existing_path(user_data_dirs[0], candidate) is not True
+            for candidate in user_data_dirs[1:]
+        ):
+            continue
+        valid_cindy_families[root_id] = user_data_dirs[0]
+
+    relevant: set[int] = set()
+    for item in items:
+        name = str(item.get("name") or "unknown")
+        name_key = name.casefold()
+        if owner_is_cindy and name_key not in {"cindy.exe", "codex.exe"}:
+            # Cindy owns this frontend store. Other client families are not
+            # candidates for its write guard, even when their installation
+            # metadata is unavailable.
+            continue
+        separate_cindy_process = False
+        process_id = _integer_or_minus_one(item.get("process_id"))
+        parent_id = _integer_or_minus_one(item.get("parent_process_id"))
+        if name_key == "cindy.exe":
+            root_id = cindy_root_by_pid.get(process_id, -1)
+            user_data_dir = valid_cindy_families.get(root_id)
+            if user_data_dir is not None:
+                relation = _same_existing_path(user_data_dir, home)
+                separate_cindy_process = relation is False
+            elif owner_is_cindy:
+                # A Cindy process whose executable/command-line evidence is
+                # incomplete cannot be proven to belong to another profile.
+                # Keep it blocking (fail closed).
+                separate_cindy_process = False
+        elif name_key == "codex.exe":
+            root_id = cindy_root_by_pid.get(parent_id, -1)
+            user_data_dir = valid_cindy_families.get(root_id)
+            if user_data_dir is not None:
+                separate_cindy_process = _same_existing_path(user_data_dir, home) is False
+            elif owner_is_cindy and root_id in cindy_root_by_pid.values():
+                # The child is attached to Cindy, but its family did not
+                # yield a trustworthy user-data root. Keep it blocking.
+                separate_cindy_process = False
+            elif owner_is_cindy:
+                # A standalone codex.exe is not Cindy's owner process.
+                continue
+        if not separate_cindy_process:
+            relevant.add(process_id)
+    return tuple(sorted(relevant))
+
+
+def _same_existing_path(first: Path, second: Path) -> bool | None:
+    try:
+        if not first.exists() or not second.exists():
+            return None
+        return os.path.samefile(first, second)
+    except OSError:
+        return None
+
+
+def _integer_or_minus_one(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _discover_catalog_databases(codex_home: Path) -> tuple[Path, ...]:
+    sqlite_root = codex_home / "sqlite"
+    try:
+        directory_state = sqlite_root.stat()
+        if not stat.S_ISDIR(directory_state.st_mode):
+            raise DesktopStateError(
+                f"Codex Desktop sqlite path is not a directory: {sqlite_root}"
+            )
+        candidates = sorted((path for path in sqlite_root.iterdir() if path.suffix == ".db"), key=lambda path: path.name)
+    except FileNotFoundError:
+        return ()
+    except OSError as exc:
+        raise DesktopStateError(
+            f"Could not inspect Codex Desktop sqlite directory {sqlite_root}: {exc}"
+        ) from exc
+
+    matches: list[Path] = []
+    failures: list[tuple[Path, str]] = []
+    known_without_catalog: list[Path] = []
+    known_names = {"codex-dev.db", "codex.db"}
+    for path in candidates:
+        try:
+            with closing(connect_readonly(path)) as connection:
+                if table_exists(connection, "local_thread_catalog"):
+                    matches.append(path.resolve())
+                elif path.name.casefold() in known_names:
+                    known_without_catalog.append(path)
+        except (OSError, sqlite3.Error) as exc:
+            failures.append((path, str(exc)))
+    known_failures = [
+        (path, message)
+        for path, message in failures
+        if path.name.casefold() in known_names
+    ]
+    if known_failures:
+        raise DesktopStateError(
+            "Could not inspect the Codex Desktop catalog candidate: "
+            + "; ".join(
+                f"{path}: {message}" for path, message in known_failures
+            )
+        )
+    if known_without_catalog:
+        raise DesktopStateError(
+            "Codex Desktop catalog candidate is present but the required "
+            "local_thread_catalog table is missing: "
+            + ", ".join(str(path) for path in known_without_catalog)
+        )
+    if len(matches) > 1:
+        # Only the known production/legacy pair has a shared local-home
+        # ownership contract. Unknown catalog databases must not become writes.
+        if ({path.name.casefold() for path in matches} != known_names
+                or len(matches) != 2):
+            raise DesktopStateError(
+                "Multiple Codex Desktop catalogs have unproven storage identity: "
+                + ", ".join(str(path) for path in matches)
+            )
+        for path in matches:
+            try:
+                info = path.stat()
+                independent = (path.parent == sqlite_root.resolve()
+                               and stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+            except OSError as exc:
+                raise DesktopStateError(f"Could not inspect Codex Desktop catalog {path}: {exc}") from exc
+            if not independent:
+                raise DesktopStateError(
+                    f"Codex Desktop catalog is not an independent file in its sqlite directory: {path}"
+                )
+    return tuple(matches)
+
+
+def _read_catalog_records(
+    database: Path,
+    thread_ids: set[str] | None,
+) -> tuple[list[DesktopCatalogRecord], int | None]:
+    try:
+        with closing(connect_readonly(database)) as connection:
+            columns = _table_columns(connection, "local_thread_catalog")
+            missing = {"host_id", "thread_id"} - columns
+            if missing:
+                raise DesktopStateError(
+                    f"{database} local_thread_catalog is missing column(s): "
+                    + ", ".join(sorted(missing))
+                )
+            title_column = next(
+                (
+                    name
+                    for name in ("display_title", "title", "name")
+                    if name in columns
+                ),
+                None,
+            )
+            query = "SELECT * FROM local_thread_catalog WHERE host_id = 'local'"
+            parameters: tuple[str, ...] = ()
+            if thread_ids:
+                placeholders = ",".join("?" for _ in thread_ids)
+                query += f" AND thread_id IN ({placeholders})"
+                parameters = tuple(sorted(thread_ids))
+            query += " ORDER BY thread_id"
+            rows = connection.execute(query, parameters).fetchall()
+            records = [
+                DesktopCatalogRecord(
+                    host_id=str(row["host_id"]),
+                    thread_id=str(row["thread_id"]),
+                    title=(
+                        str(row[title_column])
+                        if title_column is not None
+                        and row[title_column] is not None
+                        else None
+                    ),
+                    database=database,
+                    row=dict(row),
+                )
+                for row in rows
+                if isinstance(row["thread_id"], str) and row["thread_id"]
+            ]
+            if len({record.thread_id for record in records}) != len(records):
+                raise DesktopStateError(
+                    f"Duplicate local Codex Desktop catalog rows in {database}"
+                )
+            revision = _read_catalog_revision(connection)
+    except DesktopStateError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise DesktopStateError(
+            f"Could not read Codex Desktop catalog {database}: {exc}"
+        ) from exc
+    return records, revision
+
+
+def _read_catalog_revision(connection: sqlite3.Connection) -> int | None:
+    if not table_exists(connection, "local_thread_catalog_metadata"):
+        return None
+    columns = _table_columns(connection, "local_thread_catalog_metadata")
+    if "catalog_revision" not in columns:
+        return None
+    row = connection.execute(
+        "SELECT MAX(catalog_revision) AS revision "
+        "FROM local_thread_catalog_metadata"
+    ).fetchone()
+    if row is None or not isinstance(row["revision"], int):
+        return None
+    return int(row["revision"])
+
+
+def _delete_catalog_rows(
+    database: Path,
+    expected_records: tuple[DesktopCatalogRecord, ...],
+    expected_revision: int | None,
+    before_write: Callable[[], None],
+) -> int:
+    thread_ids = tuple(record.thread_id for record in expected_records)
+    placeholders = ",".join("?" for _ in thread_ids)
+    try:
+        with closing(sqlite3.connect(database)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("BEGIN IMMEDIATE")
+            columns = _table_columns(connection, "local_thread_catalog")
+            if not {"host_id", "thread_id"}.issubset(columns):
+                raise DesktopStateError(
+                    "Codex Desktop catalog schema changed before mutation"
+                )
+            current_rows = connection.execute(
+                "SELECT * FROM local_thread_catalog "
+                f"WHERE host_id = 'local' AND thread_id IN ({placeholders}) "
+                "ORDER BY thread_id", thread_ids,
+            ).fetchall()
+            expected_rows = [dict(record.row) for record in sorted(
+                expected_records, key=lambda record: record.thread_id
+            )]
+            if ([dict(row) for row in current_rows] != expected_rows
+                    or _read_catalog_revision(connection) != expected_revision):
+                raise DesktopStateError(
+                    f"Codex Desktop catalog changed before mutation: {database}"
+                )
+            before_write()
+            cursor = connection.execute(
+                "DELETE FROM local_thread_catalog "
+                f"WHERE host_id = 'local' AND thread_id IN ({placeholders})",
+                thread_ids,
+            )
+            deleted = int(cursor.rowcount)
+            if deleted != len(thread_ids):
+                raise DesktopStateError(
+                    f"Expected {len(thread_ids)} exact local catalog row(s), "
+                    f"deleted {deleted}"
+                )
+            if table_exists(connection, "local_thread_catalog_metadata"):
+                metadata_columns = _table_columns(
+                    connection, "local_thread_catalog_metadata"
+                )
+                if "catalog_revision" in metadata_columns:
+                    connection.execute(
+                        "UPDATE local_thread_catalog_metadata SET "
+                        "catalog_revision = catalog_revision + 1"
+                    )
+            connection.commit()
+            return deleted
+    except DesktopStateError:
+        raise
+    except sqlite3.Error as exc:
+        raise DesktopStateError(
+            f"Could not update Codex Desktop catalog {database}: {exc}"
+        ) from exc
+
+
+def _create_backup(
+    snapshot: DesktopStateSnapshot,
+    manifest: dict[str, Any],
+) -> tuple[str, Path]:
+    assert snapshot.databases
+    backup_id = (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + "-"
+        + uuid.uuid4().hex[:12]
+    )
+    directory = (
+        snapshot.codex_home
+        / ".local-agent-record-janitor"
+        / "desktop-state-backups"
+        / backup_id
+    )
+    try:
+        directory.mkdir(parents=True, exist_ok=False)
+        for state_path in snapshot.state_paths:
+            shutil.copy2(state_path, directory / state_path.name)
+        for database in snapshot.databases:
+            with closing(connect_readonly(database)) as source:
+                with closing(sqlite3.connect(directory / database.name)) as target:
+                    source.backup(target)
+        manifest["backup_id"] = backup_id
+        manifest["backup_directory"] = str(directory)
+        manifest_path = directory / "manifest.json"
+        with manifest_path.open("w", encoding="utf-8", newline="") as handle:
+            json.dump(manifest, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception as exc:
+        raise DesktopStateError(
+            f"Could not create verified Codex Desktop backup: {exc}"
+        ) from exc
+    return backup_id, directory
+
+
+def _restore_backup(
+    snapshot: DesktopStateSnapshot,
+    backup_directory: Path,
+    modified_databases: set[Path],
+    modified_state_paths: set[Path],
+) -> str | None:
+    assert snapshot.databases
+    errors: list[str] = []
+    for database in snapshot.databases:
+        if database not in modified_databases:
+            continue
+        try:
+            backup_database = backup_directory / database.name
+            with closing(connect_readonly(backup_database)) as source:
+                with closing(sqlite3.connect(database)) as destination:
+                    source.backup(destination)
+        except Exception as exc:
+            errors.append(f"{database}: {exc}")
+    for state_path in snapshot.state_paths:
+        if state_path not in modified_state_paths:
+            continue
+        try:
+            shutil.copy2(backup_directory / state_path.name, state_path)
+        except Exception as exc:
+            errors.append(f"{state_path}: {exc}")
+    if not errors:
+        try:
+            restored = read_desktop_state(snapshot.codex_home, snapshot.threads)
+            if any(restored.threads[thread_id].snapshot_fingerprint != state.snapshot_fingerprint
+                   for thread_id, state in snapshot.threads.items()):
+                errors.append("restored Desktop snapshot differs from approved state")
+        except Exception as exc:
+            errors.append(f"restore verification: {exc}")
+    return "; ".join(errors) if errors else None
+
+
+def _discard_backup(
+    snapshot: DesktopStateSnapshot,
+    backup_directory: Path,
+) -> str | None:
+    expected_root = (
+        snapshot.codex_home
+        / ".local-agent-record-janitor"
+        / "desktop-state-backups"
+    )
+    try:
+        if backup_directory.parent.resolve(strict=True) != expected_root.resolve(
+            strict=True
+        ):
+            return "temporary backup escaped its expected directory"
+        shutil.rmtree(backup_directory)
+        try:
+            expected_root.rmdir()
+        except OSError:
+            pass
+    except Exception as exc:
+        return str(exc) or repr(exc)
+    return None
+
+
+def _global_state_paths(codex_home: Path) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for path in (
+        codex_home / ".codex-global-state.json",
+        codex_home / ".codex-global-state.json.bak",
+    ):
+        try:
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                raise DesktopStateError(
+                    f"Codex Desktop state path is not a regular file: {path}"
+                )
+            paths.append(path.resolve())
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise DesktopStateError(
+                f"Could not inspect Codex Desktop state path {path}: {exc}"
+            ) from exc
+    return tuple(paths)
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DesktopStateError(
+            f"Could not read Codex Desktop JSON state {path}: {exc}"
+        ) from exc
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    original_mode = path.stat().st_mode
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix=f".{path.name}.janitor-",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, original_mode)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _table_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> set[str]:
+    return {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+        if isinstance(row["name"], str)
+    }
+
+
+def _normalized_path(path: Path) -> str:
+    return canonical_existing_path_key(path)
+
+
+def _sha256_json(value: Any) -> str:
+    payload = json.dumps(
+        _json_value(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_value(child) for child in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+__all__ = [
+    "DesktopCatalogRecord",
+    "DesktopCleanupResult",
+    "DesktopStateError",
+    "DesktopStateSnapshot",
+    "DesktopThreadState",
+    "execute_desktop_state_cleanup",
+    "find_state_references",
+    "native_evidence_for_threads",
+    "read_desktop_state",
+    "remaining_desktop_state_markers",
+    "running_related_clients",
+    "sha256_file",
+    "strip_state_references",
+]

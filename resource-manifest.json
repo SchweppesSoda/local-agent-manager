@@ -1,0 +1,13 @@
+{
+  "directories": [
+    "skills/agent-management",
+    "skills/skill-management",
+    "docs"
+  ],
+  "files": [
+    "README.md",
+    "AGENTS.md",
+    "SECURITY.md",
+    "LICENSE"
+  ]
+}

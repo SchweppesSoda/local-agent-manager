@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://work-skills.local/schema/client-model-v3.json",
+  "title": "work-skills v3 client model",
+  "type": "object",
+  "required": ["version", "mountPoints", "consumers", "adapters"],
+  "properties": {
+    "version": {"const": 3},
+    "mountPoints": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/mountPoint"}
+    },
+    "consumers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/consumer"}
+    },
+    "adapters": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/adapter"}
+    }
+  },
+  "$defs": {
+    "stableId": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "mountPoint": {
+      "type": "object",
+      "required": ["label", "root", "delivery", "priority", "linkPolicy"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "root": {"type": "string", "minLength": 1},
+        "delivery": {"enum": ["shared", "dedicated", "compatibility", "private-only", "candidate"]},
+        "priority": {"type": "integer"},
+        "sourceSelection": {"enum": ["all", "none"]},
+        "discoveryManifest": {"type": "string", "minLength": 1},
+        "linkPolicy": {
+          "type": "object",
+          "required": ["windows", "posix", "unmanagedLinks"],
+          "properties": {
+            "windows": {"type": "string", "minLength": 1},
+            "posix": {"type": "string", "minLength": 1},
+            "unmanagedLinks": {"const": "preserve"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "consumer": {
+      "type": "object",
+      "required": ["label", "status", "detector", "verification"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "status": {"enum": ["confirmed", "report-only", "ambiguous"]},
+        "detector": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {
+            "mode": {"enum": ["any", "all"]},
+            "commands": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+            "paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+          },
+          "anyOf": [{"required": ["commands"]}, {"required": ["paths"]}],
+          "additionalProperties": false
+        },
+        "verification": {
+          "type": "object",
+          "required": ["status", "instructions"],
+          "properties": {
+            "status": {"type": "string", "minLength": 1},
+            "command": {"type": "string", "minLength": 1},
+            "instructions": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["sourceUrl", "sourceLevel", "verifiedVersion", "verifiedOn"],
+      "properties": {
+        "sourceUrl": {"type": ["string", "null"], "format": "uri"},
+        "sourceLevel": {"type": "string", "minLength": 1},
+        "verifiedVersion": {"type": "string", "minLength": 1},
+        "verifiedOn": {"type": "string", "format": "date"}
+      },
+      "additionalProperties": false
+    },
+    "adapter": {
+      "type": "object",
+      "required": ["label", "consumerIds", "mountPointIds", "priority", "discoveryRoots", "linkSupport", "consumerDetection", "nativeVerification", "management"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "consumerIds": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stableId"}, "uniqueItems": true},
+        "mountPointIds": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stableId"}, "uniqueItems": true},
+        "priority": {"type": "integer"},
+        "discoveryRoots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["mountPointId", "priority", "role"],
+            "properties": {
+              "mountPointId": {"$ref": "#/$defs/stableId"},
+              "priority": {"type": "integer"},
+              "role": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "linkSupport": {
+          "type": "object",
+          "required": ["status", "evidence"],
+          "properties": {
+            "status": {"type": "string", "minLength": 1},
+            "evidence": {"$ref": "#/$defs/evidence"}
+          },
+          "additionalProperties": false
+        },
+        "consumerDetection": {"$ref": "#/$defs/stableId"},
+        "nativeVerification": {"type": "string", "minLength": 1},
+        "pythonRuntimeVerification": {"$ref": "#/$defs/pythonRuntimeVerification"},
+        "runtimeBinding": {"$ref": "#/$defs/runtimeBinding"},
+        "management": {
+          "type": "object",
+          "required": ["status", "manageByDefault", "createWhenAbsent"],
+          "properties": {
+            "status": {"enum": ["confirmed", "report-only", "ambiguous"]},
+            "manageByDefault": {"type": "boolean"},
+            "createWhenAbsent": {"const": false}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimeBinding": {
+      "type": "object",
+      "required": ["resolver", "skillsSubdir"],
+      "properties": {
+        "resolver": {"enum": ["explicit", "t3-provider"]},
+        "skillsSubdir": {"type": "string", "minLength": 1},
+        "binaryPath": {"type": "string", "minLength": 1},
+        "homePath": {"type": "string", "minLength": 1},
+        "settingsPath": {"type": "string", "minLength": 1},
+        "instanceId": {"type": "string", "minLength": 1},
+        "driver": {"enum": ["claudeAgent", "antigravity"]},
+        "frontendPath": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"resolver": {"const": "explicit"}}}, "then": {"required": ["binaryPath", "homePath"]}},
+        {"if": {"properties": {"resolver": {"const": "t3-provider"}}}, "then": {"required": ["settingsPath", "instanceId", "driver", "frontendPath"]}}
+      ],
+      "additionalProperties": false
+    },
+    "pythonRuntimeVerification": {
+      "type": "object",
+      "required": ["status", "contextId", "captureCommand", "pythonCommand", "requiredVersion", "contextEnvironment"],
+      "properties": {
+        "status": {"const": "required"},
+        "contextId": {"$ref": "#/$defs/stableId"},
+        "captureCommand": {"type": "string", "minLength": 1},
+        "pythonCommand": {"type": "string", "minLength": 1},
+        "requiredVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "contextEnvironment": {
+          "type": "object",
+          "required": ["name", "expected", "allowUnset"],
+          "properties": {
+            "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+            "expected": {"type": "string", "minLength": 1},
+            "allowUnset": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

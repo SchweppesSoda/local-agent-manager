@@ -1,0 +1,30 @@
+version: 3
+repo:
+  root: "${CONFIG_DIR}/.."
+  skillsRoot: skills
+mountPoints:
+  agents-shared:
+    label: Shared Agent Skills
+    root: "${HOME}/.agents/skills"
+    delivery: shared
+    priority: 100
+    linkPolicy: {windows: junction, posix: symlink, unmanagedLinks: preserve}
+consumers:
+  codex:
+    label: Codex
+    status: confirmed
+    detector: {mode: any, commands: [codex]}
+    verification: {status: required, instructions: "Verify discovery and body loading in the actual client."}
+adapters:
+  codex:
+    label: Codex
+    consumerIds: [codex]
+    mountPointIds: [agents-shared]
+    priority: 100
+    discoveryRoots: [{mountPointId: agents-shared, priority: 100, role: primary}]
+    linkSupport:
+      status: unknown
+      evidence: {sourceUrl: null, sourceLevel: local-observation, verifiedVersion: unknown, verifiedOn: "2026-11-09"}
+    consumerDetection: codex
+    nativeVerification: required
+    management: {status: report-only, manageByDefault: false, createWhenAbsent: false}

@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "local-agent-record-janitor"
-version = "0.2.0"
-description = "Inventory and diagnose local Agent environments; audit and safely clean explicitly approved storage-qualified records and frontend references."
+name = "local-agent-manager"
+version = "0.3.0"
+description = "Manage local Agent environments, skill sources and deployments, and explicitly approved storage-qualified records."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -25,17 +25,20 @@ classifiers = [
   "Topic :: System :: Systems Administration",
   "Topic :: Utilities",
 ]
-dependencies = ["tomli>=2.0.1,<2.4; python_version < '3.11'"]
+dependencies = ["PyYAML>=6.0.3,<7", "jsonschema>=4.26,<5", "tomli>=2.0.1,<2.4; python_version < '3.11'"]
 
 [project.scripts]
-local-agent-record-janitor = "local_agent_record_janitor.cli:main"
+local-agent-manager = "local_agent_manager.entrypoint:main"
+local-agent-record-janitor = "local_agent_manager.entrypoint:main"
 
 [project.urls]
-Homepage = "https://github.com/SchweppesSoda/local-agent-record-janitor"
-Issues = "https://github.com/SchweppesSoda/local-agent-record-janitor/issues"
+Homepage = "https://github.com/SchweppesSoda/local-agent-manager"
+Issues = "https://github.com/SchweppesSoda/local-agent-manager/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_agent_record_janitor = ["workbuddy_schema_562.json", "orca_startup_0160.json", "office_schemas.json", "t3code_schema.json", "antigravity_acp_schema.json", "paseo_daemon_rpc.cjs", "t3code_server_rpc.cjs", "t3code_session_import_rpc.cjs", "leveldb_runtime/*.cjs", "leveldb_runtime/*.json"]
+local_agent_manager = ["workbuddy_schema_562.json", "orca_startup_0160.json", "office_schemas.json", "t3code_schema.json", "antigravity_acp_schema.json", "paseo_daemon_rpc.cjs", "t3code_server_rpc.cjs", "t3code_session_import_rpc.cjs", "leveldb_runtime/*.cjs", "leveldb_runtime/*.json"]
+
+"local_agent_manager.skills" = ["schemas/*.json"]

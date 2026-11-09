@@ -8,7 +8,7 @@ from pathlib import Path
 PACKAGE = (
     Path(__file__).resolve().parents[1]
     / "src"
-    / "local_agent_record_janitor"
+    / "local_agent_manager"
 )
 
 

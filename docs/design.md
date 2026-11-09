@@ -1,6 +1,6 @@
 # 本地 Agent 管理模型与安全边界
 
-项目在同一入口下管理本地 Agent 的环境证据与记录：环境盘点说明程序、客户端和存储
+项目在同一入口下管理本地 Agent 的环境证据、Skill 源与部署，以及记录：环境盘点说明程序、客户端和存储
 之间的已知关系；记录清理在已支持的适配器范围内找出失效或用户明确选择的记录，展示
 精确影响，永久删除，再确认目标已消失。通用 Windows 磁盘和非 Agent 软件维护独立于
 本项目。项目不是长期备份库、rollout 隔离区或自动数据修复器；分类词汇不代表每个
@@ -8,12 +8,13 @@
 
 ## Agent 环境与记录的分工
 
-统一管理不等于共用修改授权。实现分为三个部分：
+统一管理不等于共用修改授权。实现按下列领域分工：
 
 | 部分 | 入口与职责 | 执行边界 |
 |---|---|---|
 | 环境盘点和诊断 | `environment inventory/doctor`；发现运行程序、版本线索、客户端及存储位置 | 有界、只读的元数据探测，不运行发现的程序、不读取登录凭据或聊天正文 |
 | 环境维护与接入 | `agent-management` skill；专用 `environment claude-connect/claude-import/cindy-memory`，以及安装升级、调用路径修复和旧运行时处理 | 连接配置、历史导入、记忆读取分别限定范围；按实际安装渠道及客户端接口执行并验证 |
+| Skill 源与部署 | `skills plan/apply/audit/doctor/clients` 与 `skill-management` | 独立 source、静态策略、原样计划、跨源锁和原生证据；业务运行时审核由可信源入口组合 |
 | 记录清理 | `records`、`delete`、`operation` 与现有 `CleanupService` | 沿用每种存储、记录和 mutation family 的精确协议 |
 
 `environment doctor` 检查环境事实及证据缺口；既有 `agent doctor` 检查记录操作的目标

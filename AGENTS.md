@@ -1,7 +1,7 @@
-# local-agent-record-janitor maintenance
+# local-agent-manager maintenance
 
 This repository implements local Agent environment inventory, diagnostics,
-management workflows, and record cleanup. Generic Windows disk/software
+Skill source/deployment management, management workflows, and record cleanup. Generic Windows disk/software
 maintenance is maintained separately. Editing code/documentation is distinct
 from changing live software/configuration or deleting a user's live stores.
 
