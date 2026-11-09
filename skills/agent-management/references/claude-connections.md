@@ -90,7 +90,8 @@ original working directory first. A session currently being continued by
 another frontend should not be resumed concurrently.
 
 The `environment claude-import` writer currently qualifies Paseo 0.15.3 and
-T3 Code Windows Nightly `0.1.8-nightly.20261108.4353`. Pass the exact installed
+T3 Code Windows Nightly `0.1.8-nightly.20261108.4353` and
+`0.1.8-nightly.20261109.4399`. Pass the exact installed
 desktop executable (`Paseo.exe` or `T3 Code (Nightly).exe`), profile and project;
 Paseo also accepts a direct native CLI executable, not a shell shim. The target
 local server must already be running, and its Claude provider must have an
@@ -98,9 +99,10 @@ explicit binary/home binding. Paseo import requires an executable-only command
 without extra launcher flags. Unknown versions, profiles and schemas need
 qualification before this writer can use them.
 
-The T3 built-in deletion versions are qualified separately. A newer version
-accepted for deletion does not extend this import writer's 4353 qualification.
-For another version, qualify its import interface with synthetic history first.
+Import and built-in deletion maintain separate version qualifications. An import
+plan freezes the observed server version and runtime files. After an upgrade,
+prepare a fresh plan for the current server. For another version, qualify its
+import interface with synthetic history first.
 
 ```powershell
 local-agent-record-janitor environment claude-import prepare `
@@ -142,7 +144,12 @@ An exact-session request cannot authorize this broader import. Use the
 whole-project path only when that scope is requested. Select an existing
 verified project or create one through the product's supported UI/API, never
 by inserting a projection row into SQLite.
-[T3 import contract](https://github.com/pingdotgg/t3code/blob/v0.1.8-nightly.20261108.4353/packages/contracts/src/agentSessions.ts)
+[T3 import contract](https://github.com/pingdotgg/t3code/blob/v0.1.8-nightly.20261109.4399/packages/contracts/src/agentSessions.ts)
+
+T3 filters its own profile tree and managed worktrees during discovery. If a
+project candidate is absent, check the original workspace's eligibility along
+with the native home. Synthetic import workspaces should also be outside the
+temporary T3 profile. [T3 scanner](https://github.com/pingdotgg/t3code/blob/v0.1.8-nightly.20261109.4399/apps/server/src/project/AgentSessionScanner.ts)
 
 After an import or timeout, verify actual native references in the target
 profile. T3 can count an already imported session as imported again, so a

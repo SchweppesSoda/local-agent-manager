@@ -1,5 +1,6 @@
 """Opt-in installed-runtime tests. All stores, credentials and worktrees are fixtures."""
 from contextlib import closing, contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -16,9 +17,11 @@ import unittest
 from unittest.mock import patch
 
 from local_agent_record_janitor import t3code_server_delete as t3, antigravity_acp_cleanup as acp
+from local_agent_record_janitor import claude_session_import
 from local_agent_record_janitor.cleanup_service import CleanupService
 from local_agent_record_janitor.operation_coordinator import OperationCoordinator
 from local_agent_record_janitor.t3code_bound_adapter import T3CodeBoundAdapter, SCHEMA
+from local_agent_record_janitor.t3code_store import V2
 from tests.t3code_support import create_store, add_thread
 
 TARGET='11111111-1111-4111-8111-111111111111'
@@ -72,6 +75,120 @@ class AcpClient:
 @unittest.skipUnless(os.name=='nt' and os.environ.get('LARJ_T3_BUNDLE_ACCEPTANCE')=='1',
                      'Opt in with installed qualified T3 and managed ACP; temporary profiles only')
 class T3RuntimeAcceptanceTests(unittest.TestCase):
+    def test_project_history_import_and_reimport_preserve_sources(self):
+        install = t3._bundled_install()
+        with tempfile.TemporaryDirectory(prefix='i-') as directory:
+            root = Path(directory).resolve()
+            profile = root / 't3'
+            (profile / 'userdata').mkdir(parents=True)
+            workspace = root / 'p q'
+            other_workspace = root / 'other'
+            workspace.mkdir()
+            other_workspace.mkdir()
+            claude_home = root / 'claude'
+            codex_home = root / 'codex'
+            fixture_binary = root / 'fixture-provider.exe'
+            fixture_binary.write_bytes(b'synthetic provider, never used for generation')
+            timestamp = datetime.now(timezone.utc).isoformat()
+            sentinel = 'PRIVATE_SYNTHETIC_IMPORT_BODY'
+            sources = {}
+            for native_id, cwd in ((NATIVE, workspace), (KEEP, other_workspace)):
+                transcript = claude_home / 'projects' / 'fixture' / (native_id + '.jsonl')
+                transcript.parent.mkdir(parents=True, exist_ok=True)
+                records = [
+                    {'type': 'user', 'sessionId': native_id, 'cwd': str(cwd), 'timestamp': timestamp,
+                     'message': {'role': 'user', 'content': sentinel}},
+                    {'type': 'assistant', 'sessionId': native_id, 'cwd': str(cwd), 'timestamp': timestamp,
+                     'message': {'role': 'assistant', 'content': 'synthetic response'}},
+                ]
+                transcript.write_text(''.join(json.dumps(row) + '\n' for row in records), encoding='utf-8')
+                sources[transcript] = transcript.read_bytes()
+            session_date = datetime.now(timezone.utc).strftime('%Y/%m/%d')
+            transcript = codex_home / 'sessions' / session_date / ('rollout-' + TARGET + '.jsonl')
+            transcript.parent.mkdir(parents=True)
+            records = [
+                {'type': 'session_meta', 'timestamp': timestamp,
+                 'payload': {'id': TARGET, 'cwd': str(workspace)}},
+                {'type': 'event_msg', 'timestamp': timestamp,
+                 'payload': {'type': 'user_message', 'message': sentinel}},
+                {'type': 'response_item', 'timestamp': timestamp,
+                 'payload': {'type': 'message', 'role': 'assistant',
+                             'content': [{'type': 'output_text', 'text': 'synthetic response'}]}},
+            ]
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records), encoding='utf-8')
+            sources[transcript] = transcript.read_bytes()
+            pi_sessions = root / 'pi' / 'sessions'
+            pi_sessions.mkdir(parents=True)
+            pi_transcript = pi_sessions / 'fixture.jsonl'
+            records = [
+                {'type': 'session', 'version': 3, 'id': '44444444-4444-4444-8444-444444444444',
+                 'cwd': str(workspace), 'timestamp': timestamp},
+                {'type': 'message', 'id': 'user', 'parentId': None, 'timestamp': timestamp,
+                 'message': {'role': 'user', 'content': [{'type': 'text', 'text': sentinel}]}},
+                {'type': 'message', 'id': 'assistant', 'parentId': 'user', 'timestamp': timestamp,
+                 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'synthetic response'}]}},
+            ]
+            pi_transcript.write_text(''.join(json.dumps(row) + '\n' for row in records), encoding='utf-8')
+            sources[pi_transcript] = pi_transcript.read_bytes()
+            settings = {'enableProviderUpdateChecks': False, 'providerInstances': {
+                'claudeAgent': {'driver': 'claudeAgent', 'enabled': True, 'config': {
+                    'binaryPath': str(fixture_binary), 'homePath': str(claude_home)}},
+                'codex': {'driver': 'codex', 'enabled': True, 'config': {
+                    'binaryPath': str(fixture_binary), 'homePath': str(codex_home)}},
+                'pi': {'driver': 'pi', 'enabled': True, 'config': {}, 'environment': [
+                    {'name': 'PI_CODING_AGENT_SESSION_DIR', 'value': str(pi_sessions), 'sensitive': False}]},
+                'antigravity': {'driver': 'antigravity', 'enabled': False, 'config': {}},
+            }}
+            (profile / 'userdata/settings.json').write_text(json.dumps(settings), encoding='utf-8')
+            env = isolated_env(root)
+            env.update(ELECTRON_RUN_AS_NODE='1', T3CODE_HOME=str(profile),
+                       HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9',
+                       NO_PROXY='127.0.0.1,localhost')
+            with socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0))
+                port = listener.getsockname()[1]
+            arguments = [install / t3._RUNTIME_FILES[0], install / t3._ENTRY, 'serve',
+                         '--base-dir', profile, '--host', '127.0.0.1', '--port', str(port),
+                         '--mode', 'desktop', '--no-browser']
+            with process(arguments, root, env) as proc, patch.dict(os.environ, env, clear=True):
+                for _ in range(90):
+                    if (profile / 'userdata/server-runtime.json').exists():
+                        break
+                    self.assertIsNone(proc.poll(), 'Fixture T3 server exited during startup')
+                    time.sleep(.5)
+                # Seed the existing-project fixture, then use the real product importer.
+                with closing(sqlite3.connect(profile / 'userdata/statev2.sqlite')) as db:
+                    db.execute('''INSERT INTO projection_projects
+                        (project_id,title,workspace_root,scripts_json,created_at,updated_at)
+                        VALUES('fixture','fixture',?,'[]',?,?)''', (str(workspace), timestamp, timestamp))
+                    db.commit()
+                plan = claude_session_import.prepare_t3code_import(
+                    executable=install / t3._RUNTIME_FILES[0], profile=profile,
+                    cwd=workspace, project_id='fixture')
+                version = json.loads((profile / 'userdata/server-runtime.json').read_text())['serverVersion']
+                self.assertEqual(plan['version'], version)
+                self.assertEqual(claude_session_import.verify_session_import(plan)['status'], 'not_observed')
+                expected = {('claudeAgent', NATIVE), ('codex', TARGET), ('pi', str(pi_transcript))}
+                for attempt, (status, new_count) in enumerate((('imported', 3), ('observed', 0)), start=1):
+                    result = claude_session_import.run_session_import(
+                        plan, approved_sha256=plan['plan_sha256'], accept_project_history=True)
+                    self.assertEqual(result['status'], status, result)
+                    self.assertEqual(result['skipped_count'], 0)
+                    self.assertEqual(result['imported_count'], 3)
+                    self.assertEqual(len(result['new_mappings']), new_count)
+                    self.assertEqual({(row['driver'], row['native_id']) for row in result['mappings']}, expected)
+                    self.assertNotIn(sentinel, json.dumps([plan, result]))
+                    with closing(sqlite3.connect(profile / 'userdata/statev2.sqlite')) as db:
+                        self.assertEqual(db.execute(f'SELECT COUNT(*) FROM {V2}threads').fetchone()[0], 3)
+                        token_counts = db.execute("""SELECT COUNT(*), SUM(revoked_at IS NOT NULL)
+                            FROM auth_sessions WHERE client_label='janitor session import'""").fetchone()
+                        self.assertEqual(token_counts, (attempt, attempt))
+            verified = claude_session_import.verify_session_import(plan)
+            self.assertEqual(verified['status'], 'observed', verified)
+            self.assertEqual({(row['driver'], row['native_id']) for row in verified['mappings']}, expected)
+            for path, original in sources.items():
+                self.assertEqual(path.read_bytes(), original)
+
     def test_builtin_delete_mixed_providers_keeps_clean_git_worktree(self):
         install=t3._bundled_install()
         with tempfile.TemporaryDirectory(prefix='t3-') as directory:

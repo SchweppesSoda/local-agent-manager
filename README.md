@@ -55,6 +55,7 @@ Paseo 或 T3 Code；先生成含文件指纹的计划，再按核对过的哈希
 `environment claude-import prepare/apply/verify` 通过官方接口导入并核对前端历史。
 Paseo 支持按完整 Claude 会话 ID 导入；T3 仅支持明确接受的项目级近期历史，可能
 同时包含 Claude、Codex 和 Pi。该命令不发送续聊消息。
+T3 导入支持已验证的 Windows Nightly `4353` 和 `4399`，计划绑定实际服务版本。
 
 `environment cindy-memory inspect/export` 按显式 owner 存储与项目盘点记忆元数据，
 或将精确选定的分片导出为新 Markdown 快照。导出会读取选定的记忆正文，不改源文件，

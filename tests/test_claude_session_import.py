@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from local_agent_record_janitor import claude_session_import
 
 from local_agent_record_janitor.claude_session_import import (
-    PASEO_VERSION, T3_VERSION, SessionImportError,
+    PASEO_VERSION, T3_VERSION, T3_VERSIONS, SessionImportError,
     prepare_paseo_import, prepare_t3code_import, run_session_import, verify_session_import,
 )
 from tests.t3code_support import add_thread, create_store, insert
@@ -260,6 +260,36 @@ class ClaudeSessionImportTests(unittest.TestCase):
         self.t3_settings["unrelated"] = True
         write_json(self.profile / "userdata/settings.json", self.t3_settings)
         self.assertEqual(verify_session_import(plan)["status"], "unknown")
+
+    def test_t3_versions_are_frozen_and_unknown_versions_are_rejected(self):
+        self.t3_fixture()
+        locator_path = self.profile / "userdata/server-runtime.json"
+        locator = json.loads(locator_path.read_text(encoding="utf-8"))
+        for version in T3_VERSIONS:
+            with self.subTest(version=version):
+                locator["serverVersion"] = version
+                write_json(locator_path, locator)
+                plan = prepare_t3code_import(executable=self.executable, profile=self.profile,
+                                             cwd=self.cwd, project_id="project-1")
+                self.assertEqual(plan["version"], version)
+                self.assertEqual(plan["locator"]["serverVersion"], version)
+        locator["serverVersion"] = "0.1.8-nightly.20261109.9999"
+        write_json(locator_path, locator)
+        with self.assertRaisesRegex(SessionImportError, "t3code_import_local_server_unverified"):
+            prepare_t3code_import(executable=self.executable, profile=self.profile,
+                                 cwd=self.cwd, project_id="project-1")
+
+    def test_t3_version_change_after_prepare_blocks_before_session_issuance(self):
+        plan = self.t3_fixture()
+        locator_path = self.profile / "userdata/server-runtime.json"
+        locator = json.loads(locator_path.read_text(encoding="utf-8"))
+        locator["serverVersion"] = "0.1.8-nightly.20261109.4399"
+        write_json(locator_path, locator)
+        runner = Mock()
+        with self.assertRaisesRegex(SessionImportError, "import_preflight_changed"):
+            run_session_import(plan, approved_sha256=plan["plan_sha256"],
+                               accept_project_history=True, runner=runner)
+        runner.assert_not_called()
 
     def test_t3_truncated_scan_and_revoke_failure_are_reported(self):
         plan = self.t3_fixture()

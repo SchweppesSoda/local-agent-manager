@@ -28,6 +28,7 @@ from .t3code_store import V2, database_path, qualify, rows
 SCHEMA = "larj.claude-session-import.v1"
 PASEO_VERSION = "0.15.3"
 T3_VERSION = "0.1.8-nightly.20261108.4353"
+T3_VERSIONS = (T3_VERSION, "0.1.8-nightly.20261109.4399")
 _PASEO_ARCHIVE = "resources/app.asar"
 _PASEO_RUNNER = "resources/app.asar.unpacked/dist/daemon/node-entrypoint-runner.js"
 _T3_ARCHIVE = "resources/server.asar"
@@ -155,7 +156,7 @@ def _t3_locator(profile):
         or url.port is None or not 1 <= url.port <= 65535
         or type(value.get("port")) is not int or url.port != value["port"]
         or type(value.get("version")) is not int or value["version"] != 1
-        or value.get("serverVersion") != T3_VERSION
+        or value.get("serverVersion") not in T3_VERSIONS
         or type(value.get("pid")) is not int or value["pid"] <= 0
         or not isinstance(value.get("startedAt"), str)
         or not isinstance(value.get("ownerId"), str) or not value["ownerId"]
@@ -337,8 +338,9 @@ def prepare_t3code_import(*, executable, profile, cwd, project_id):
         environment_id = _profile_id(profile, "userdata/environment-id", _RECORD_ID)
         config, claude = _t3_provider(profile)
         _t3_state(profile, project_id, cwd)
-        return _seal({**plan, "profile_id": environment_id, "locator": _t3_locator(profile),
-                      "version": T3_VERSION, "project_id": project_id, "settings": config,
+        locator = _t3_locator(profile)
+        return _seal({**plan, "profile_id": environment_id, "locator": locator,
+                      "version": locator["serverVersion"], "project_id": project_id, "settings": config,
                       "claude": claude, "scope": "all_eligible_recent_project_sessions",
                       "may_include_other_engines": True})
     except SessionImportError:
