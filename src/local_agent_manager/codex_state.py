@@ -410,12 +410,14 @@ def read_rollouts_at_paths(
                 ) from exc
             continue
         matched: tuple[Path, bool] | None = None
+        resolved_key = canonical_existing_path_key(resolved)
         for root, archived in roots:
+            root_key = canonical_existing_path_key(root)
             try:
-                common = os.path.commonpath((os.fspath(root), os.fspath(resolved)))
+                common = os.path.commonpath((root_key, resolved_key))
             except ValueError:
                 continue
-            if os.path.normcase(common) == os.path.normcase(os.fspath(root)):
+            if os.path.normcase(common) == os.path.normcase(root_key):
                 matched = (root, archived)
                 break
         if matched is None:

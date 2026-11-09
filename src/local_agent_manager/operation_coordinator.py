@@ -63,6 +63,7 @@ class _LiveOperation:
     completed_child_ids: frozenset[str] = field(default_factory=frozenset)
     result: dict[str, Any] | None = None
     clients_closed_ack: bool = False
+    codex_bin: Path | None = None
     terminal_context: Any | None = field(default=None, repr=False, compare=False)
 
 
@@ -155,6 +156,7 @@ class OperationCoordinator:
         plan_path: Path | None = None,
         operation_home: Path | None = None,
         codex_home: Path | None = None,
+        codex_bin: Path | None = None,
         orca_roots: Sequence[str | Path] = (),
         herdr_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
@@ -252,6 +254,7 @@ class OperationCoordinator:
                 manual_catalog=manual_catalog,
                 manual_plan=manual_plan,
                 action_contexts=action_contexts,
+                codex_bin=(Path(codex_bin).expanduser() if codex_bin is not None else None),
             )
             return document
         except Exception as exc:
@@ -274,6 +277,7 @@ class OperationCoordinator:
         plan_path: Path | None = None,
         operation_home: Path | None = None,
         codex_home: Path | None = None,
+        codex_bin: Path | None = None,
         orca_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
         paseo_roots: Sequence[str | Path] = (),
@@ -487,8 +491,11 @@ class OperationCoordinator:
                     manual_plan=manual_plan,
                     action_contexts=action_contexts,
                     completed_child_ids=child_inspection.completed_child_ids,
+                    codex_bin=(Path(codex_bin).expanduser() if codex_bin is not None else None),
                 )
                 self._live[operation] = live
+            if codex_bin is not None:
+                live.codex_bin = Path(codex_bin).expanduser()
             live.clients_closed_ack = clients_closed is True
             return self._execute_live(
                 live,
@@ -533,6 +540,7 @@ class OperationCoordinator:
         plan_path: Path | None = None,
         operation_home: Path | None = None,
         codex_home: Path | None = None,
+        codex_bin: Path | None = None,
         orca_roots: Sequence[str | Path] = (),
         herdr_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
@@ -563,6 +571,7 @@ class OperationCoordinator:
             plan_path=plan_path,
             operation_home=operation_home,
             codex_home=codex_home,
+            codex_bin=codex_bin,
             orca_roots=orca_roots,
             herdr_roots=herdr_roots,
             workbuddy_roots=workbuddy_roots,
@@ -744,6 +753,7 @@ class OperationCoordinator:
         plan_path: Path | None = None,
         operation_home: Path | None = None,
         codex_home: Path | None = None,
+        codex_bin: Path | None = None,
         orca_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
         scope: Mapping[str, Any] | None = None,
@@ -806,6 +816,7 @@ class OperationCoordinator:
         plan_path: Path | None = None,
         operation_home: Path | None = None,
         codex_home: Path | None = None,
+        codex_bin: Path | None = None,
         orca_roots: Sequence[str | Path] = (),
         workbuddy_roots: Sequence[str | Path] = (),
         scope: Mapping[str, Any] | None = None,
@@ -1814,7 +1825,11 @@ class OperationCoordinator:
             from .adapters import NativeIntegrityAdapter
             from .codex_desktop_state import read_desktop_state
 
-            catalog_ids = {record.thread_id for record in catalog.records}
+            catalog_ids = {
+                record.thread_id
+                for record in catalog.records
+                if record.indexed or record.rollouts or record.frontend_references
+            }
             desktop_ids = tuple(
                 value for value in explicit_session_ids
                 if value not in catalog_ids and self._is_full_thread_id(value)
@@ -4966,6 +4981,15 @@ class OperationCoordinator:
                                 "native deletion is positively verified: "
                                 + ", ".join(sorted(unreleased))
                             )
+                    effective_binary_resolver = binary_resolver or choose_codex_binary
+                    if live.codex_bin is not None:
+                        base_resolver = effective_binary_resolver
+                        default_bin = live.codex_bin
+                        effective_binary_resolver = (
+                            lambda hint, resolver=base_resolver, default_binary=default_bin: resolver(
+                                hint if hint is not None else default_binary
+                            )
+                        )
                     if str(batch.mutation_family) in {"delete_paseo_daemon_agent", "delete_t3code_server_thread"}:
                         module = builtin_delete(live.document["scope"])
                         outcome = module.execute(live.document, batch.actions[0], checkpoint=checkpoint,
@@ -4984,9 +5008,7 @@ class OperationCoordinator:
                             app_server_factory=(
                                 app_server_factory or CodexAppServer
                             ),
-                            binary_resolver=(
-                                binary_resolver or choose_codex_binary
-                            ),
+                            binary_resolver=effective_binary_resolver,
                             action_state_callback=checkpoint,
                             startup_callback=startup_checkpoint,
                             startup_boundary_callback=startup_boundary_checkpoint,
@@ -5010,9 +5032,7 @@ class OperationCoordinator:
                             app_server_factory=(
                                 app_server_factory or CodexAppServer
                             ),
-                            binary_resolver=(
-                                binary_resolver or choose_codex_binary
-                            ),
+                            binary_resolver=effective_binary_resolver,
                             action_state_callback=checkpoint,
                             session_preflight_verified=True,
                         )

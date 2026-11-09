@@ -395,3 +395,85 @@ class NativeWorkflowRegressions(unittest.TestCase):
                     plan=SimpleNamespace(storages=(storage,)), frontend_scan_coverage=coverage))
         OperationCoordinator._assert_store_coverage(doc, SimpleNamespace(
             plan=SimpleNamespace(storages=(storage,)), frontend_scan_coverage=((canonical_path(db), "projects"),)))
+
+    def test_cli_delete_apply_honors_explicit_codex_bin_without_path(self):
+        self.fixture([("child", "work", "deleted-parent"), ("keep", "work", None)])
+        fake_bin = self.root / "custom-codex.exe"
+        fake_bin.write_text("binary", encoding="utf-8")
+        plan_path = self.root / "cli-codex-bin-plan.json"
+        plan_out = StringIO()
+        status = main(
+            [
+                "delete",
+                "plan",
+                "--client",
+                "native",
+                "--codex-home",
+                str(self.home),
+                "--codex-bin",
+                str(fake_bin),
+                "--record-id",
+                "child",
+                "--out",
+                str(plan_path),
+                "--json",
+            ],
+            adapters=(self.adapter,),
+            stdout=plan_out,
+            stderr=StringIO(),
+        )
+        self.assertEqual(status, 0, plan_out.getvalue())
+        plan_doc = json.loads(plan_out.getvalue())
+        self.assertEqual(plan_doc["goal_status"], "ready", plan_doc)
+
+        calls = []
+        apply_out = StringIO()
+        with (
+            patch.dict(os.environ, {"PATH": ""}, clear=False),
+            patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()),
+        ):
+            status = main(
+                [
+                    "delete",
+                    "apply",
+                    "--operation-id",
+                    plan_doc["operation_id"],
+                    "--plan",
+                    str(plan_path),
+                    "--codex-home",
+                    str(self.home),
+                    "--codex-bin",
+                    str(fake_bin),
+                    "--clients-closed",
+                    "--json",
+                ],
+                operation_coordinator=OperationCoordinator(CleanupService(client_inspector=lambda *_: ())),
+                adapters=(self.adapter,),
+                app_server_factory=self.server(calls),
+                stdout=apply_out,
+                stderr=StringIO(),
+            )
+        self.assertEqual(status, 0, apply_out.getvalue())
+        apply_doc = json.loads(apply_out.getvalue())
+        self.assertEqual(apply_doc["goal_status"], "complete", apply_doc)
+        self.assertEqual(calls, ["child"])
+
+    def test_synthesized_missing_parent_with_desktop_global_state_is_discoverable_by_record_id(self):
+        parent_id = "01a1bbc5-beda-7263-b67a-92225e87daed"
+        child_id = "01a1bda9-d2cb-74f0-afc0-29c323fe7209"
+        self.fixture([(child_id, "work", parent_id)])
+        (self.home / ".codex-global-state.json").write_text(
+            json.dumps({"pinned-thread-ids": [parent_id]}),
+            encoding="utf-8",
+        )
+        coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
+        plan = coordinator.plan_operation(
+            client="native",
+            record_ids=(parent_id, child_id),
+            adapters=(self.adapter,),
+            plan_path=self.root / "synthesized-parent.json",
+        )
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        action_kinds = {action["kind"] for action in plan["actions"]}
+        self.assertIn("remove_desktop_state", action_kinds)
+        self.assertIn("delete_conversation", action_kinds)

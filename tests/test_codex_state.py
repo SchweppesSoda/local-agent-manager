@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 from local_agent_record_janitor.codex_state import (
     CodexStateReadError,
     find_thread_rollouts,
+    read_rollouts_at_paths,
     read_spawn_descendants,
     read_thread_index,
     read_thread_metadata,
@@ -123,6 +125,41 @@ class RolloutScanningTests(unittest.TestCase):
 
         with self.assertRaises(OSError):
             rollout_state_fingerprint(record)
+
+    @unittest.skipUnless(os.name == "nt", "Windows extended-length paths")
+    def test_read_rollouts_at_paths_accepts_extended_length_path_and_rejects_outside(
+        self,
+    ) -> None:
+        active_path = write_rollout(
+            self.codex_home,
+            "extended-thread",
+            originator="app-server",
+        )
+        extended_inside = "\\\\?\\" + str(active_path.resolve(strict=True))
+        records = read_rollouts_at_paths(
+            self.codex_home,
+            [extended_inside],
+            strict=True,
+        )
+        self.assertEqual([record.thread_id for record in records], ["extended-thread"])
+
+        outside_home = self.root / "outside-home"
+        outside_home.mkdir()
+        outside_path = write_rollout(
+            outside_home,
+            "outside-thread",
+            originator="app-server",
+        )
+        extended_outside = "\\\\?\\" + str(outside_path.resolve(strict=True))
+        with self.assertRaisesRegex(
+            CodexStateReadError,
+            r"Approved rollout path escapes the native store",
+        ):
+            read_rollouts_at_paths(
+                self.codex_home,
+                [extended_outside],
+                strict=True,
+            )
 
 
 class ThreadIndexTests(unittest.TestCase):
