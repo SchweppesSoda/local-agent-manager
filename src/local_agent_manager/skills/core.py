@@ -28,7 +28,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field, fields, is_dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable
 
 
@@ -1471,9 +1471,10 @@ def normalized_resource_reference(raw: str) -> str | None:
     if not raw or raw.startswith(("#", "http://", "https://", "mailto:", "skill://")):
         return None
     value = urllib.parse.unquote(raw.split("#", 1)[0].split("?", 1)[0]).strip().strip("<>")
+    value = value.replace("\\", "/")
     if not value or any(token in value for token in ("<", ">", "*", "{", "}")):
         return None
-    if Path(value.replace("/", os.sep)).is_absolute():
+    if Path(value.replace("/", os.sep)).is_absolute() or PureWindowsPath(value).is_absolute():
         return None
     return value
 

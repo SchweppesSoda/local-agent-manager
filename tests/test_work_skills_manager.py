@@ -303,6 +303,14 @@ class SharedResourceBoundaryTests(unittest.TestCase):
 
 
 class AuditTests(unittest.TestCase):
+    def test_external_windows_paths_are_not_relative_source_resources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = RepoFixture(Path(tmp))
+            fixture.write_config()
+            fixture.add_skill(body="Read [external reference](D:/workspace/data/manifest.json).\n")
+
+            self.assertEqual(manager.run_content_audit(fixture.root).errors, [])
+
     def test_inline_script_arguments_are_not_part_of_resource_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = RepoFixture(Path(tmp))
@@ -560,8 +568,8 @@ class SystemDependencyAuditTests(unittest.TestCase):
 
         self.assertIsNone(explicit_error)
         self.assertIsNone(path_error)
-        self.assertTrue(explicit.endswith("Python312\\python.exe"))
-        self.assertTrue(path_value.endswith("Python312\\python.exe"))
+        self.assertEqual(explicit, str(Path("C:/Python312/python.exe").resolve()))
+        self.assertEqual(path_value, str(Path("C:/Python312/python.exe").resolve()))
         self.assertEqual(lookups, ["C:/Chosen/python.exe", "python"])
 
     def test_manager_launches_checker_with_selected_python_and_clean_environment(self):
@@ -602,7 +610,7 @@ class SystemDependencyAuditTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0)
             command = observed["command"]
-            self.assertTrue(command[0].endswith("Python312\\python.exe"))
+            self.assertEqual(command[0], str(Path("C:/Python312/python.exe").resolve()))
             self.assertIn("check_system_python.py", command[2])
             self.assertNotEqual(command[0], manager.sys.executable)
             child_env = observed["env"]

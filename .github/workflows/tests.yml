@@ -99,6 +99,8 @@ jobs:
           LARJ_REQUIRE_LEVELDB_TESTS: "1"
           LARJ_PASEO_ELECTRON_RUNTIME: ${{ runner.temp }}/larj-paseo-electron
           LARJ_REQUIRE_PASEO_BROWSER_TESTS: "1"
+          # Keep fixtures on the runner's physical temp root, outside macOS /var aliases.
+          TMPDIR: ${{ runner.temp }}
         run: python -m unittest discover -s tests -v
 
       - name: Set up pinned Rust fingerprint oracle
