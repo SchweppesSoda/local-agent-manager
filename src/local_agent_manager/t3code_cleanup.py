@@ -173,13 +173,30 @@ def permits_reference(reference, *, execution=False):
         and (not execution or ticket[1] and t3code_lifecycle.current_boundary(ticket[0]["root"]) is not None))
 
 
-def bound_adapters(document, supplied=None):
+def bound_adapters(document, supplied=None, *, readonly_recovery=False):
     evidence = evidence_from_document(document)
     if evidence is None:
         return supplied
     from .client_contracts import describe_adapter
     adapter = T3CodeBoundAdapter(evidence["binding_manifest"])
     adapter.frozen_references = evidence["references"]
+    if readonly_recovery and adapter.manifest['schema_version'] != DATABASE_ONLY_SCHEMA:
+        from .t3code_store import read_database
+        present = set(read_database(adapter.profile_root)['threads'])
+        missing = present - set(adapter.bindings)
+        if missing:
+            # Reopening the app can create new, unselected supervision threads.
+            # Discover their protection bindings without changing frozen
+            # authorization or inferring a home from a provider name.
+            from .t3code_discovery import discover_bindings
+            fresh = discover_bindings(adapter.profile_root)
+            if any(fresh[key] != adapter.manifest[key] for key in (
+                    'schema_version', 'profile_root', 'environment_id', 'runtime_binaries', 'desktop_profiles')):
+                files.fail('recovery_binding_profile_changed')
+            added = {b['thread_id']: b for b in fresh['native_stores'] if b['thread_id'] in missing}
+            if set(added) != missing or missing & set(evidence['selected_thread_ids']):
+                files.fail('recovery_binding_scope_changed')
+            adapter.bindings.update(added)
     result = [adapter]
     for item in supplied or ():
         descriptor = describe_adapter(item)

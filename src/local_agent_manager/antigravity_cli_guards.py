@@ -71,11 +71,15 @@ def freeze(sources, ids, *, joint=None):
                     from .office_database import logical_hash
                     database = joint['files']['database']
                     current = logical_hash(db)
+                    evolved = False
                     if current == database['before_sha256']:
                         _transform(db, database['thread_ids'], native_ids=database.get('protected_native_ids', ()))
                     elif current != database['after_sha256']:
-                        fail('joint_database_state_unknown')
-                    if logical_hash(db) != database['after_sha256']:
+                        from .joint_cli_recovery import database_evolution
+                        evolved = database_evolution(database, db, current)
+                        if not evolved:
+                            fail('joint_database_state_unknown')
+                    if not evolved and logical_hash(db) != database['after_sha256']:
                         fail('joint_database_transform_changed')
                 # Project only counts, never a payload or credential. Include
                 # legacy events and all restore-capable tables, not merely the

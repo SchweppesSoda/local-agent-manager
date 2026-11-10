@@ -358,6 +358,10 @@ def remaining(evidence, *, terminal_verified=False):
             remaining_count += db.execute(f'SELECT count(*) FROM {V2}provider_sessions WHERE {_where("provider_session_id",sessions)}', sessions).fetchone()[0]
         if remaining_count and logical_hash(db) != evidence["before_sha256"]:
             fail("database_changed")
-        if not remaining_count and not terminal_verified and logical_hash(db) != evidence["after_sha256"]:
-            fail("database_after_state_unverified")
+        if not remaining_count and not terminal_verified:
+            current_hash = logical_hash(db)
+            if current_hash != evidence['after_sha256']:
+                from .joint_cli_recovery import database_evolution
+                if not database_evolution(evidence, db, current_hash):
+                    fail("database_after_state_unverified")
         return remaining_count

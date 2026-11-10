@@ -342,6 +342,13 @@ class OperationCoordinator:
             from .t3code_cleanup import bound_adapters as t3code_bound_adapters
             adapters = t3code_bound_adapters(document, adapters)
             child_inspection = self._inspect_child_states(document)
+            if child_inspection.batches and all(b.get('status') == 'complete' for b in child_inspection.batches):
+                from .antigravity_cli_joint import reservation_blockers
+                joint_blockers = reservation_blockers(document)
+                if joint_blockers:
+                    return self._result_document(document, normalized_scope, goal_status='unknown',
+                        blockers=joint_blockers, batches=child_inspection.batches,
+                        modified=child_inspection.modified, mutation_started=child_inspection.mutation_started)
             if child_inspection.blockers:
                 self._emit_progress(
                     progress_callback,
@@ -765,6 +772,8 @@ class OperationCoordinator:
         scope: Mapping[str, Any] | None = None,
         adapters: Iterable[Any] | None = None,
         verify_timeout: int = 180,
+        recover_joint_reservations: bool = False,
+        authorized_plan_sha256: str | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         **_unused: Any,
     ) -> dict[str, Any]:
@@ -787,13 +796,23 @@ class OperationCoordinator:
             if self._blocked_without_mutation(document):
                 return self._status_for_document(document)
             with mutation_roots(frozen_operation_roots(document)):
-                computed = self._verify_operation_locked(
-                    operation_id=operation_id, plan_path=plan_path,
-                    operation_home=operation_home, codex_home=codex_home,
-                    scope=scope, adapters=adapters, orca_roots=orca_roots, verify_timeout=verify_timeout,
-                    workbuddy_roots=workbuddy_roots,
-                    progress_callback=progress_callback,
-                )
+                from contextlib import nullcontext
+                from .joint_cli_recovery import recovery_scope
+                with (recovery_scope(document, self, authorized_plan_sha256)
+                      if recover_joint_reservations else nullcontext()) as recoveries:
+                    computed = self._verify_operation_locked(
+                        operation_id=operation_id, plan_path=plan_path,
+                        operation_home=operation_home, codex_home=codex_home,
+                        scope=scope, adapters=adapters, orca_roots=orca_roots, verify_timeout=verify_timeout,
+                        workbuddy_roots=workbuddy_roots,
+                        progress_callback=progress_callback,
+                    )
+                    if recoveries and computed.get('goal_satisfied') is True:
+                        computed['recovery'] = [{'reservation_operation_id': e['store'].operation_id,
+                            'parent_plan_sha256': document['plan_sha256'],
+                            'audit_path': str(e['store'].directory/('recovery-'+e['proof']['sha256']+'.json')),
+                            'verification_only': True, 'mutation_replayed': False}
+                            for e in recoveries.values() if e['completed']]
             return dict(computed)
         except Exception as exc:
             if document is not None:
@@ -888,7 +907,7 @@ class OperationCoordinator:
                 from .paseo_cleanup import bound_adapters as paseo_bound_adapters
                 adapters = paseo_bound_adapters(document, adapters)
                 from .t3code_cleanup import bound_adapters as t3code_bound_adapters
-                adapters = t3code_bound_adapters(document, adapters)
+                adapters = t3code_bound_adapters(document, adapters, readonly_recovery=True)
                 codex_home = self._bound_codex_home(document, codex_home)
                 has_orca_frontend = any(action.get("kind") == "delete_orca_frontend" for action in document.get("actions", ()))
                 discovery_roots = ((*validate_guard_sources(document), *orca_roots)
@@ -1033,6 +1052,7 @@ class OperationCoordinator:
                 from .antigravity_cli_joint import complete_document
                 complete_document(live.document)
         except Exception as exc:
+            inspection = self._inspect_child_states(live.document)
             return finish(self._result_document(
                 live.document,
                 live.document.get("scope", {}),
@@ -1040,8 +1060,9 @@ class OperationCoordinator:
                 blockers=[self._blocker(
                     "verification_journal_failed", str(exc) or repr(exc)
                 )],
-                batches=(),
+                batches=inspection.batches,
                 residuals=residuals,
+                modified=inspection.modified, mutation_started=inspection.mutation_started,
             ))
         result = self._result_document(
             live.document, dict(scope or {}),
@@ -5622,6 +5643,19 @@ class OperationCoordinator:
             **kwargs,
             )
 
+    @classmethod
+    def _child_document(cls, document, batch):
+        """Pure v1 frozen child projection, shared by admission and recovery."""
+        roots = {s['storage_id']: s['path'] for s in document['storages']}
+        actions = {a['action_id']: a for a in document['actions']}
+        plan = {'schema_version': 'larj.child-operation-plan.v1',
+            'operation_id': batch['child_operation_id'],
+            'target': {'codex_home': str(Path(roots[batch['storage_id']])), 'storage_id': batch['storage_id']},
+            'parent_operation_id': document['operation_id'], 'mutation_family': batch['mutation_family'],
+            'actions': [cls._metadata(actions[aid]) for aid in batch['action_ids']]}
+        plan['plan_sha256'] = plan_sha256(plan)
+        return plan
+
     def _open_batch_store(
         self,
         live: _LiveOperation,
@@ -5630,34 +5664,9 @@ class OperationCoordinator:
         storage_path: Path,
         index: int,
     ) -> tuple[OperationStore, dict[str, Any]]:
-        frozen_actions = {
-            str(item.get("action_id")): item
-            for item in live.document.get("actions", ())
-            if isinstance(item, Mapping)
-        }
-        child_actions = []
-        for action in batch.actions:
-            frozen_action = frozen_actions.get(str(action.action_id))
-            if not isinstance(frozen_action, Mapping):
-                raise OperationCoordinatorError(
-                    "batch action is absent from the immutable top-level plan"
-                )
-            # The child plan is a projection of the immutable top-level
-            # authorization. Fresh execution objects may carry a rebinding
-            # snapshot, but must never change accept_plan's child hash during
-            # cross-process recovery.
-            child_actions.append(self._metadata(frozen_action))
-        child_plan: dict[str, Any] = {
-            "schema_version": "larj.child-operation-plan.v1",
-            "operation_id": child_id,
-            "target": {
-                "codex_home": str(storage_path),
-                "storage_id": batch.storage_id,
-            },
-            "parent_operation_id": live.operation_id,
-            "mutation_family": batch.mutation_family,
-            "actions": child_actions,
-        }
+        child_plan = self._child_document(live.document, {
+            'child_operation_id': child_id, 'storage_id': batch.storage_id,
+            'mutation_family': batch.mutation_family, 'action_ids': [str(a.action_id) for a in batch.actions]})
         if live.document.get("schema_version") == PLAN_V3 and batch.mutation_family == "delete_conversation":
             from .orca_target_safety import evidence_for_actions
             child_plan["schema_version"] = "larj.child-operation-plan.v2"
@@ -5962,6 +5971,11 @@ class OperationCoordinator:
             goal_status = "completed_with_residuals"
         elif statuses and statuses <= {"complete"}:
             goal_status = "complete"
+            from .antigravity_cli_joint import reservation_blockers
+            joint_blockers = reservation_blockers(document)
+            if joint_blockers:
+                goal_status = 'unknown'
+                blockers.extend(joint_blockers)
         elif self._blocked_without_mutation(document):
             goal_status = "blocked"
             blockers = list(document.get("blockers", ()))

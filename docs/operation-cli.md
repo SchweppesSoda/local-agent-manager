@@ -9,6 +9,62 @@ implemented deletion paths currently cover healthy/native records with a
 frozen frontend closure, Cindy Pi/Claude sessions, exact supported local WorkBuddy and Office sessions, and Cindy frontend sessions
 whose exact row status is `deleted`.
 
+## Joint CLI reservation recovery
+
+This is a verification-only route for an interrupted T3/Paseo operation that
+already has **all exact child completion receipts** but still owns a joint
+Antigravity CLI reservation. It never runs an app-server or repeats deletion.
+Ordinary status now includes unresolved reservation occupancy; child completion
+alone does not report the whole operation complete.
+
+```text
+operation verify --operation-id <original-id> --plan <original-plan.json> --recover-joint-reservations --authorized-plan-sha256 <original-parent-hash> --json --progress
+```
+
+Arrange an offline verification window before executing this opt-in route if
+the frozen frontend/native clients are running. The command does not close any
+app itself. It holds the root mutex, original frontend startup boundary and
+runtime/file leases. Reservation plan, journal sequence and native-file checkpoint
+must match. The original writer must be kernel-proven exited/absent; active or
+reused PIDs, denied inspection, census descendants and a conflicting file handle
+remain blockers. This qualified writer is synchronous Python file/SQLite code,
+with no delegated mutation process or native Job. No other writer's lock can be
+recovered by this flag, including native app-server and Orca Job journals.
+
+The original frozen evidence and strict first after-state proof remain unchanged.
+Reopened T3 sessions may have continued after the child receipts proved that exact
+after-state. Only inside the explicitly held recovery scope, a fully verified
+original frontend child permits current schema/integrity, target absence, frozen
+unselected thread membership, preserved file hashes, native after-state and all
+current restoration-reference guards to replace the old whole-database equality
+test. The desktop decoder must find zero selected target pairs; its current
+logical hash is recorded. Continued content/settings are not claimed byte-identical
+to the old snapshot. A new unselected thread must acquire a positively discovered
+protection binding; it cannot expand the frozen deletion authorization.
+
+After all these checks, the protocol publishes a separate retained
+`recovery-<original-lock-sha256>.json` audit, including parent/child hashes, old lock,
+original journal hashes, writer exit proof and any post-terminal scope evidence.
+It updates the reservation result through the ordinary journal API and retires
+only its leased lock by Windows handle disposition. Failure leaves occupancy
+intact. A crash after publication can repeat **verification** and finish that
+same lock disposition, preserving the first audit. Qualified native before-images
+are discarded only after full after-state verification; unqualified leftovers
+remain. Permanent root mutex files are never removed. Keep the original executor
+failure receipt and later recovery output separately.
+State maintenance conservatively retains directories containing these recovery
+audits; they are not eligible for ordinary receipt expiry or broad cleanup.
+
+Long external controllers must not impose a short total wall-clock kill deadline
+on a multi-stage mutator. The diagnostic wrapper
+`python -m local_agent_manager.supervised_cli <stack-log> <interval-seconds> <CLI args...>`
+runs normal CLI dispatch and periodically records Python thread stacks. The
+`wait_with_diagnostics` helper records progress-idle suspicions and process exit
+without killing/replaying the writer; CPU activity or heartbeat alone never
+proves success. Inspect a stalled phase and its stacks before any manual
+intervention. Adapter RPC/lock deadlines remain in force. `--verify-timeout` is
+not an operation-wide wall-clock budget for coordinator inventory.
+
 ## Commands
 
 Plans containing retired `aionui` or `qoderwork` client identities are rejected

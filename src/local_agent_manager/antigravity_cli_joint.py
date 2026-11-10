@@ -3,7 +3,7 @@
 The frontend owns authorization, action journal, before/after evidence and
 startup exclusion. Other frontend profiles remain immutable guard sources.
 """
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -59,6 +59,8 @@ def finish_reservation(store, plan, *, complete):
             pass
     result = _result(plan, state, goal, None if complete else 'antigravity_cli_joint_recovery_required')
     state.update(phase=result['phase'], goal_status=goal, goal_satisfied=complete)
+    if complete:
+        state['current_action_state'] = 'verified'
     store.append_event({'event': 'operation_finished', 'goal_status': goal}, state_updates=state)
     store.write_result(result)
 
@@ -76,7 +78,9 @@ def complete_document(document):
                 store, plan = reservation(document, evidence, target)
                 if not store.directory.exists():
                     continue
-                with mutation_roots((store.codex_home,)), store.mutation_lock():
+                from .joint_cli_recovery import completion_entry, publish_completion
+                recovery = completion_entry(store, plan)
+                with mutation_roots((store.codex_home,)), (nullcontext() if recovery else store.mutation_lock()):
                     if store.receipt_path.exists():
                         result = store.read_result(maintain=False)
                         if result.get('plan_sha256') != plan['plan_sha256'] or result.get('goal_status') != 'complete':
@@ -84,8 +88,36 @@ def complete_document(document):
                         continue
                     if store.read_plan() != plan:
                         native.fail('joint_reservation_changed')
+                    if recovery:
+                        store.append_event({'event': 'readonly_recovery_verified',
+                            'parent_plan_sha256': document['plan_sha256'],
+                            'original_lock_sha256': recovery['proof']['sha256']})
                     native.discard_recovery(target['native_files'], store.directory/'native-recovery')
                     finish_reservation(store, plan, complete=True)
+                    if recovery:
+                        publish_completion(recovery)
+
+
+def reservation_blockers(document):
+    """Child receipts alone do not retire a separate shared-root occupancy."""
+    result = []
+    for action in document.get('actions', ()):
+        payload = action.get('impact', {}).get('external_action_payload', {})
+        for client in ('t3code', 'paseo'):
+            evidence = payload.get(client+'_evidence')
+            if not evidence:
+                continue
+            for target in targets(evidence):
+                store, plan = reservation(document, evidence, target)
+                try:
+                    receipt = store.read_result(maintain=False)
+                    if (store.lock_exists() or not receipt or receipt.get('goal_status') != 'complete'
+                            or receipt.get('plan_sha256') != plan['plan_sha256']):
+                        raise RuntimeError('joint_reservation_requires_verification')
+                except (OSError, ValueError, RuntimeError) as exc:
+                    result.append({'blocker_code': 'joint_reservation_recovery_required',
+                        'scope': store.operation_id, 'message': str(exc)})
+    return result
 
 
 def freeze_target(manifest, bound, ids, client):

@@ -725,6 +725,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
     )
     operation_verify.add_argument("--json", action="store_true")
+    operation_verify.add_argument('--recover-joint-reservations', action='store_true',
+        help='Explicit offline verification-only recovery of completed joint CLI reservations; never repeats deletion.')
+    operation_verify.add_argument('--authorized-plan-sha256',
+        help='Original frozen parent hash required for joint reservation recovery.')
     operation_verify.add_argument("--herdr-root", action="append", default=[], metavar="PATH",
                                   help="Herdr persisted config root; readonly blocked plans retain their frozen result.")
     operation_verify.add_argument("--workbuddy-root", action="append", default=[], type=Path, metavar="PATH",
@@ -1622,6 +1626,8 @@ def _run_operation_backend(
                     "workbuddy_roots": tuple(getattr(args, "workbuddy_root", ()) or ())} if verb != "status" else {}),
                 "adapters": supplied_adapters,
                 "verify_timeout": int(getattr(args, "verify_timeout", 180) or 0),
+                "recover_joint_reservations": bool(getattr(args, 'recover_joint_reservations', False)),
+                "authorized_plan_sha256": getattr(args, 'authorized_plan_sha256', None),
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback

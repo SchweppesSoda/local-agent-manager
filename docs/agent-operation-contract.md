@@ -58,7 +58,9 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 6. If a mutation result is `unknown`, never repeat it: run `operation status`,
    then `operation verify` (legacy integrations use `agent status/verify`).
    Preserve the exact plan/state location. Never edit a frozen plan or journal,
-   delete/bypass `apply.lock`, or discard unresolved recovery evidence.
+   manually delete/bypass `apply.lock`, or discard unresolved recovery evidence.
+   The explicit joint CLI reservation recovery below is a narrowly qualified
+   verification-only product protocol, not permission to reclaim other locks.
    When a parent plan is missing, the supported native v1 child-only
    `operation status/verify` route can use the original child journal; see
    [the operation CLI recovery boundary](operation-cli.md#commands).
@@ -84,6 +86,19 @@ The qualified Orca v3/child-v2 startup boundary occupies the whole selected home
 another record in that home remains blocked while startup/teardown is unknown.
 Its original named Job must be absent on the same machine and Windows session
 before read-only recovery can publish a known result.
+
+For an interrupted **in-process joint Antigravity CLI reservation** after every
+parent child has a bound, fully verified completion result, the supported
+`operation verify --recover-joint-reservations --authorized-plan-sha256 <original>`
+route can retire that reservation's lock after offline verification. It checks
+the exact reservation/parent/child plans, original kernel process exit (live or
+reused PIDs and access denial block), census descendants, exclusive lock handle,
+native runtime leases and frontend startup boundary. This writer performs native
+file writes synchronously, with no delegated writer or native Job. App-server,
+Orca startup Job and all other journal locks are outside this recovery protocol.
+The root mutex and a receipt alone remain insufficient. See
+[joint reservation recovery](operation-cli.md#joint-cli-reservation-recovery)
+for after-state and evidence retention requirements.
 
 Legacy direct CLI/GUI and service writers share this admission gate, so they
 cannot bypass an existing journal's unknown outcome. They do not create a new

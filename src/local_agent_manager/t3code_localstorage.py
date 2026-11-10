@@ -134,4 +134,7 @@ def remaining(evidence):
         return 0
     if current == evidence["files"] and value == expected:
         return value["count"]["removed_pairs"]
+    from .joint_cli_recovery import desktop_evolution
+    if desktop_evolution(evidence, value):
+        return 0
     fail("local_storage_state_unknown")
