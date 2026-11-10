@@ -107,6 +107,12 @@ may contain:
 └── apply.lock        # only while a process owns the mutation gate
 ```
 
+After explicit `state migrate`, journals live under
+`<CODEX_HOME>/.local-agent-manager/operations`. The permanent coordination lock
+stays at its original legacy path alongside a layout marker. See
+[State maintenance](state-maintenance.md) for safe cleanup, migration, and
+interrupted-move recovery.
+
 Every document is bound to the operation ID and plan hash. Sequence numbers are
 strictly increasing, durable writes are flushed before mutation, and symlinks,
 junctions, reparse points, non-regular leaves, and reused operation IDs fail

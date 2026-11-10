@@ -6,11 +6,12 @@
 local-agent-manager environment inventory --json
 local-agent-manager skills plan --repo-root '<Skill 源仓库>' --target '<adapter>'
 local-agent-manager resources --json
+local-agent-manager state inventory --root '<Agent 数据根>' --json
 ```
 
 两个权威管理 Skill 位于 `skills/agent-management` 与 `skills/skill-management`。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。工作业务内容与客户端本机配置由各自的源仓库维护。
 
-旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量、控制目录和恢复数据保留原契约。实现和运行路径改变后，受绑定的未执行计划须重新生成。
+旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量和恢复数据保留原契约。控制目录可通过 `state migrate` 显式迁移。实现和运行路径改变后，受绑定的未执行计划须重新生成。
 
 完整边界和迁移方法见 [整合设计](docs/manager-integration.md)。
 
@@ -75,11 +76,16 @@ T3 导入支持已验证的 Windows Nightly `4353` 和 `4399`，计划绑定实�
 
 ## 记录清理
 
+管理器自身的日志通过 `state inventory/cleanup/migrate --root '<数据根>'` 维护。
+清理和迁移先输出预览，应用时需要 `--apply --plan-sha256 '<预览哈希>'`。
+清理保留未解决的恢复材料，迁移保留旧位置的永久锁和布局标记。
+适用范围、中断恢复及剩余目录见 [状态维护](docs/state-maintenance.md)。
+
 ### 命名兼容
 
 新安装使用 `local-agent-manager`。从旧 editable 安装迁移时，先核对原解释器和源码位置，卸载旧发行包，再安装新发行包，避免两个包同时拥有兼容命令。旧 CLI 与 Python 子模块入口由新包提供。
 
-历史 operation 文档、控制目录、恢复证据和相关 schema 保持原有读取与验证契约。具体兼容范围见 [整合设计](docs/manager-integration.md)。
+历史 operation 文档、恢复证据和相关 schema 保持原有读取与验证契约。具体兼容范围见 [整合设计](docs/manager-integration.md)。
 
 它主要处理两类问题：
 

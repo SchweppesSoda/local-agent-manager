@@ -35,7 +35,7 @@ SUFFIXES = ('.db', '.db-wal', '.db-shm', '.db-journal', '.meta')
 def _root_entries(root):
     result = []
     for path in root.iterdir():
-        if path.name == '.local-agent-record-janitor':
+        if path.name in {'.local-agent-record-janitor', '.local-agent-manager'}:
             # The coordinator creates its resource lock/journal after plan.
             frozen_files._plain(path.lstat(), directory=True)
         else:

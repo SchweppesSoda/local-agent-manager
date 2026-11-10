@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Iterator, Literal, Mapping
 
 
-_CONTROL_DIRECTORY = ".local-agent-record-janitor"
 _BACKUP_DIRECTORY = "legacy-index-backups"
 _LOCK_FILE = "legacy-index.lock"
 _INDEX_FILE = "session_index.jsonl"
@@ -941,7 +940,8 @@ def _prepare_backup(
 def _discard_prepared_backup(home: Path, prepared: _PreparedBackup) -> None:
     """Delete only the exact rollback files created for a verified mutation."""
 
-    backup_root = home / _CONTROL_DIRECTORY / _BACKUP_DIRECTORY
+    from .state_paths import control_directory
+    backup_root = control_directory(home) / _BACKUP_DIRECTORY
     try:
         if prepared.directory.parent.resolve(strict=True) != backup_root.resolve(
             strict=True
@@ -989,7 +989,8 @@ def _load_backup(
     home: Path,
     backup_id: str,
 ) -> tuple[dict[str, Any], bytes, Path]:
-    control = home / _CONTROL_DIRECTORY
+    from .state_paths import control_directory
+    control = control_directory(home)
     backup_root = control / _BACKUP_DIRECTORY
     _validate_existing_private_directory(control)
     _validate_existing_private_directory(backup_root)
@@ -1167,8 +1168,23 @@ def _determine_target_state(
 
 @contextlib.contextmanager
 def _exclusive_home_lock(home: Path) -> Iterator[None]:
-    control, _ = _ensure_control_directories(home)
-    lock_path = control / _LOCK_FILE
+    from .mutation_guard import mutation_roots
+
+    with mutation_roots((home,)):
+        with _legacy_index_lock(home):
+            yield
+
+
+@contextlib.contextmanager
+def _legacy_index_lock(home: Path) -> Iterator[None]:
+    from .state_paths import LEGACY_CONTROL
+
+    _ensure_control_directories(home)
+    # Preserve the original lock identity across journal/rollback migration.
+    # Older standalone index repair callers use this same OS lock.
+    legacy_control = home / LEGACY_CONTROL
+    _ensure_private_directory(home, legacy_control)
+    lock_path = legacy_control / _LOCK_FILE
     existing = _optional_lstat(lock_path, description="Janitor lock")
     if existing is not None:
         _validate_regular_unique(lock_path, existing)
@@ -1237,7 +1253,8 @@ def _unlock_descriptor(descriptor: int) -> None:
 
 
 def _ensure_control_directories(home: Path) -> tuple[Path, Path]:
-    control = home / _CONTROL_DIRECTORY
+    from .state_paths import control_directory
+    control = control_directory(home)
     backup_root = control / _BACKUP_DIRECTORY
     _ensure_private_directory(home, control)
     _ensure_private_directory(control, backup_root)

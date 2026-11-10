@@ -101,6 +101,23 @@ class ChildRecoveryTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "unknown")
         self.assertEqual(before, self.snapshot_journal())
 
+    def test_migrated_child_status_and_verify_accept_original_exact_locator(self):
+        from local_agent_manager.state_maintenance import run_state_command
+
+        self.assertEqual(self.verify()["goal_status"], "completed_with_residuals")
+        original_path = self.store.plan_path
+        original_bytes = original_path.read_bytes()
+        preview = run_state_command("migrate", self.home)
+        migrated = run_state_command("migrate", self.home, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(migrated["phase"], "complete")
+        self.store = OperationStore(self.home, self.store.operation_id)
+        self.assertEqual(self.store.plan_path.read_bytes(), original_bytes)
+        self.assertEqual(self.coordinator.status_operation(**self.args)["goal_status"], "completed_with_residuals")
+        self.remove_native()
+        result = self.coordinator.verify_operation(**self.args, plan_path=original_path)
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertEqual(self.store.plan_path.read_bytes(), original_bytes)
+
     def test_tampered_plan_and_truncated_events_remain_unknown(self):
         original = self.store.plan_path.read_bytes()
         plan = json.loads(original)

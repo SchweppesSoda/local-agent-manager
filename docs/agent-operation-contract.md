@@ -19,6 +19,9 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 - Recovery evidence or rollback copies: read
   [Operation evidence and receipts](agent-automation.md#operation-evidence-and-receipts)
   and [Temporary rollback copies](agent-automation.md#temporary-rollback-copies).
+- Manager state cleanup or layout migration: read [State maintenance](state-maintenance.md).
+  Use its explicit-root preview/apply commands and retain the permanent lock
+  and migration marker at their original location.
 
 ## Required agent workflow
 

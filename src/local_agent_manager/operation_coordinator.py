@@ -4983,9 +4983,9 @@ class OperationCoordinator:
                                 + ", ".join(sorted(unreleased))
                             )
                     effective_binary_resolver = binary_resolver or choose_codex_binary
-                    if live.codex_bin is not None:
+                    default_bin = getattr(live, "codex_bin", None)
+                    if default_bin is not None:
                         base_resolver = effective_binary_resolver
-                        default_bin = live.codex_bin
                         effective_binary_resolver = (
                             lambda hint, resolver=base_resolver, default_binary=default_bin: resolver(
                                 hint if hint is not None else default_binary
@@ -6169,6 +6169,7 @@ __all__ = ["OperationCoordinator", "OperationCoordinatorError"]
 
 def _operation_plan_path(root: Path, operation_id: str) -> Path:
     """Map one explicit store/operation root to the canonical plan path."""
+    from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, control_directory, relocated_plan_path
 
     if not operation_id:
         raise OperationCoordinatorError("operation ID is required to locate a plan")
@@ -6176,12 +6177,12 @@ def _operation_plan_path(root: Path, operation_id: str) -> Path:
     name = root.name.casefold()
     operation_name = str(operation_id).casefold()
     if name == operation_name:
-        return root / "plan.json"
+        return relocated_plan_path(root / "plan.json")
     if name == "operations":
-        return root / operation_id / "plan.json"
-    if name == ".local-agent-record-janitor":
-        return root / "operations" / operation_id / "plan.json"
-    return root / ".local-agent-record-janitor" / "operations" / operation_id / "plan.json"
+        return relocated_plan_path(root / operation_id / "plan.json")
+    if name in {LEGACY_CONTROL, MANAGER_CONTROL}:
+        return relocated_plan_path(root / "operations" / operation_id / "plan.json")
+    return control_directory(root) / "operations" / operation_id / "plan.json"
 
 
 def _find_operation_plan(

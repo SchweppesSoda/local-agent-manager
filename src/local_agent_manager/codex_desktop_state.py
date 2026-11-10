@@ -1129,12 +1129,8 @@ def _create_backup(
         + "-"
         + uuid.uuid4().hex[:12]
     )
-    directory = (
-        snapshot.codex_home
-        / ".local-agent-record-janitor"
-        / "desktop-state-backups"
-        / backup_id
-    )
+    from .state_paths import control_directory
+    directory = control_directory(snapshot.codex_home) / "desktop-state-backups" / backup_id
     try:
         directory.mkdir(parents=True, exist_ok=False)
         for state_path in snapshot.state_paths:
@@ -1198,11 +1194,8 @@ def _discard_backup(
     snapshot: DesktopStateSnapshot,
     backup_directory: Path,
 ) -> str | None:
-    expected_root = (
-        snapshot.codex_home
-        / ".local-agent-record-janitor"
-        / "desktop-state-backups"
-    )
+    from .state_paths import control_directory
+    expected_root = control_directory(snapshot.codex_home) / "desktop-state-backups"
     try:
         if backup_directory.parent.resolve(strict=True) != expected_root.resolve(
             strict=True

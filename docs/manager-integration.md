@@ -12,7 +12,7 @@ Skill 命令显式接受 `--repo-root`。只给配置时，按配置位置展开
 
 发行包、主命令和模块采用新名字，旧 CLI 和模块保留薄兼容入口。旧业务子模块转发到同一对象，旧路径的 patch 修改实际实现。根包和 adapters 包保留真实兼容入口，已有可执行模块通过新进程执行相应实现。
 
-历史协议 `larj.*`、变量 `LARJ_*`、记录控制目录、Skill 源状态键和恢复 journal 保持原样。新的实现摘要覆盖 Skill 执行代码、相关资源和共享 provider 解析。旧计划重新生成，原生证据按原 source、adapter、policy 与 binding 继续判断。代码迁移不写入新的 verified 结论。
+历史协议 `larj.*`、变量 `LARJ_*`、Skill 源状态键和恢复 journal 保持原样。记录控制目录可显式迁移，永久锁保留原位置，迁移标记阻止旧版本写入，详见 [状态维护](state-maintenance.md)。新的实现摘要覆盖 Skill 执行代码、相关资源和共享 provider 解析。旧计划重新生成，原生证据按原 source、adapter、policy 与 binding 继续判断。代码迁移不写入新的 verified 结论。
 
 ## 多源协调与恢复
 

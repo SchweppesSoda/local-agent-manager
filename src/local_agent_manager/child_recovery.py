@@ -20,6 +20,8 @@ def query_child_operation(coordinator: Any, path: Path | None, *,
                           verify: bool, progress_callback: Any = None) -> dict | None:
     if path is None:
         return None
+    from .state_paths import relocated_plan_path
+    path = relocated_plan_path(path)
     raw = strict_json_load(path)
     if not isinstance(raw, dict) or not str(raw.get("schema_version", "")).startswith("larj.child-operation-plan."):
         return None

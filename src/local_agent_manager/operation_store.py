@@ -176,15 +176,25 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 class OperationStore:
-    def __init__(self, codex_home: Path, operation_id: str) -> None:
+    def __init__(self, codex_home: Path, operation_id: str, *, _control_name: str | None = None) -> None:
+        from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, control_directory
+
         self.codex_home = codex_home.expanduser().resolve()
         self.operation_id = validate_operation_id(operation_id)
-        self.directory = (
-            self.codex_home
-            / ".local-agent-record-janitor"
-            / "operations"
-            / self.operation_id
-        )
+        self._layout_override = _control_name is not None
+        if _control_name is not None and _control_name not in {LEGACY_CONTROL, MANAGER_CONTROL}:
+            raise OperationStoreError("Unsupported journal layout")
+        self._control_name = _control_name or LEGACY_CONTROL
+        if not self._layout_override:
+            try:
+                self._control_name = control_directory(self.codex_home).name
+            except (OSError, OperationStoreError):
+                # Construction also validates IDs while decoding an external
+                # plan. Filesystem trust errors belong to journal access under
+                # the root gate, where callers preserve blocked/unknown results.
+                # _ensure_directory always checks the current layout again.
+                pass
+        self.directory = self.codex_home / self._control_name / "operations" / self.operation_id
         self.plan_path = self.directory / "plan.json"
         self.events_path = self.directory / "events.jsonl"
         self.state_path = self.directory / "state.json"
@@ -579,25 +589,26 @@ class OperationStore:
         self._assert_safe()
         return receipt
 
-    def read_result(self) -> dict[str, Any] | None:
+    def read_result(self, *, maintain: bool = True) -> dict[str, Any] | None:
         # Receipt reads can finish compaction or expire an old directory.
         # Every caller, including status/inspection, needs the same mutex as
         # a writer before it reads the receipt that authorizes that cleanup.
         self._assert_safe()
         from .mutation_guard import mutation_roots
         with mutation_roots((self.codex_home,)):
-            return self._read_result_locked()
+            return self._read_result_locked(maintain=maintain)
 
-    def _read_result_locked(self) -> dict[str, Any] | None:
+    def _read_result_locked(self, *, maintain: bool = True) -> dict[str, Any] | None:
         self._assert_safe()
-        if self._purge_expired_receipt_if_needed():
+        if maintain and self._purge_expired_receipt_if_needed():
             return None
         receipt = self._read_receipt()
         if receipt is not None:
             # A valid receipt is authoritative.  If a prior compaction was
             # interrupted after publishing it, finish removing only the known
             # detail files without touching the live lock.
-            self._discard_detailed_files(ignore_errors=True)
+            if maintain:
+                self._discard_detailed_files(ignore_errors=True)
             return self._result_from_receipt(receipt)
         result_stat = _optional_lstat(self.result_path)
         if result_stat is None:
@@ -656,10 +667,14 @@ class OperationStore:
             _fsync_directory(self.directory)
 
     def _ensure_directory(self, *, create: bool) -> None:
+        from .state_paths import control_directory
+
+        if not self._layout_override and control_directory(self.codex_home).name != self._control_name:
+            raise OperationStoreError("Journal layout changed; reopen the operation in its migrated location")
         _validate_directory(self.codex_home, _required_lstat(self.codex_home))
         current = self.codex_home
         for part in (
-            ".local-agent-record-janitor",
+            self._control_name,
             "operations",
             self.operation_id,
         ):
@@ -1025,10 +1040,16 @@ def _validate_regular_file(path: Path, value: os.stat_result) -> None:
 
 
 def _file_identity(value: os.stat_result) -> tuple[int, int, int]:
+    # On Windows Python 3.12, lstat can expose creation time as st_ctime
+    # while fstat exposes change time there. st_birthtime_ns identifies the
+    # same creation consistently for the path and its already opened handle.
+    generation = getattr(value, "st_ctime_ns", int(value.st_ctime * 1_000_000_000))
+    if os.name == "nt":
+        generation = getattr(value, "st_birthtime_ns", generation)
     return (
         int(value.st_dev),
         int(value.st_ino),
-        int(getattr(value, "st_ctime_ns", int(value.st_ctime * 1_000_000_000))),
+        int(generation),
     )
 
 

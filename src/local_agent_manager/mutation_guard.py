@@ -453,7 +453,7 @@ def _covers(outer: MutationScope, inner: MutationScope) -> bool:
 def _journal_unknown(store: OperationStore) -> tuple[bool, bool]:
     """Return occupancy and the durable irreversible-attempt marker."""
     locked = store.lock_exists()
-    result = store.read_result()
+    result = store.read_result(maintain=False)
     if result is not None and result.get("compacted") is True:
         return locked, bool(result.get("mutation_started"))
     state = store.read_state()
@@ -484,8 +484,12 @@ def _journal_unknown(store: OperationStore) -> tuple[bool, bool]:
 
 
 def _check_siblings(scope: MutationScope, owner: OperationStore | None) -> None:
+    from .state_paths import control_directory
+
     tickets = getattr(_thread, "tickets", ())
-    for entry in sorted(_operations_directory(scope.root).iterdir()):
+    directory = control_directory(scope.root) / "operations"
+    _validate_directory(directory, _required_lstat(directory))
+    for entry in sorted(directory.iterdir()):
         if entry.name == ".mutation.lock":
             continue
         _validate_directory(entry, _required_lstat(entry))

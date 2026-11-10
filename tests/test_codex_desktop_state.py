@@ -150,6 +150,22 @@ class CodexDesktopStateTests(unittest.TestCase):
         self.assertFalse(result.backup_directory.exists())
         self.assertFalse(any(s.present for s in read_desktop_state(self.codex_home, targets).threads.values()))
 
+    def test_cleanup_after_state_migration_uses_new_temporary_backup_path(self) -> None:
+        from local_agent_manager.mutation_guard import mutation_roots
+        from local_agent_manager.state_maintenance import run_state_command
+
+        with mutation_roots((self.codex_home,)):
+            pass
+        preview = run_state_command("migrate", self.codex_home)
+        run_state_command("migrate", self.codex_home, apply=True, approved_hash=preview["plan_sha256"])
+        state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
+        result = execute_desktop_state_cleanup(self.codex_home,
+            {THREAD_ID: state.snapshot_fingerprint}, client_inspector=lambda *_: ())
+        self.assertEqual(result.deleted_catalog_rows, 1)
+        self.assertIn(".local-agent-manager", result.backup_directory.parts)
+        self.assertFalse(result.backup_directory.exists())
+        self.assertFalse(read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID].present)
+
     def test_dual_catalog_json_only_cleanup(self) -> None:
         self._json_only_state()
         self._second_catalog()

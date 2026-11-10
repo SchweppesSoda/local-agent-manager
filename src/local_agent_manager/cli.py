@@ -486,6 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("skills", help="Manage Skill sources and deployments")
+    subparsers.add_parser("state", help="Inspect, compact and migrate manager recovery metadata")
     subparsers.add_parser("resources", help="Locate bundled management Skills and operation documents")
 
     environment = subparsers.add_parser(
