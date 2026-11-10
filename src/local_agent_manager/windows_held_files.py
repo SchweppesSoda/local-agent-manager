@@ -11,7 +11,7 @@ from pathlib import Path
 from . import frozen_files
 
 
-def exclusive_fd(path, *, writable=False, delete=False):
+def exclusive_fd(path, *, writable=False, delete=False, directory=False):
     if os.name != "nt":
         raise frozen_files.FrozenFilesError("windows_file_lease_unavailable")
     import ctypes
@@ -23,7 +23,7 @@ def exclusive_fd(path, *, writable=False, delete=False):
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
     handle = kernel.CreateFileW(str(path), 0x80000000 | (0x40000000 if writable else 0) | (0x10000 if delete else 0),
-                                0, None, 3, 0x200000, None)
+                                0, None, 3, 0x200000 | (0x2000000 if directory else 0), None)
     if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
     try:

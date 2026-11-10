@@ -36,12 +36,37 @@ sources/deployments, and the record contract for sessions and checkpoints.
 Never remove a current runtime, managed Python environment or node_modules
 tree just because another installation exists.
 
-The matching repository's `docs/state-maintenance.md` documents the proposed
-shared artifact discovery/qualification/plan/apply/verify/recovery design and
-client coverage gaps. That design is not an implemented bulk-cleanup command.
-Prepare exact targets and evidence under the user's audit scope; production
-disposal, updater policy changes and stopping clients require their own
-existing authorization.
+Use the matching repository's `docs/state-maintenance.md` for the implemented
+`maintenance inventory/plan/apply/run/status/verify` workflows and category
+qualification. Prepare exact targets and evidence under the user's audit scope.
+Production disposal, updater policy changes and stopping clients follow the
+existing authorization for those objects and actions.
+
+## AI-reviewed runtime retirement
+
+Use `maintenance inventory --client <owner> --root <physical install/profile root>
+--category runtimes --json`. Inspect the actual launcher and installer selection,
+PATH, frontend/plugin/daemon bindings, running executables and rollback roles.
+Make these judgments from the observed host context and explain unresolved
+coverage. Keep unresolved or shared selections and required rollback versions.
+
+Generate the `lam.runtime-review.v1` document described in the matching
+`docs/state-maintenance.md`. Classify every candidate as remove or preserve using
+its exact path and `snapshot_sha256`, and cite relevant configuration files,
+direct installer pointers and absent override slots. The operating AI authors
+the assessment and JSON. The tool binds it to the current local evidence.
+For absent override slots, identify every actual writer and cite its native
+Windows executable as a reference with `"writer": true`. The tool leases these
+images and checks that their processes are closed. Preserve affected versions
+where writer coverage remains unresolved.
+Use `maintenance plan/run --category runtimes --runtime-review <file>` for the
+authorized scope and `maintenance status/verify` for recovery. Resolve stale
+snapshots through fresh inventory and assessment. Apply requires the plan hash,
+unchanged retained/runtime/selector evidence and Windows file exclusion.
+
+Use scoped client/updater closure when those leases require it. Verify selected
+files are gone and retained launch bindings remain usable. Installed runtime
+cleanup and source implementation have separate target scopes.
 
 ## Standalone CLI installation on Windows
 

@@ -16,6 +16,7 @@ from itertools import islice
 import time
 
 from local_agent_manager import frozen_files as ff
+from local_agent_manager import runtime_artifacts
 from local_agent_manager.discovery import CINDY_PROFILE_NAMES, default_appdata, default_codex_home, default_local_appdata
 
 CLIENTS = ('cindy', 'codex', 'codex-desktop', 'claude', 'pi', 't3code', 'paseo',
@@ -33,7 +34,7 @@ def root_path(value):
     return root
 
 
-def default_profiles(clients):
+def default_profiles(clients, *, include_runtime_roots=False):
     """Known candidates and environment roots remain observations until qualified."""
     home, roaming, local = Path.home(), default_appdata(), default_local_appdata()
     if os.name != 'nt':
@@ -54,6 +55,9 @@ def default_profiles(clients):
         'herdr': [roaming / 'herdr', roaming / 'herdr-dev'],
         'qwenwork': [roaming / name for name in ('QwenWorkCN', 'QwenWorkCNDev', 'QwenWorkCNCanary')],
     }
+    if include_runtime_roots:
+        roots['claude'].append(home / '.local/share/claude')
+        roots['codex-desktop'].extend((local / 'OpenAI/Codex', local / 'Programs/OpenAI/Codex'))
     if 'orca' in clients:
         from local_agent_manager.orca_discovery import default_orca_root
         roots['orca'] = [default_orca_root()]
@@ -276,12 +280,15 @@ def _past_log_date(name, cutoff_ns):
         return False
 
 
-def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze=False):
+def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze=False, runtime_review=None):
     """Classify only named product artifacts. Bodies never enter public reports."""
     if client not in CLIENTS or not categories or set(categories) - set(CATEGORIES):
         raise ValueError('maintenance_scope_invalid')
     root = root_path(value)
     observations, changes, dependencies, absent_paths = [], [], {}, set()
+    if runtime_review is not None and 'runtimes' not in categories:
+        raise ValueError('runtime_review_requires_runtime_category')
+    runtimes, runtime_evidence = None, None
 
     def candidate(relative, category, reason, *, proofs=(), expected_files=(), absent=()):
         row = _row(root, relative, category, 'eligible_for_plan', reason)
@@ -392,9 +399,24 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         except (OSError, ValueError, RuntimeError):
             observations.append(_row(root, 'pending', 'downloads', 'unqualified', 'updater_metadata_or_selection_unverified'))
 
+    if 'runtimes' in categories:
+        runtimes = runtime_artifacts.inventory(client, root)
+        selected = set()
+        if runtime_review is not None:
+            runtime_evidence, runtime_changes = runtime_artifacts.prepare(
+                client, root, runtimes, runtime_review, freeze=freeze)
+            changes.extend({'category': 'runtimes', 'evidence': change} for change in runtime_changes)
+            selected = {item['path'] for item in runtime_review['remove']}
+        for item in runtimes['candidates']:
+            observations.append({**item, 'category': 'runtimes',
+                'decision': 'eligible_for_plan' if item['path'] in selected else 'retain',
+                'reason': 'ai_reviewed_retirement' if item['path'] in selected else 'runtime_review_required_or_preserved'})
+        observations.extend({**item, 'category': 'runtimes', 'decision': 'unqualified'}
+                            for item in runtimes['unqualified'])
+
     for category, relatives, reason in (
         ('downloads', ('agent-binary-downloads', 'updates', 'pending', 'installer.exe', 'current.blockmap'), 'updater_selection_and_install_receipt_required'),
-        ('runtimes', ('claude-code', 'codex', 'pi', 'tools', 'versions', 'managed-runtime', 'browser-runtime'), 'complete_current_previous_and_consumer_graph_required'),
+        ('runtimes', ('claude-code', 'codex-package', 'codex', 'pi', 'tools', 'versions', 'managed-runtime', 'browser-runtime'), 'runtime_container_preserved_unit_decisions_require_review'),
     ):
         if category in categories:
             for relative in relatives:
@@ -405,5 +427,6 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
             'cutoff_ns': cutoff_ns, 'observations': observations, 'changes': changes,
             'dependencies': sorted(dependencies.values(), key=lambda item: item['path']),
             'absent_paths': sorted(absent_paths),
+            'runtime_inventory': runtimes, 'runtime_evidence': runtime_evidence,
             'coverage': {'scope': 'registered_relative_artifacts', 'session_stores_scanned': False,
                          'allocated_bytes_known': False}}

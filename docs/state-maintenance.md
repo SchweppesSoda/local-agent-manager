@@ -128,7 +128,7 @@ accompanies actual OS leases on every selected file and recovery dependency.
 | `logs` | Dated or rotated diagnostics with a qualified Cindy NDJSON or tracing/electron-log header, past retention. Current files and nested session/terminal diagnostics retain their record ownership. |
 | `backups` | Dated Cindy SQLite backups with a recognized migration marker, healthy compatible current database and two healthy newer generations. Codex atomic fallback temporary generations require valid current and fallback JSON slots. Both generation time and mtime must satisfy retention. |
 | `downloads` | Old unselected electron-updater temporary downloads with qualified pending metadata and frozen selected installer/base dependencies. Pending installers, packages and differential bases retain their updater roles. |
-| `runtimes` | Bounded inventory with explicit retained consumer/selection requirements. Runtime pruning requires an owning installer and complete consumer rules. |
+| `runtimes` | Recognized versioned install units, with an AI-authored review of ownership, selection, shared consumers and rollback. The plan freezes selected units, retained replacements and cited selector/configuration evidence. |
 
 The default retention period is 14 days. Cindy backup pruning keeps the newest
 two generations and validates their health before pruning older generations.
@@ -164,6 +164,100 @@ layouts, access errors and traversal budgets prevent affected qualification.
 Inventory, ready plans and completed eligible actions return 0. Blocked, unknown
 and verified residual outcomes return 3. Argument errors return 2.
 
+### AI-reviewed runtime retirement
+
+The operating AI inspects runtime candidates and the host's actual launch
+configuration, then writes a `lam.runtime-review.v1` document. This separates
+the contextual decision from mechanical file validation. Product versions and
+binary hashes come from the current observation and approved plan. Compatible
+upgrades require a fresh observation and review using the same workflow.
+
+```powershell
+local-agent-manager maintenance inventory --client cindy --root '<physical profile root>' --category runtimes --json
+local-agent-manager maintenance plan --client cindy --root '<physical profile root>' --category runtimes --runtime-review runtime-review.json --plan maintenance.json --json
+local-agent-manager maintenance apply --plan maintenance.json --plan-sha256 '<reviewed plan hash>' --clients-closed --json
+local-agent-manager maintenance run --client cindy --root '<physical profile root>' --category runtimes --runtime-review runtime-review.json --clients-closed --json
+```
+
+The AI prepares this document under the user's established scope. The user can
+ask to clean obsolete runtimes in plain language. The AI handles the commands,
+evidence and JSON. A source-development request authorizes source work;
+disposal of installed programs and closing clients follow the user's selected
+maintenance scope.
+
+```json
+{
+  "schema_version": "lam.runtime-review.v1",
+  "client": "cindy",
+  "root": "C:\\Users\\example\\AppData\\Roaming\\CindyGlobal",
+  "assessment": {
+    "ownership": "These are Cindy-managed Claude version directories.",
+    "selection": "The inspected launcher selects the retained version.",
+    "consumers": "The inspected frontend configurations and PATH use the retained version.",
+    "rollback": "Keep the selected version and the required rollback generation."
+  },
+  "remove": [
+    {"path": "claude-code/2.1.10", "snapshot_sha256": "<inventory snapshot_sha256>", "reason": "Superseded version with no observed consumer or rollback role."}
+  ],
+  "preserve": [
+    {"path": "claude-code/2.1.20", "snapshot_sha256": "<inventory snapshot_sha256>", "reason": "Selected shared runtime."}
+  ],
+  "references": [
+    {"root": "C:\\Users\\example\\.t3", "path": "userdata/settings.json", "reason": "Inspected frontend runtime selection."}
+  ]
+}
+```
+
+Classify every candidate in the selected root and retain a replacement for
+each engine being pruned. Inspect installation/selection metadata, shell and
+frontend launch bindings, running processes, shared consumers and required
+rollback roles. Cite the relevant metadata files, direct installer pointers
+and absent override slots in `references`. An unresolved consumer or selector
+keeps the affected version in `preserve`. Explain the observed coverage in
+the assessment. The AI's assessment establishes semantic disposal eligibility.
+The tool validates its scope and evidence bindings. The operating AI remains
+responsible for the factual accuracy and coverage of its assessment.
+
+An absent reference requires lifecycle exclusion of its actual writers. Add
+each producer's native Windows executable to `references` with `"writer": true`
+and explain its ownership. The tool validates a PE image, holds its exclusive
+file lease and checks the Windows process snapshot after acquiring all leases.
+Any running process with a declared writer's basename blocks execution. The AI
+establishes the full set of relevant writer executables, including detached
+updaters or helpers. Where writer coverage or exclusion remains unresolved,
+preserve the affected runtime. An absent slot without an executable-writer
+binding blocks planning.
+
+Candidate discovery covers Cindy Codex packages/legacy versions, Claude and Pi
+version directories, standalone Codex release directories, Claude native
+versions, Codex desktop versioned bins and T3 platform/version runtime units.
+Use the physical install root for Claude (`~/.local/share/claude`) or Codex
+desktop (`<local appdata>/OpenAI/Codex` or `Programs/OpenAI/Codex`). Runtime
+inventory includes these known install-root candidates. Other layouts retain
+their existing observation/qualification limits. Native sessions, plugins and
+managed environments follow their owning workflows.
+
+Inventory tokens bind metadata and membership. Planning adds content hashes
+for removed and preserved units, and freezes cited references, including
+absence and direct-link identities/targets. Apply checks the complete inventory
+again, leases all selected and preserved files and present references, and
+excludes direct-pointer replacement through Windows handles. A pointer naming
+a selected removal target blocks planning. Changed files, selectors, new
+versions and newly present overrides require a fresh plan. A changed candidate
+snapshot requires renewed AI assessment. Linked/hard-linked runtime units,
+chained pointers and traversal/hash budgets prevent affected qualification.
+Version-container membership is frozen and rechecked after leases and during
+final verification. New members in a retired unit keep recovery unresolved.
+The 14-day cache/log retention setting grants no runtime disposal authority.
+Runtime trees have a separate 4 GiB hashing budget per unit and the shared
+512 MiB per-file and 20,000-member traversal budgets.
+
+Execution removes the exact approved runtime files and retains empty directory
+containers. Verification checks their absence and retained dependencies.
+An interruption uses the existing maintenance recovery workflow and cannot
+replay the deletion attempt. Retained runtime and selector leases can require
+closing their owning clients and updater within the authorized scope.
+
 The remaining client-specific qualification work follows the design below.
 
 ### Reuse and gaps
@@ -196,7 +290,7 @@ incomplete snapshot, not an absent installation.
 | Current automatic fallback | Producer's stable slot semantics and revision identity | Retain even when old/new bytes hash equally; a writer can replace the same bytes |
 | Manager rollback evidence | Validated operation result plus supported native verification; approved recovery workflow | `apply.lock`, permanent `.mutation.lock`, unknown/partial operations, corrupt/missing results |
 | Download/extraction residue | Owning installer/updater, completed install receipt, no pending update, selected rollback/base archive, lock or consumer | `pending` by name alone is not stale; current differential-update base may be reused |
-| Managed old runtime | Current/previous selection metadata, resolved link identity, all frontend/plugin/daemon consumers, process coverage and owning pruning contract | Active/shared runtime, unverified executable aliases, separate app-server daemon/runtime roles |
+| Managed old runtime | AI assessment of installer ownership, current/previous selections, frontend/plugin/daemon consumers and processes; exact unit snapshots and cited configuration/pointer evidence | Active/shared runtime, unresolved consumers/selectors, separate app-server daemon/runtime roles |
 | Rebuildable cache | Product-specific producer and rebuild path, no user/session state, no active writer, exact frozen inventory | Whole `sessionData`, `Local Storage`, IndexedDB, cookie stores and plugin sources |
 | Logs/crash dumps | Diagnostic owner, resolved incident/retention decision, closed writer and no recovery references | Open files, terminal transcripts participating in record recovery, evidence still needed for an unresolved incident |
 

@@ -13,6 +13,7 @@ import sys
 
 from local_agent_manager import frozen_files as ff
 from local_agent_manager import client_artifacts as rules
+from local_agent_manager import runtime_artifacts
 from local_agent_manager.mutation_guard import MutationScope, mutation_guard, mutation_roots
 from local_agent_manager.operation_store import OperationStore, OperationStoreError, plan_sha256, strict_json_load, write_new_json
 from local_agent_manager.windows_held_files import HeldFiles
@@ -31,7 +32,7 @@ def _error_code(error):
 
 def _implementation():
     from local_agent_manager import windows_held_files
-    modules = (sys.modules[__name__], rules, ff, windows_held_files)
+    modules = (sys.modules[__name__], rules, runtime_artifacts, ff, windows_held_files)
     return {Path(module.__file__).name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
             for module in modules}
 
@@ -69,11 +70,26 @@ def _files(document):
     return [proof for change in document['artifact_evidence']['changes'] for proof in change['evidence']['files']]
 
 
-def _selected_root(client, root):
+def _dependencies(document):
+    evidence = document['artifact_evidence']
+    root = Path(evidence['root'])
+    dependencies = [(root, proof) for proof in evidence['dependencies']]
+    if evidence.get('runtime_evidence'):
+        dependencies.extend(runtime_artifacts.dependencies(root, evidence['runtime_evidence']))
+    unique = {}
+    for source_root, proof in dependencies:
+        key = os.path.normcase(str(source_root / proof['path']))
+        if key in unique and unique[key][1] != proof:
+            raise ValueError('maintenance_dependency_changed')
+        unique[key] = (source_root, proof)
+    return list(unique.values())
+
+
+def _selected_root(client, root, *, categories):
     if root is not None:
         return rules.root_path(root)
     observed = {}
-    for profile in rules.default_profiles((client,)):
+    for profile in rules.default_profiles((client,), include_runtime_roots='runtimes' in categories):
         try:
             path = rules.root_path(profile['root'])
         except FileNotFoundError:
@@ -84,11 +100,12 @@ def _selected_root(client, root):
     return next(iter(observed.values()))
 
 
-def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, operation_id=None):
+def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, operation_id=None, runtime_review=None):
     if not 0 <= older_than_days <= 36500:
         raise ValueError('maintenance_retention_invalid')
     cutoff = time.time_ns() - older_than_days * 86400 * 1000000000
-    evidence = rules.inspect_profile(client, _selected_root(client, root), categories=categories, cutoff_ns=cutoff, freeze=True)
+    evidence = rules.inspect_profile(client, _selected_root(client, root, categories=categories), categories=categories,
+                                    cutoff_ns=cutoff, freeze=True, runtime_review=runtime_review)
     paths = [proof['path'] for change in evidence['changes'] for proof in change['evidence']['files']]
     if len(paths) != len(set(paths)) or set(paths) & {p['path'] for p in evidence['dependencies']}:
         raise ValueError('maintenance_overlapping_scope')
@@ -105,6 +122,9 @@ def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, o
                 'authorization': {'blockers': []}, 'artifact_evidence': evidence,
                 'retained': retained, 'implementation': _implementation(), 'plan_path': str(destination)}
     document['plan_sha256'] = plan_sha256(document)
+    removed = {os.path.normcase(str(Path(evidence['root']) / path)) for path in paths}
+    if removed & {os.path.normcase(str(source_root / proof['path'])) for source_root, proof in _dependencies(document)}:
+        raise ValueError('maintenance_overlapping_scope')
     if destination != store.plan_path:
         write_new_json(destination, document)
     store.accept_plan(document)
@@ -146,6 +166,8 @@ def _check_dependencies(document):
     for proof in evidence['dependencies']:
         if ff.read_file(root, proof['path'])[0] != proof:
             raise ff.FrozenFilesError('maintenance_dependency_changed')
+    if evidence.get('runtime_evidence'):
+        runtime_artifacts.verify(root, evidence['runtime_evidence'])
     _check_absences(document)
     return root
 
@@ -159,6 +181,8 @@ def _check_absences(document):
         except FileNotFoundError:
             continue
         raise ff.FrozenFilesError('maintenance_previously_absent_sidecar_appeared')
+    if evidence.get('runtime_evidence'):
+        runtime_artifacts.check_absences(evidence['runtime_evidence'])
 
 
 def _publish(document, store, state, goal, *, code=None, remaining=None):
@@ -196,12 +220,16 @@ def apply(path, *, approved_hash, clients_closed=False):
         try:
             root = _check_dependencies(document)
             fresh = rules.inspect_profile(document['scope']['client'], root,
-                categories=document['scope']['categories'], cutoff_ns=document['scope']['cutoff_ns'], freeze=True)
+                categories=document['scope']['categories'], cutoff_ns=document['scope']['cutoff_ns'], freeze=True,
+                runtime_review=(document['artifact_evidence'].get('runtime_evidence') or {}).get('review'))
             if fresh != document['artifact_evidence']:
                 raise ff.FrozenFilesError('maintenance_plan_drift')
             with HeldFiles() as held:
-                for proof in document['artifact_evidence']['dependencies']:
-                    held.acquire(root, proof)
+                runtime_evidence = document['artifact_evidence'].get('runtime_evidence')
+                if runtime_evidence:
+                    held.stack.enter_context(runtime_artifacts.hold_pointers(runtime_evidence))
+                for source_root, proof in _dependencies(document):
+                    held.acquire(source_root, proof)
                 for proof in _files(document):
                     held.acquire(root, proof, delete=True)
                 # Validate the complete member list after all leases are held.
@@ -212,6 +240,10 @@ def apply(path, *, approved_hash, clients_closed=False):
                                 or rules._names(root, directory['path']) != directory['entries']):
                             raise ff.FrozenFilesError('maintenance_directory_changed')
                 _check_absences(document)
+                if runtime_evidence:
+                    runtime_artifacts.check_directories(root, runtime_evidence['preserved'])
+                    runtime_artifacts.check_containers(root, runtime_evidence['containers'])
+                    runtime_artifacts.check_writers(runtime_evidence)
                 if _files(document):
                     state.update(phase='executing', mutation_started=True, modified=True, current_action_state='started')
                     store.append_event({'event': 'mutation_started'}, state_updates=state)
@@ -228,6 +260,9 @@ def apply(path, *, approved_hash, clients_closed=False):
 
 def _remaining(document):
     root = _check_dependencies(document)
+    if document['artifact_evidence'].get('runtime_evidence'):
+        runtime_artifacts.check_removed_directories(root,
+            [change['evidence'] for change in document['artifact_evidence']['changes'] if change['category'] == 'runtimes'])
     remaining = []
     for proof in _files(document):
         try:
@@ -307,6 +342,9 @@ def main(argv=None):
             child.add_argument('--root', type=Path)
             child.add_argument('--category', choices=rules.CATEGORIES, action='append', required=verb != 'inventory')
             child.add_argument('--older-than-days', type=int, default=14)
+        if verb in {'plan', 'run'}:
+            child.add_argument('--runtime-review', type=Path,
+                               help='AI-reviewed exact runtime decisions and dependency files')
         if verb in {'plan', 'run', 'apply', 'status', 'verify'}:
             child.add_argument('--plan', type=Path, required=verb == 'apply')
         if verb in {'status', 'verify'}:
@@ -325,7 +363,9 @@ def main(argv=None):
                 raise ValueError('maintenance_explicit_root_requires_client')
             if not 0 <= args.older_than_days <= 36500:
                 raise ValueError('maintenance_retention_invalid')
-            profiles = [{'client': args.client, 'root': str(args.root)}] if args.root else rules.default_profiles((args.client,) if args.client else rules.CLIENTS)
+            profiles = [{'client': args.client, 'root': str(args.root)}] if args.root else rules.default_profiles(
+                (args.client,) if args.client else rules.CLIENTS,
+                include_runtime_roots=not args.category or 'runtimes' in args.category)
             reports = []
             cutoff = time.time_ns() - args.older_than_days * 86400 * 1000000000
             for profile in profiles:
@@ -344,7 +384,8 @@ def main(argv=None):
             if args.command == 'run' and not args.clients_closed:
                 raise ValueError('maintenance_clients_closed_ack_required')
             result = plan(args.client, args.root, categories=sorted(set(args.category)),
-                          older_than_days=args.older_than_days, plan_path=args.plan)
+                          older_than_days=args.older_than_days, plan_path=args.plan,
+                          runtime_review=strict_json_load(args.runtime_review) if args.runtime_review else None)
             if args.command == 'run':
                 dispatching = True
                 result = apply(result['plan_path'], approved_hash=result['plan_sha256'], clients_closed=True)
