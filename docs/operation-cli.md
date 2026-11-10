@@ -275,6 +275,9 @@ local-agent-record-janitor operation verify --operation-id '<operation ID from p
 The dependency installer requires Node.js 18
 or newer and npm; it installs the locked `classic-level` package without install
 scripts. `LARJ_LEVELDB_RUNTIME` can select a dedicated runtime directory.
+The default is `local-agent-manager/runtimes/leveldb-v1` under the local
+application-data directory. An existing legacy runtime remains discoverable
+when the new directory is absent.
 Deletion never installs dependencies implicitly. Freeze/apply bind the Node
 binary, helper and dependency code, native library, physical store and logical
 before/after projections. Planning and status inspect private copies.

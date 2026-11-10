@@ -16,6 +16,21 @@ PRIVATE = "PRIVATE_OFFICE_DRAFT_SENTINEL"
 RELATIVE = "Partitions/main/Local Storage/leveldb"
 
 
+class LevelDBRuntimeDiscoveryTests(unittest.TestCase):
+    def test_explicit_current_and_existing_legacy_runtime_precedence(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'LOCALAPPDATA': raw}, clear=True):
+            root = Path(raw)
+            current = root/'local-agent-manager/runtimes/leveldb-v1'
+            legacy = root/'local-agent-record-janitor/leveldb-v1'
+            self.assertEqual(drafts._runtime_directory(), current)
+            legacy.mkdir(parents=True)
+            self.assertEqual(drafts._runtime_directory(), legacy)
+            current.mkdir(parents=True)
+            self.assertEqual(drafts._runtime_directory(), current)
+            os.environ['LARJ_LEVELDB_RUNTIME'] = str(root/'explicit')
+            self.assertEqual(drafts._runtime_directory(), root/'explicit')
+
+
 class OfficeLevelDBTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
