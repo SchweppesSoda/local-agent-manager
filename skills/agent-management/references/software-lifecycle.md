@@ -18,6 +18,31 @@ Use the exact paths and identities again when checking the result. Refresh the s
 
 Report uninstall scope precisely: program files, extraction caches, retained profiles and shared resources have separate outcomes. Removing a runtime does not establish that its old instance data was removed. For T3 Antigravity, use the [instance-data scope checks](antigravity.md#distinguish-uninstall-results-from-discarded-instance-data) before treating an old profile as a selected disposal target.
 
+## Audit accumulated backups and runtime artifacts
+
+Start with metadata-only environment inventory and the exact owning profiles,
+including configured and shared consumers. Project path identities, sizes,
+producer/selection evidence and coverage errors; do not print configuration,
+credentials, transcripts or process command lines. Skip reparse targets and
+handle long paths and files disappearing during an active scan explicitly.
+Equal bytes, old timestamps, a `.bak` suffix or a `cache` directory do not prove
+that an object is disposable.
+
+Keep current fallback slots, migration/cloud-memory backups, unresolved
+rollback evidence and permanent coordination locks distinct from historical
+orphaned copies. Use `state inventory/cleanup` only for manager-owned evidence.
+Use the owning lifecycle workflow for runtimes/downloads, Skill management for
+sources/deployments, and the record contract for sessions and checkpoints.
+Never remove a current runtime, managed Python environment or node_modules
+tree just because another installation exists.
+
+The matching repository's `docs/state-maintenance.md` documents the proposed
+shared artifact discovery/qualification/plan/apply/verify/recovery design and
+client coverage gaps. That design is not an implemented bulk-cleanup command.
+Prepare exact targets and evidence under the user's audit scope; production
+disposal, updater policy changes and stopping clients require their own
+existing authorization.
+
 ## Standalone CLI installation on Windows
 
 Run the vendor installer or package manager in a normal Windows host shell for the intended user, outside the packaged Agent's private or sandboxed environment. Before running an installer, verify the account, effective AppData roots, and the destination for the chosen install scope. Keep the standalone executable and its command entry point in the vendor-supported host locations, outside desktop app caches and sandbox directories. If the host shell is unavailable, give the user the exact installer command and the context in which to run it.

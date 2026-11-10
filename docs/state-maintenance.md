@@ -96,3 +96,115 @@ exact journal plan path also resolves through the completed marker. Frozen
 operation documents and original plans remain byte-for-byte intact. An
 unexecuted record-deletion plan can still require regeneration when its
 implementation fingerprints have changed during a manager upgrade.
+
+## Client backups, runtimes and caches: proposed extension
+
+The following is an implementation design, not a currently available cleanup
+command. `state cleanup` remains limited to manager-owned evidence. A database
+backup, an updater download and a session artifact are different targets even
+when all three have a `.bak`, `cache` or `tmp` name. Environment inventory is not
+deletion authorization.
+
+### Reuse and gaps
+
+| Existing entry | Reuse | Missing capability |
+|---|---|---|
+| `environment inventory/doctor` | Physical roots, installation/layout evidence, configured runtime bindings, observation coverage | Bounded storage accounting, backup roles, updater selection/rollback slots, complete consumer graph; WorkBuddy/Orca/Herdr/QwenWork environment discovery |
+| `state inventory/cleanup/migrate` | Journal validation, exact preview hash, permanent root locks, terminal receipt compaction | Qualification of nonempty historical rollback directories; never infer their outcome from age |
+| `delete plan/apply/run`, `operation status/verify` | Frozen approval, mutation admission, event/result binding, unknown-outcome protection, final evidence | Distinct artifact-maintenance mutation families and client rules, not reuse of session-delete authority |
+| Software lifecycle skill | Owning installer/updater/uninstaller, active version and consumers | Format-qualified download/pruning adapters when the owner exposes no suitable operation |
+| Skill management | Source/discovery bindings, shared resources, deployment journals | Vendor plugin-cache version/refcount rules; a plugin or Skill source is not disposable merely because it is cached |
+
+The next common component should return metadata-only observations for explicit
+or adapter-discovered roots. It should never run a discovered binary. Each
+observation needs root and file identity, source/owner, category and evidence,
+logical and allocated-byte coverage, links skipped, scan races/errors/budgets,
+consumer and recovery dependencies, and a decision of `retain`, `unqualified`
+or `eligible_for_plan`. An observed byte count is not reclaimable capacity.
+Deduplicate physical file identities and report hard-link savings separately;
+do not combine overlapping profile roots or equal-content copies as savings.
+Use Windows long-path-safe traversal; a disappearing active cache entry is an
+incomplete snapshot, not an absent installation.
+
+### Qualification rules
+
+| Category | Evidence needed before planning removal | Always retain or block |
+|---|---|---|
+| Automatic database backup | Producer/schema, exact source DB, successful migration/current health, no restore/fallback pointer, no unresolved journal; explicit backup-disposal scope | Current DB/WAL/SHM, unverified migration, only recoverable copy |
+| Config/migration/cloud-memory backup | Known generation and owner, successful replacement/sync evidence, recovery relation and retention decision | Current fallback slot, credentials, memory/source content without explicit disposal scope |
+| Current automatic fallback | Producer's stable slot semantics and revision identity | Retain even when old/new bytes hash equally; a writer can replace the same bytes |
+| Manager rollback evidence | Validated operation result plus supported native verification; approved recovery workflow | `apply.lock`, permanent `.mutation.lock`, unknown/partial operations, corrupt/missing results |
+| Download/extraction residue | Owning installer/updater, completed install receipt, no pending update, selected rollback/base archive, lock or consumer | `pending` by name alone is not stale; current differential-update base may be reused |
+| Managed old runtime | Current/previous selection metadata, resolved link identity, all frontend/plugin/daemon consumers, process coverage and owning pruning contract | Active/shared runtime, unverified executable aliases, separate app-server daemon/runtime roles |
+| Rebuildable cache | Product-specific producer and rebuild path, no user/session state, no active writer, exact frozen inventory | Whole `sessionData`, `Local Storage`, IndexedDB, cookie stores and plugin sources |
+| Logs/crash dumps | Diagnostic owner, resolved incident/retention decision, closed writer and no recovery references | Open files, terminal transcripts participating in record recovery, evidence still needed for an unresolved incident |
+
+Electron's [sessionData](https://www.electronjs.org/docs/latest/api/app#appgetpathname)
+contains both caches and persistent state. Its
+[HTTP-cache API](https://www.electronjs.org/docs/latest/api/session#sesclearcache)
+does not authorize clearing all browser storage. Likewise Claude's
+[file-history and session data](https://code.claude.com/docs/en/claude-directory#application-data)
+include checkpoint restore inputs. Keep those in the record/recovery domain;
+do not change the vendor's retention settings as part of an audit.
+Use the owning [Codex installer](https://github.com/openai/codex/blob/main/scripts/install/install.ps1)
+as evidence for the installed layout, then verify that the local implementation
+and selection metadata match; upstream `main` alone is not local qualification.
+Electron-updater separately tracks a
+[pending download](https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/DownloadedUpdateHelper.ts)
+and uses a [current installer as a differential-update input](https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/NsisUpdater.ts).
+Two equal-size installers therefore require role and pending-state verification,
+not a generic duplicate-file deletion rule.
+
+### Shared execution and recovery
+
+1. Discover and classify without content output or write authorization. Report
+   missing installation records, inaccessible roots, unobserved profiles and
+   unsupported formats separately. An environment override adds a profile to
+   protection coverage; it cannot silently remove another known consumer.
+2. Qualify only the selected artifacts using small client rules for producer,
+   schema, current/rollback selection and dependencies. Freeze the full exact
+   path set, revision identities and hashes, retained objects, consumer evidence,
+   capacity upper bound and implementation contract. New files never inherit
+   approval from a directory name. Return precise blockers and a reviewable plan.
+3. Apply through the common operation journal and root locks. Prefer an owning
+   API; an offline writer additionally needs actual OS exclusion, including
+   updater and shared-runtime consumers. `--clients-closed`, PID absence and an
+   advisory lock alone are insufficient. Never stop clients implicitly.
+4. Prepare durable before images only where restoration is necessary. Record
+   the irreversible attempt before deletion. Verify preserved identities and
+   selections, exact absence, database health where relevant, and the owning
+   application's limited offline reload/smoke contract. Report observed released
+   capacity separately from planned logical bytes.
+5. A caught reversible write failure restores through held handles. Crash or
+   partial deletion remains `unknown`; status/verify cannot silently replay it.
+   Quarantine or rollback copies consume space and are not reclaimed bytes.
+   Clear them only after qualified completion, never by changing journal state.
+
+The common engine should provide bounded traversal, dependency edges, frozen
+artifact plans, handle leases, conditional restoration and receipts. Client
+modules provide format/producer rules. Do not implement a separate recursive
+delete script per client or grant arbitrary paths to existing session writers.
+
+### Client coverage to implement
+
+| Client | Existing evidence/record integration | Additional artifact rules required |
+|---|---|---|
+| Cindy | Global/frontend and Codex/Claude/Pi roots, runtime candidates, record writers | DB migration backups, connection/cloud-memory backup state, binary download receipts, owner/account profiles, shared browser/runtime consumers |
+| ChatGPT/Codex desktop | Bundle/profile candidates and native record/desktop-state writers | Exact MSIX package roots beyond bounded directory listing, primary runtime vs app vs native CLI, plugin/marketplace generations, active UI fallback slot |
+| Codex CLI | Native root, standalone candidate, native records and manager evidence | Installer pointer/daemon selection and sandbox helper versions; preserve permanent locks and remote/VPS configuration backups |
+| T3 | Default/explicit roots, provider selection, native/frontend cleanup | Updater pending/base archives, usage caches vs terminal logs, provider extraction and current/retired managed runtime evidence |
+| Paseo | Default/explicit roots, providers, daemon/frontend/native cleanup | Provider `.bak` migration state, scheduler/atomic/creation/receipt recovery, updater/package ownership |
+| Claude Code | Native/Cindy candidates, configured home, native record cleanup | Current config backup rotation, orphaned temp writer evidence, plugin-cache references, native installer selection; checkpoint files remain record data |
+| Pi | Standalone/Cindy home hints and native records | Package-manager provenance and extensions/runtime dependencies; sessions and exported artifacts remain record data |
+| Antigravity | Standalone/IDE/managed ACP attribution and qualified native writers | Native resume/summary/annotation/presence dependencies, CLI updater and MCP/runtime artifacts, IDE-specific backup/cache qualification |
+| WorkBuddy | Exact native record adapter | Environment discovery; bundled Python/Node/Git, managed envs/node_modules, migration/sync mappings, plugin/connector and updater ownership |
+| Orca | Profile/account-root discovery and native/frontend cleanup | Environment installation inventory, managed account/runtime selection, shared frontend cache and startup/recovery copies |
+| Herdr | Default/dev roots, daemon metadata and bound native/frontend cleanup | Environment installation inventory, detached daemon consumers and backup/update semantics |
+| QwenWork | Qualified frontend/SDK record stores | Environment installation inventory, channel profiles and shared Qoder SDK, browser state vs cache, updater metadata |
+
+Prioritize download/updater artifacts and format-qualified cache/log retention
+by observed capacity, then obsolete runtime consumers and historical backup
+qualification. Resolve unknown journals independently even when small. Do not
+count large session stores, memory, temporary test dependencies or active
+managed environments as savings. Host-specific measured paths, sizes and
+version conflicts belong in the audit handoff, not permanent matching rules.
