@@ -96,8 +96,9 @@ def _snapshot(root, thread_id):
         row['fingerprint'] = hashlib.sha256(payload.encode()).hexdigest()
         row['active'] = bool(db.execute(f"SELECT 1 FROM {V2}runs WHERE thread_id=? AND status NOT IN ('completed','interrupted','failed','cancelled','rolled_back') LIMIT 1", (thread_id,)).fetchone())
         session_ids = f"SELECT provider_session_id FROM {V2}provider_sessions WHERE thread_id=? UNION SELECT provider_session_id FROM {V2}provider_session_bindings WHERE thread_id=?"
+        stopped_session_ids = f"SELECT provider_session_id FROM {V2}provider_sessions WHERE status IN ('stopped','error')"
         row['active'] |= bool(db.execute(f"SELECT 1 FROM {V2}provider_sessions WHERE provider_session_id IN ({session_ids}) AND status NOT IN ('ready','stopped','error') LIMIT 1", (thread_id,thread_id)).fetchone())
-        row['active'] |= bool(db.execute(f"SELECT 1 FROM {V2}provider_session_bindings WHERE provider_session_id IN ({session_ids}) AND thread_id!=? LIMIT 1", (thread_id,thread_id,thread_id)).fetchone())
+        row['active'] |= bool(db.execute(f"SELECT 1 FROM {V2}provider_session_bindings WHERE provider_session_id IN ({session_ids}) AND provider_session_id NOT IN ({stopped_session_ids}) AND thread_id!=? LIMIT 1", (thread_id,thread_id,thread_id)).fetchone())
         row['live_sessions'] = bool(db.execute(f"SELECT 1 FROM {V2}provider_sessions WHERE provider_session_id IN ({session_ids}) AND status NOT IN ('stopped','error') LIMIT 1", (thread_id,thread_id)).fetchone())
         row['effects'] = rows(db, 'SELECT effect_id,status FROM orchestration_v2_effect_outbox WHERE thread_id=? ORDER BY effect_id', (thread_id,))
         row['native_refs'] = digest(rows(db, f"SELECT provider_thread_id,provider,driver,provider_instance_id,json_extract(payload_json,'$.nativeThreadRef') AS ref FROM {V2}provider_threads WHERE thread_id=? ORDER BY provider_thread_id", (thread_id,)))
