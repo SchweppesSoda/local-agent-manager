@@ -14,6 +14,8 @@ const physical = require('./physical.cjs')
 const sha = bytes => bytes === null ? null : crypto.createHash('sha256').update(bytes).digest('hex')
 const fail = code => { const error = new Error(code); error.code = code; throw error }
 const ID = /^[A-Za-z0-9_.-]{1,128}$/
+const T3_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@/%-]{0,255}$/
+const validT3Id = id => typeof id === 'string' && T3_ID.exec(id)?.[0] === id
 const MAX_BYTES = 16 * 1024 * 1024
 
 function decodeString (bytes) {
@@ -154,14 +156,15 @@ const paseoCleaner = require('./paseo_ui.cjs')({ decodeString, encodeString, map
 const t3codeCleaner = require('./t3code_ui.cjs')({ decodeString, encodeString, mapEntries, fail })
 
 async function projection (db, request) {
-  if (request.t3code_environment_id !== undefined && (!ID.test(request.t3code_environment_id) ||
+  if (request.t3code_environment_id !== undefined && (!validT3Id(request.t3code_environment_id) ||
       request.paseo_server_id !== undefined || JSON.stringify(request.origins) !== '["t3code://app"]')) fail('office_leveldb_t3code_ui_scope_invalid')
   if (request.paseo_server_id !== undefined && (!ID.test(request.paseo_server_id) ||
       JSON.stringify(request.origins) !== '["paseo://app"]')) fail('office_leveldb_paseo_scope_invalid')
   const version = await db.get(Buffer.from('VERSION'))
   if (!version || !Buffer.from(version).equals(Buffer.from('1'))) fail('office_leveldb_schema_unverified')
   const chatIds = new Set(request.chat_ids)
-  if (!chatIds.size || chatIds.size !== request.chat_ids.length || [...chatIds].some(id => !ID.test(id))) fail('office_leveldb_chat_identity_invalid')
+  const validChatId = request.t3code_environment_id !== undefined ? validT3Id : id => ID.test(id)
+  if (!chatIds.size || chatIds.size !== request.chat_ids.length || [...chatIds].some(id => !validChatId(id))) fail('office_leveldb_chat_identity_invalid')
   const childIds = new Set(request.sub_chat_ids || [])
   if ([...childIds].some(id => !ID.test(id)) || childIds.size !== (request.sub_chat_ids || []).length) fail('office_leveldb_chat_identity_invalid')
   const edits = [], draftKeys = [], seenKeys = new Set(), origins = new Map(), count = { draft_maps: 0, removed_pairs: 0, keys: 0 }

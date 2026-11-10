@@ -126,7 +126,7 @@ def runtime_fingerprint():
             "code_sha256": hashlib.sha256(_json(manifest)).hexdigest(), "helpers": helpers}
 
 
-def _validate_response(response, operation):
+def _validate_response(response, operation, *, identity_pattern=_ID):
     def sha(value, *, nullable=False):
         return value is None and nullable or isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value))
     def integer(value):
@@ -172,7 +172,7 @@ def _validate_response(response, operation):
             raise ValueError("edit_hash")
         pairs = item["pairs"]
         if not isinstance(pairs, list) or not pairs or any(not isinstance(pair, list) or len(pair) not in (1, 2)
-                or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in pair) for pair in pairs):
+                or any(not isinstance(i, str) or not identity_pattern.fullmatch(i) for i in pair) for pair in pairs):
             raise ValueError("pairs")
         total += len(pairs)
     if total != count["removed_pairs"]:
@@ -193,7 +193,10 @@ def _call(request, *, timeout=30):
         raise OfficeLevelDBError("office_leveldb_response_budget_exceeded", unknown=request["operation"] == "apply")
     try:
         response = json.loads(result.stdout)
-        _validate_response(response, request["operation"])
+        identity_pattern = _ID
+        if 't3code_environment_id' in request:
+            from .t3code_store import ID as identity_pattern
+        _validate_response(response, request["operation"], identity_pattern=identity_pattern)
     except (ValueError, AttributeError) as exc:
         raise OfficeLevelDBError("office_leveldb_response_invalid", unknown=request["operation"] == "apply") from exc
     if result.returncode or response.get("status") == "blocked":

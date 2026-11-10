@@ -8,7 +8,7 @@ import unittest
 from local_agent_record_janitor import t3code_localstorage as storage, office_leveldb as level
 
 
-def local_storage(root, *, inspect=False, attachment=False):
+def local_storage(root, *, inspect=False, attachment=False, thread_id='thread-1'):
     node, dependency, helper = level.runtime()
     path = Path(root) / storage.RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -18,9 +18,9 @@ const h=require(process.argv[1]),q=JSON.parse(fs.readFileSync(0,'utf8'));
 const req=require('node:module').createRequire(path.join(process.env.LARJ_LEVELDB_RUNTIME,'package.json'));
 const {ClassicLevel}=req('classic-level');
 const prefix=Buffer.from('_t3code://app\0'),key=n=>Buffer.concat([prefix,h.encodeString(n)]);
-const draft={version:9,state:{draftsByThreadKey:{'env-1:thread-1':{prompt:'T3_PRIVATE',files:q.attachment?[{}]:[]},
- 'env-1:keeper':{prompt:'KEEP'},'env-2:thread-1':{prompt:'REMOTE'}},draftThreadsByThreadKey:{},
- logicalProjectDraftThreadKeyByLogicalProjectKey:{'env-1:project-1':'env-1:thread-1'},stickyActiveProvider:'codex'}};
+const draft={version:9,state:{draftsByThreadKey:{['env-1:'+q.thread_id]:{prompt:'T3_PRIVATE',files:q.attachment?[{}]:[]},
+ 'env-1:keeper':{prompt:'KEEP'},['env-2:'+q.thread_id]:{prompt:'REMOTE'}},draftThreadsByThreadKey:{},
+ logicalProjectDraftThreadKeyByLogicalProjectKey:{'env-1:project-1':'env-1:'+q.thread_id},stickyActiveProvider:'codex'}};
 const db=new ClassicLevel(q.path,{keyEncoding:'buffer',valueEncoding:'buffer',createIfMissing:!q.inspect});
 (async()=>{await db.open();if(!q.inspect){await db.batch([
  {type:'put',key:Buffer.from('VERSION'),value:Buffer.from('1')},
@@ -30,14 +30,14 @@ const db=new ClassicLevel(q.path,{keyEncoding:'buffer',valueEncoding:'buffer',cr
  {type:'put',key:Buffer.from('META:t3code://app'),value:Buffer.concat([Buffer.from([8]),h.varint(13000000000000000n),Buffer.from([16]),h.varint(100000n)])}
  ],{sync:true});await db.compactRange(Buffer.from(''),Buffer.from([255]),{keyEncoding:'buffer'});
 }else{
- delete draft.state.draftsByThreadKey['env-1:thread-1'];delete draft.state.logicalProjectDraftThreadKeyByLogicalProjectKey['env-1:project-1'];
+ delete draft.state.draftsByThreadKey['env-1:'+q.thread_id];delete draft.state.logicalProjectDraftThreadKeyByLogicalProjectKey['env-1:project-1'];
  assert.deepEqual(JSON.parse(h.decodeString(await db.get(key('t3code:composer-drafts:v1')))),draft);
  assert.equal((await db.get(key('opaque-settings'))).toString(),'KEEP_OPAQUE');
  assert.equal((await db.get(Buffer.concat([Buffer.from('_https://other.example\0'),h.encodeString('foreign')]))).toString(),'KEEP_FOREIGN');
 }await db.close();console.log(JSON.stringify({verified:true}));})().catch(e=>{console.error(e);process.exitCode=1});
 '''
     result = subprocess.run([str(node), "-e", script, str(helper)],
-        input=json.dumps({"path": str(path), "inspect": inspect, "attachment": attachment}).encode(),
+        input=json.dumps({"path": str(path), "inspect": inspect, "attachment": attachment, 'thread_id': thread_id}).encode(),
         capture_output=True, cwd=dependency, env=level._environment(dependency), timeout=30)
     if result.returncode or json.loads(result.stdout).get("verified") is not True:
         raise AssertionError("Synthetic T3 storage seed/readback failed: " + result.stderr.decode(errors="replace"))
@@ -86,6 +86,26 @@ class T3CodeLocalStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(level.OfficeLevelDBError, "attachment_closure_unqualified"):
             storage.freeze(self.root, "env-1", ["thread-1"])
         self.assertEqual(level._snapshot(self.root, storage.RELATIVE), before)
+
+    def test_long_registered_subagent_id_cold_rewrite_and_generic_identity_boundary(self):
+        thread_id = ('thread:delegated-task:command%3Amcp%3A0cd9d9a2-a87c-4766-9bf5-2b45fb226bdc'
+                     '%3Adelegate-task%3A285c9ef7-f9f0-438a-b461-40bf6482cad8')
+        self.assertGreater(len(thread_id), 128)
+        local_storage(self.root, thread_id=thread_id)
+        before = level._snapshot(self.root, storage.RELATIVE)
+        stage = self.root/'generic-copy'
+        storage._copy(self.root, before, stage, relative=storage.RELATIVE)
+        with self.assertRaisesRegex(level.OfficeLevelDBError, 'chat_identity_invalid'):
+            level._call({'schema_version': level.PROTOCOL, 'operation': 'inspect-copy',
+                'path': str(stage/storage.RELATIVE), 'chat_ids': [thread_id],
+                'sub_chat_ids': [], 'origins': ['file://']})
+        self.assertEqual(level._snapshot(self.root, storage.RELATIVE), before)
+        evidence = storage.freeze(self.root, 'env-1', [thread_id])
+        self.assertGreater(storage.remaining(evidence), 0)
+        with storage.prepared(evidence) as family:
+            storage.install(evidence, family, phase_callback=lambda _: None)
+        self.assertEqual(storage.remaining(evidence), 0)
+        local_storage(self.root, inspect=True, thread_id=thread_id)
 
 
 if __name__ == '__main__':
