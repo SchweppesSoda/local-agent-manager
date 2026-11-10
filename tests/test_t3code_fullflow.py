@@ -143,6 +143,54 @@ class T3CodeFullflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "execution_ticket_required"):
             cleanup.execute(evidence, phase_callback=lambda _: self.fail("standalone denied"))
 
+    def test_long_native_title_persisted_fingerprint_is_stable_but_real_drift_blocks(self):
+        from local_agent_record_janitor.office_cleanup import digest
+        add_native_record(self.home, NATIVE)
+        title = 'Synthetic title\n  ' + 'long display metadata ' * 60
+        with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
+            db.execute('UPDATE threads SET title=? WHERE id=?', (title, NATIVE))
+            db.commit()
+        plan = self.plan()
+        evidence = cleanup.evidence_from_document(plan)
+        frontend = next(a for a in plan['actions'] if a['kind'] == cleanup.KIND)
+        self.assertEqual(digest(evidence), frontend['binding']['snapshot_fingerprint'])
+        # A new process reconstructs from the persisted evidence, with no
+        # original long display value or in-memory planner cache available.
+        cold = self.coordinator()
+        context = cleanup.build_context(cold, (self.adapter,), (self.adapter,),
+                                        [THREAD], ['codex'], document=plan)[0]
+        actions, blockers = cold._bind_fresh_candidates(plan, context)
+        self.assertFalse(blockers, blockers)
+        self.assertEqual(len(actions), 2)
+        with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
+            # Even a suffix beyond the displayed 240 chars remains protected
+            # by native metadata evidence, independently of display clipping.
+            db.execute('UPDATE threads SET title=? WHERE id=?', (title + ' changed', NATIVE))
+            db.commit()
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'blocked', result)
+        self.assertFalse(result['mutation_started'])
+
+    def test_absent_and_partial_child_journals_have_distinct_cold_status(self):
+        from local_agent_record_janitor.operation_store import OperationStore
+        plan = self.plan()
+        cold = self.coordinator()
+        result = cold.status_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
+        self.assertEqual(result['goal_status'], 'ready', result)
+        self.assertEqual([b['status'] for b in result['batches']], ['pending'])
+        raw = plan['child_batches'][0]
+        store = OperationStore(self.root, raw['child_operation_id'])
+        self.assertFalse(store.directory.exists())
+        # A partial journal is not absence and must never acquire pending
+        # semantics, even when no mutation checkpoint survived.
+        store.directory.mkdir(parents=True)
+        store.plan_path.write_text('{}', encoding='utf-8')
+        result = cold.status_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
+        self.assertEqual(result['goal_status'], 'unknown', result)
+        self.assertTrue(result['blockers'])
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'unknown', result)
+
     def test_existing_owner_and_database_drift_block_before_mutation(self):
         plan = self.plan()
         with closing(sqlite3.connect(self.root / lifecycle.OWNER, timeout=0)) as owner:

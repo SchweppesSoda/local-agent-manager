@@ -75,6 +75,13 @@ not infer a changed plan or resend an ambiguous native request. If a mutation
 is `unknown`, stop and use `operation status` followed by `operation verify`;
 never invoke `delete apply` again for that operation.
 
+Before dispatch creates a child journal, cold status reports that child as
+`pending` and the aggregate as `ready`; this describes journal admission, not
+proof that the last apply's external blocker is resolved. A partially created
+journal, an existing apply lock, or untrusted/started state remains `unknown`.
+Verification never creates journals for unstarted children. A blocked-before-write
+apply may therefore have pending children and a read-only residual verdict.
+
 `records --client orca [--orca-root PATH ...]` reads the supported local journal
 and proven native homes. Orca's static capabilities remain closed. The high-level
 operation coordinator may qualify an explicitly selected native Codex target

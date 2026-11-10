@@ -402,7 +402,7 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertTrue(self.paths["delete"].exists())
 
-    def test_native_startup_scope_drift_has_actionable_blocked_result(self):
+    def test_native_startup_scope_drift_blocks_apply_and_requires_journal_recovery(self):
         plan = self.plan(projects=("ProxyConfig",))
         normal = self.server
         def drift(**kwargs):
@@ -419,7 +419,13 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertIn("scope", messages)
         self.assertIn("no deletion request was sent", messages)
         status = self.coordinator().get_operation_status(operation_id=plan["operation_id"], plan_path=Path(plan["plan_path"]))
-        self.assertEqual(status["goal_status"], "blocked", status)
+        # Startup entered the durable guard. Unlike a nonexistent child,
+        # this journal is not resumable even though no delete was sent.
+        # Status must agree with admission instead of hiding that boundary.
+        self.assertEqual(status["goal_status"], "unknown", status)
+        self.assertIn('recovery_required', {b['blocker_code'] for b in status['blockers']})
+        self.assertEqual(self.apply(plan)['goal_status'], 'unknown')
+        self.assertEqual(self.calls, [])
 
     def test_manual_partial_result_releases_only_successful_root(self):
         from local_agent_record_janitor.cleaner import CleanupReport, CleanupResult

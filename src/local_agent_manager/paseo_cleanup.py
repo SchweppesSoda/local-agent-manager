@@ -323,6 +323,8 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
     cli_joint.recheck(evidence, 'paseo')
     adapter.frozen_references = evidence["references"]
     base = coordinator._merge_cleanup_contexts(base, tuple(native_contexts)) if native_contexts else base
+    # Use the same evidence bytes for warm planning and cold reconstruction.
+    evidence = coordinator._metadata(evidence, key="paseo_evidence")
     sid = storage_id_for_path(adapter.profile_root)
     payload = {"paseo_evidence": evidence, "requires_action_ids": sorted(a for t in evidence["native_targets"] for a in t["action_ids"])}
     actions.append(CandidateAction(action_id(evidence), ActionKind(KIND), TargetRef(sid, evidence["frontend_id"]),

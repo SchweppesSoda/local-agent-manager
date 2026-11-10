@@ -217,6 +217,25 @@ class PaseoFullflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "execution_ticket_required"):
             paseo_cleanup.execute(evidence, phase_callback=lambda _: self.fail("standalone denied"))
 
+    def test_long_native_display_title_has_identical_cold_binding(self):
+        import sqlite3
+        from contextlib import closing
+        from local_agent_record_janitor.office_cleanup import digest
+        add_native_record(self.home, NATIVE)
+        with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
+            db.execute('UPDATE threads SET title=?', ('Synthetic title\n ' * 100,))
+            db.commit()
+        plan = self.plan()
+        evidence = paseo_cleanup.evidence_from_document(plan)
+        frontend = next(a for a in plan['actions'] if a['kind'] == paseo_cleanup.KIND)
+        self.assertEqual(frontend['binding']['snapshot_fingerprint'], digest(evidence))
+        cold = self.coordinator()
+        context = paseo_cleanup.build_context(cold, (self.adapter,), (self.adapter,),
+                    [AGENT], ['codex'], document=plan)[0]
+        actions, blockers = cold._bind_fresh_candidates(plan, context)
+        self.assertFalse(blockers, blockers)
+        self.assertEqual(len(actions), 2)
+
     def test_pid_startup_gate_and_profile_binding_drift(self):
         plan = self.plan()
         (self.root / "paseo.pid").write_text('{}', encoding="utf-8")

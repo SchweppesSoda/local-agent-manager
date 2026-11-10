@@ -4423,6 +4423,9 @@ class OperationCoordinator:
                 # its detailed state/journal has intentionally been removed.
                 result = store.read_result()
                 state = store.read_state()
+                source = result or state
+                if isinstance(source, Mapping) and source.get("error") is not None:
+                    view["error"] = self._metadata(source["error"])
                 if result is not None:
                     goal = str(result.get("goal_status") or "")
                     modified = modified or bool(result.get("modified"))
@@ -5939,85 +5942,14 @@ class OperationCoordinator:
         return ""
 
     def _status_for_document(self, document: Mapping[str, Any]) -> dict[str, Any]:
-        batches: list[dict[str, Any]] = []
-        blockers: list[dict[str, Any]] = []
-        started = False
-        modified = False
-        storage_by_id = {
-            str(storage.get("storage_id")): Path(str(storage.get("path")))
-            for storage in document.get("storages", ())
-            if isinstance(storage, Mapping) and storage.get("path")
-        }
-
-        for raw in document.get("child_batches", ()):
-            if not isinstance(raw, Mapping):
-                continue
-            status = "pending"
-            child_id = str(raw.get("child_operation_id") or "")
-            path = storage_by_id.get(str(raw.get("storage_id")))
-            child_result: Mapping[str, Any] | None = None
-            child_state: Mapping[str, Any] | None = None
-            child_blockers: list[dict[str, Any]] = []
-            if path is None or not child_id:
-                status = "unknown"
-                child_blockers = [self._blocker(
-                    "recovery_required",
-                    "operation child batch has no trusted storage binding",
-                    scope=f"child:{child_id or '<missing>'}",
-                )]
-            else:
-                try:
-                    child_store = OperationStore(path, child_id)
-                    child_result = child_store.read_result()
-                    child_state = (
-                        None
-                        if child_result is not None
-                        else child_store.read_state()
-                    )
-                except Exception as exc:
-                    status = "unknown"
-                    child_blockers = [self._blocker(
-                        "recovery_required",
-                        f"could not trust child operation state: {exc}",
-                        scope=f"child:{child_id}",
-                    )]
-                if child_result:
-                    status = str(
-                        child_result.get("goal_status")
-                        or child_result.get("status")
-                        or "unknown"
-                    )
-                    started = started or bool(
-                        child_result.get("mutation_started")
-                        or child_result.get("mutation_attempted")
-                        or child_result.get("attempted")
-                    )
-                    modified = modified or bool(child_result.get("modified"))
-                    child_blockers = self._child_blockers(child_result, child_id)
-                elif child_state:
-                    status = str(
-                        child_state.get("goal_status")
-                        or child_state.get("phase")
-                        or "unknown"
-                    )
-                    started = started or bool(
-                        child_state.get("mutation_started")
-                        or child_state.get("mutation_attempted")
-                        or child_state.get("attempted")
-                    )
-                    modified = modified or bool(child_state.get("modified"))
-                    child_blockers = self._child_blockers(child_state, child_id)
-
-            source = child_result or child_state
-            batch_view = {**dict(raw), "status": status}
-            if isinstance(source, Mapping) and source.get("error") is not None:
-                batch_view["error"] = self._metadata(source.get("error"))
-            if child_blockers:
-                batch_view["blockers"] = child_blockers
-                for blocker in child_blockers:
-                    if blocker not in blockers:
-                        blockers.append(blocker)
-            batches.append(batch_view)
+        inspection = self._inspect_child_states(document)
+        batches = list(inspection.batches)
+        blockers = list(inspection.blockers)
+        for batch in batches:
+            for blocker in batch.get("blockers", ()):
+                if blocker not in blockers:
+                    blockers.append(blocker)
+        started, modified = inspection.mutation_started, inspection.modified
         statuses = {
             str(batch.get("status") or "")
             for batch in batches

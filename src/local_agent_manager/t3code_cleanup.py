@@ -424,6 +424,10 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
 def _frontend_context(coordinator, base, adapter, guards, evidence, engine, actions, action_contexts):
     from .planning import CandidateAction, ActionKind, ActionImpact, TargetRef, StorageLocation, ScanStatus, RiskLevel, storage_id_for_path
     from .client_capability_guards import restrict_cleanup_context
+    # Hash the exact body-free representation that the operation persists.
+    # Native bindings can carry long display titles; hashing those before
+    # metadata normalization makes an unchanged cold apply disagree with plan.
+    evidence = coordinator._metadata(evidence, key="t3code_evidence")
     sid = storage_id_for_path(adapter.profile_root)
     payload = {"t3code_evidence": evidence, "requires_action_ids": sorted(a for t in evidence["native_targets"] for a in t["action_ids"])}
     actions.append(CandidateAction(action_id(evidence), ActionKind(KIND), TargetRef(sid, evidence["frontend_id"]),

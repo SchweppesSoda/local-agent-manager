@@ -76,6 +76,25 @@ class HerdrFullflowTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "execution_ticket_required"):
             herdr_cleanup.execute(evidence, phase_callback=lambda _: self.fail("no standalone writer"))
 
+    def test_long_native_display_title_has_identical_cold_binding(self):
+        import sqlite3
+        from contextlib import closing
+        from local_agent_record_janitor.office_cleanup import digest
+        add_native_record(self.home, CODEX_ID)
+        with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
+            db.execute('UPDATE threads SET title=?', ('Synthetic title\n ' * 100,))
+            db.commit()
+        plan = self.plan()
+        evidence = herdr_cleanup.evidence_from_document(plan)
+        frontend = next(a for a in plan['actions'] if a['kind'] == herdr_cleanup.KIND)
+        self.assertEqual(frontend['binding']['snapshot_fingerprint'], digest(evidence))
+        cold = self.coordinator_new()
+        context = herdr_cleanup.build_context(cold, (self.adapter,), (self.adapter,),
+                    [CODEX_ID], ['codex'], document=plan)[0]
+        actions, blockers = cold._bind_fresh_candidates(plan, context)
+        self.assertFalse(blockers, blockers)
+        self.assertEqual(len(actions), 2)
+
     def test_native_actions_cannot_grant_their_own_scope(self):
         add_native_record(self.home, CODEX_ID)
         evidence = herdr_cleanup.evidence_from_document(self.plan())
