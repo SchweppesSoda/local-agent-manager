@@ -20,7 +20,7 @@ def current_boundary(root):
     return value if value and canonical_path(value["root"]) == canonical_path(root) else None
 
 
-def read_binary(root, binary):
+def read_binary(root, binary, *, content=False):
     """Read only an exact runtime admitted by this profile's active hold.
 
     No cached-proof exemption and no release/reopen window: recheck identity,
@@ -30,16 +30,18 @@ def read_binary(root, binary):
     boundary = current_boundary(root)
     binary = Path(binary)
     if boundary is None:
+        if content:
+            fail('runtime_not_held')
         return frozen_files.read_file(binary.parent, binary.name)[0]
     matches = [item for item in boundary['lifecycle']['binaries']
                if canonical_path(Path(item['root'])/item['file']['path']) == canonical_path(binary)]
     if len(matches) != 1 or _held.get() is None:
         fail('runtime_not_held')
     item = matches[0]
-    proof, _ = _held.get().read(Path(item['root']), item['file']['path'])
+    proof, raw = _held.get().read(Path(item['root']), item['file']['path'], content=content)
     if proof != item['file']:
         fail('held_lifecycle_evidence_changed')
-    return proof
+    return (proof, raw) if content else proof
 
 
 def freeze(manifest):

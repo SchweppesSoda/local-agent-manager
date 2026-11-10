@@ -73,6 +73,7 @@ class TopologyTests(unittest.TestCase):
         summary.root = self.f.native
         summary.search_index()
         initial_sources(self.f.native)
+        self.configure_implicit()
         self.install = self.f.base/'install'
         self.install.mkdir()
         self.binary = self.install/'T3 Code (Nightly).exe'
@@ -124,6 +125,9 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
         subprocess.run([str(node), '-e', script, str(helper), str(self.desktop/storage.RELATIVE)],
             cwd=dependency, env=storage.level._environment(dependency), check=True, capture_output=True, timeout=30)
         self.original_lock = self.store.lock_path.read_bytes()
+
+    def configure_implicit(self):
+        """An opt-in fixture may replace the inert runtime before planning."""
 
     def cold(self, label, rows=()):
         result = subprocess.run([sys.executable, '-c', COLD, str(self.f.plan_path), str(self.f.user),
@@ -370,6 +374,14 @@ class MixedTopologyTests(unittest.TestCase):
         frontend = install/'T3 Code (Nightly).exe'
         f.frontend.rename(frontend)
         manifest = strict_json_load(f.bindings)
+        implicit_binary = os.environ.get('LAM_REHEARSAL_AGY_BINARY')
+        if implicit_binary:
+            from tests.implicit_support import write_implicit, seed_implicit
+            agy_path = Path(next(b['cli_binary'] for b in manifest['native_stores']
+                                 if b['engine'] == 'antigravity'))
+            shutil.copy2(implicit_binary, agy_path)
+            (f.agyroot/'implicit/original.pb').unlink()
+            seed_implicit(f.agyroot, agy_path, '41414141-4141-4141-8141-414141414141')
         manifest['runtime_binaries'][0] = str(frontend)
         desktop = f.base/'appdata/t3code-v2'
         desktop.parent.mkdir(parents=True)
@@ -395,6 +407,9 @@ class MixedTopologyTests(unittest.TestCase):
         store, _ = joint.reservation(plan, evidence, joint.targets(evidence)[0])
         self.assertTrue(store.lock_exists())
         reopen(f.agyroot, AGY_KEEP)
+        if implicit_binary:
+            next((f.agyroot/'implicit').iterdir()).unlink()
+            write_implicit(f.agyroot, agy_path, '52525252-5252-4252-8252-525252525252')
         with closing(sqlite3.connect(f.root/'userdata/statev2.sqlite')) as db:
             # A genuinely new AGY binding and a new Codex binding, both only
             # protection sources; no frozen target or child hash is changed.
@@ -407,6 +422,9 @@ class MixedTopologyTests(unittest.TestCase):
         for label in ('first-cold', 'second-cold'):
             if label == 'second-cold':
                 reopen(f.agyroot, AGY_KEEP, LATER_NATIVE)
+                if implicit_binary:
+                    next((f.agyroot/'implicit').iterdir()).unlink()
+                    write_implicit(f.agyroot, agy_path, '63636363-6363-4363-8363-636363636363')
             result = subprocess.run([sys.executable, '-c', COLD, str(f.plan_path), str(f.base/'profile'),
                 plan['plan_sha256'], str(install), '[]'], cwd=Path(__file__).resolve().parents[1],
                 env=f.env, capture_output=True, timeout=180)

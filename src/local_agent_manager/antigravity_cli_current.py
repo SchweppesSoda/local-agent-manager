@@ -33,7 +33,7 @@ def _reject_reference(raw, ids):
 
 
 class CurrentNative:
-    def __init__(self, evidence, held):
+    def __init__(self, evidence, held, runtime_reader=None):
         self.evidence = evidence
         self.root = native.validate(evidence)
         self.held = held
@@ -41,6 +41,7 @@ class CurrentNative:
         self.link = native._log_link(self.root)
         self.trees = {}
         self.proof = None
+        self.runtime_reader = runtime_reader
 
     def read(self, root, relative, **options):
         if Path(root) != self.root:
@@ -151,15 +152,40 @@ class CurrentNative:
             mirrors[path] = {'sha256': proof['sha256'], 'ids': members}
         classifications = []
         blockers = []
+        implicit = None
+        if 'implicit' in self.trees and self.runtime_reader is not None:
+            from .antigravity_cli_implicit import qualify, RUNTIME_SHA256
+            if e['runtime']['file']['sha256'] == RUNTIME_SHA256:
+                if len(self.trees['implicit']['directories']) != 1:
+                    native.fail('implicit_namespace_unqualified')
+                implicit = qualify(self.runtime_reader, self.trees['implicit']['files'],
+                    lambda path: self.read(root, path, content=True, limit=16384), ids)
+                prior = next((p for p in e['preserved'] if p['path'] == 'implicit'), None)
+                if prior is None:
+                    native.fail('implicit_original_namespace_unproven')
+                old_files = {p['path']: p for p in prior['files']}
+                new_files = {p['path']: p for p in self.trees['implicit']['files']}
+                missing = sorted(old_files.keys()-new_files.keys())
+                # This saver prunes only excess members above 100. A shrunken
+                # set cannot be attributed to that qualified rotation rule.
+                if missing and len(new_files) != 100:
+                    native.fail('implicit_rotation_unqualified')
+                implicit['rotation'] = {'missing_original': missing,
+                    'added_current': sorted(new_files.keys()-old_files.keys()),
+                    'retained_changed': sorted(p for p in old_files.keys() & new_files.keys()
+                        if old_files[p]['sha256'] != new_files[p]['sha256']),
+                    'producer_max_save_count': 100}
         original = {p['path']: p for p in e['preserved']}
         # Original non-diagnostic files/trees must remain byte-for-byte, with
-        # their complete membership. Only the exact boolean onboarding schema
-        # is qualified for evolution. No implicit/cache name exemption exists.
+        # their complete membership. Evolution requires a positively qualified
+        # role, schema and closure. A directory name alone grants no exemption.
         for path, prior in original.items():
             current = ff.freeze_remove(root, path, reader=self.read) if (root/path).exists() else None
             category = 'unchanged' if current == prior else 'unqualified_change'
             if path in {'log', 'crashes'}:
                 category = 'diagnostic_namespace'
+            elif path == 'implicit' and implicit is not None:
+                category = 'qualified_empty_mainline_implicit'
             elif path == 'cache/onboarding.json' and current is not None:
                 value = native._json(self.read(root, path, content=True, limit=4096)[1])
                 fields = {'consumerOnboardingComplete', 'enterpriseOnboardingComplete', 'onboardingComplete'}
@@ -192,7 +218,7 @@ class CurrentNative:
             'current_summary_ids': sorted(present), 'new_summary_ids': sorted(present-set(e['parents'])),
             'unchanged_raw_summary_ids': sorted(s for s in preserved if raw_hashes[s] == e['summary_raw_hashes'][s]),
             'changed_raw_summary_ids': sorted(s for s in preserved if raw_hashes[s] != e['summary_raw_hashes'][s]),
-            'current_raw_summary_hashes': raw_hashes, 'mirrors': mirrors,
+            'current_raw_summary_hashes': raw_hashes, 'mirrors': mirrors, 'implicit': implicit,
             'original_log_link': e['log_link'], 'current_log_link': self.link,
             'current_namespace': self.trees, 'differences': classifications, 'blockers': blockers,
             'basis': 'exact_completed_children_and_current_qualified_sources',
@@ -202,8 +228,8 @@ class CurrentNative:
 
 
 @contextmanager
-def hold_current(evidence, held):
-    current = CurrentNative(evidence, held)
+def hold_current(evidence, held, *, runtime_reader=None):
+    current = CurrentNative(evidence, held, runtime_reader)
     if ff._identity(current.root.stat()) != evidence['root_identity']:
         native.fail('root_replaced')
     if current.link is not None:

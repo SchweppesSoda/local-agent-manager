@@ -66,9 +66,12 @@ Diagnostic log/crash trees may evolve, with every member still plain and leased.
 The diagnostic link itself is leased without following it and must name a current
 ordinary file directly inside the trusted log namespace. The exact three-boolean
 onboarding format may change. Other caches and opaque implicit files require
-their original full preservation evidence. Rotation, new ciphertext or a missing
-implicit member does not prove safe evolution and refuses recovery. An ID byte
-scan alone does not qualify such a new source.
+their original full preservation evidence. The T3 recovery ticket additionally
+qualifies the exact producer's authenticated empty mainline implicit subset,
+including its entire current namespace and restoration closure. Producer,
+descriptor, identity, URI and field mismatches refuse qualification. See
+[implicit recovery](antigravity-implicit-recovery.md) for the narrow format and
+historical-byte boundary. An ID byte scan alone does not qualify a new source.
 Each opt-in verification returns current logical hashes, object sets and change
 classifications in `recovery_current`. The first recovery audit remains immutable.
 The admitted T3 desktop decoder also runs before native inventory, so a native

@@ -223,8 +223,14 @@ def recovery_scope(document, coordinator, approved_hash):
                 stack.enter_context(guards.leased_reads(evidence['cli_guards'], held))
             from .antigravity_cli_current import hold_current
             for entry in entries.values():
+                runtime = entry['plan']['antigravity_cli_evidence']['runtime']
+                runtime_path = Path(runtime['root'])/runtime['file']['path']
+                runtime_reader = None
+                if entry['client'] == 't3code':
+                    runtime_reader = lambda e=entry, p=runtime_path: t3code_lifecycle.read_binary(
+                        e['frontend']['root'], p, content=True)
                 entry['native_current'] = stack.enter_context(hold_current(
-                    entry['plan']['antigravity_cli_evidence'], held))
+                    entry['plan']['antigravity_cli_evidence'], held, runtime_reader=runtime_reader))
             # Qualify desktop restore sources before an unrelated native source
             # can refuse the subsequent inventory. Use the same admitted ticket
             # and decoder that terminal verification uses.
