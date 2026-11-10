@@ -101,6 +101,7 @@ class CindyReferenceFailure:
     error_type: str
     message: str
     blocks_delete: bool = True
+    details: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +110,7 @@ class CindyReferenceFailure:
             "error_type": self.error_type,
             "message": self.message,
             "blocks_delete": self.blocks_delete,
+            "details": dict(self.details or {}),
         }
 
 
@@ -138,6 +140,11 @@ class CindyReferenceCatalog:
 
 class CindyReferenceError(RuntimeError):
     """The database cannot provide a complete native-reference snapshot."""
+
+    @property
+    def diagnostic_reason(self):
+        # Only schema names and fixed field/policy labels enter this error.
+        return str(self)
 
 
 def build_cindy_reference_catalog(
@@ -438,6 +445,7 @@ def _failed(
     exc: Exception,
     prefix: str,
 ) -> CindyReferenceCatalog:
+    from .inventory_diagnostics import exception_metadata
     return CindyReferenceCatalog(
         database=database,
         profile_root=root,
@@ -446,7 +454,8 @@ def _failed(
                 database=database,
                 profile_root=root,
                 error_type=type(exc).__name__,
-                message=f"{prefix}: {exc}",
+                message=prefix,
+                details=exception_metadata(exc),
             ),
         ),
     )

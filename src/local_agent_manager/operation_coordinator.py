@@ -828,6 +828,10 @@ class OperationCoordinator:
                     modified=bool(prior.get("modified")) or bool(status.get("modified")),
                     mutation_started=bool(prior.get("mutation_started")) or bool(status.get("mutation_started")),
                 )
+                from .t3code_discovery import BindingDiscoveryError
+                if isinstance(exc, BindingDiscoveryError):
+                    result['blockers'][0]['details'] = {'stage': 'binding_discovery',
+                                                       'sources': exc.blockers}
                 if live is not None:
                     live.result = result
                 if recoveries:

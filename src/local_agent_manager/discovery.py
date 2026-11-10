@@ -11,6 +11,14 @@ from .environment_paths import BoundedPathProbe, local_path
 from .path_identity import canonical_existing_path_key
 
 
+class ProfileDiscoveryError(RuntimeError):
+    def __init__(self, path, stage, code, message):
+        self.source_path = path
+        self.stage = stage
+        self.code = code
+        super().__init__(message)
+
+
 def default_codex_home() -> Path:
     configured = os.environ.get("CODEX_HOME")
     if configured:
@@ -285,7 +293,8 @@ def _discover_cindy_databases(root: Path) -> tuple[Path, ...]:
         try:
             databases.extend(root.glob(pattern))
         except OSError as exc:
-            raise RuntimeError(f"Could not enumerate Cindy profile {root}: {exc}") from exc
+            raise ProfileDiscoveryError(root, 'cindy_database_names', 'cindy_profile_enumeration_failed',
+                                        f'Could not enumerate Cindy profile {root}') from exc
     databases = sorted(databases, key=lambda path: path.name.casefold())
     databases.extend(
         (
@@ -323,13 +332,11 @@ def _unique_existing_files(candidates: list[Path]) -> tuple[Path, ...]:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            raise RuntimeError(
-                f"Could not inspect frontend database candidate {candidate}: {exc}"
-            ) from exc
+            raise ProfileDiscoveryError(candidate, 'cindy_database_candidate', 'cindy_database_inspection_failed',
+                                        f'Could not inspect frontend database candidate {candidate}') from exc
         if not stat.S_ISREG(candidate_status.st_mode):
-            raise RuntimeError(
-                f"Frontend database candidate is not a regular file: {candidate}"
-            )
+            raise ProfileDiscoveryError(candidate, 'cindy_database_candidate', 'cindy_database_not_regular',
+                                        f'Frontend database candidate is not a regular file: {candidate}')
         key = _normalized_path_key(candidate)
         if key in seen:
             continue
@@ -348,17 +355,18 @@ def _optional_directory_exists(path: Path) -> bool:
     except FileNotFoundError:
         return False
     except OSError as exc:
-        raise RuntimeError(f"Could not inspect frontend profile {path}: {exc}") from exc
+        raise ProfileDiscoveryError(path, 'cindy_profile', 'cindy_profile_inspection_failed',
+                                    f'Could not inspect frontend profile {path}') from exc
     attributes = getattr(path_status, "st_file_attributes", 0)
     is_reparse = bool(
         attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
     )
     if stat.S_ISLNK(path_status.st_mode) or is_reparse:
-        raise RuntimeError(
-            f"Frontend profile path is a symlink or reparse point: {path}"
-        )
+        raise ProfileDiscoveryError(path, 'cindy_profile', 'cindy_profile_link_or_reparse',
+                                    f'Frontend profile path is a symlink or reparse point: {path}')
     if not stat.S_ISDIR(path_status.st_mode):
-        raise RuntimeError(f"Frontend profile path is not a directory: {path}")
+        raise ProfileDiscoveryError(path, 'cindy_profile', 'cindy_profile_not_directory',
+                                    f'Frontend profile path is not a directory: {path}')
     return True
 
 

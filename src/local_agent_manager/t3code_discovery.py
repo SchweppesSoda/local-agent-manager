@@ -21,6 +21,13 @@ class BindingDiscoveryError(ValueError):
         super().__init__("; ".join(item["blocker_code"] + ":" + item.get("thread_id", "profile") for item in blockers))
 
 
+class NativeInventoryError(ValueError):
+    def __init__(self, binding, errors):
+        self.details = {'engine': binding['engine'], 'root': binding['root'],
+                        'stage': 'native_catalog', 'errors': errors}
+        super().__init__('native_inventory_incomplete')
+
+
 def _plain_directory(path):
     path = local_root(path)
     for parent in (*reversed(path.parents), path):
@@ -44,11 +51,27 @@ def _environment_paths(instance, name):
 
 
 def _catalog_ids(binding):
-    catalog = native_catalog(binding)
+    try:
+        catalog = native_catalog(binding)
+    except (OSError, ValueError, RuntimeError) as exc:
+        from .inventory_diagnostics import exception_metadata
+        raise NativeInventoryError(binding, [{'source': 'native_catalog',
+            'error_type': type(exc).__name__, 'details': exception_metadata(exc)}]) from exc
     if catalog.errors:
-        raise ValueError("native_inventory_incomplete")
+        # Keep only metadata fields, never catalog records or arbitrary messages.
+        errors = []
+        for failure in catalog.errors:
+            metadata = {}
+            for key in ('source', 'error_type', 'path', 'config_dir', 'database', 'details'):
+                value = getattr(failure, key, None)
+                if value is not None:
+                    metadata[key] = str(value) if isinstance(value, Path) else value
+            errors.append(metadata)
+        raise NativeInventoryError(binding, errors)
     if binding["engine"] == "codex":
         return {record.thread_id for record in catalog.records}
+    if binding['engine'] == 'pi':
+        return {canonical_path(record.path) for record in catalog.records}
     return {record.session_id for record in catalog.records}
 
 
@@ -95,10 +118,12 @@ def _native_binding(row, providers, instance, cache):
         if key not in cache:
             # A failed root also stays failed for this preparation. Hundreds
             # of imported threads must not trigger hundreds of full rescans.
-            cache[key] = None
-            cache[key] = _catalog_ids(binding)
-        if cache[key] is None:
-            raise ValueError("native_inventory_incomplete")
+            try:
+                cache[key] = _catalog_ids(binding)
+            except NativeInventoryError as exc:
+                cache[key] = exc
+        if isinstance(cache[key], NativeInventoryError):
+            raise cache[key]
         if native_ids <= cache[key]:
             matches.append(binding)
     if len(matches) != 1:
@@ -117,10 +142,12 @@ def _pi_binding(row, providers, instance, cache):
     binding = {"thread_id": row["thread_id"], "engine": "pi", "root": str(root), "agent_dir": str(agent_dir)}
     key = "pi", canonical_path(root)
     if key not in cache:
-        catalog = native_catalog(binding)
-        if catalog.errors:
-            raise ValueError("native_inventory_incomplete")
-        cache[key] = {canonical_path(record.path) for record in catalog.records}
+        try:
+            cache[key] = _catalog_ids(binding)
+        except NativeInventoryError as exc:
+            cache[key] = exc
+    if isinstance(cache[key], NativeInventoryError):
+        raise cache[key]
     handles = [item["native_id"] for item in providers if item["thread_id"] == row["thread_id"]
                and item["native_id"] is not None and item["native_strength"] == "strong"]
     if not handles and not agent_dirs and not session_dirs:
@@ -216,6 +243,14 @@ def discover_bindings(root=None):
                 binding = _native_binding({**row, "default_provider": driver}, data["providers"], instance, cache)
             bindings.append(binding)
         except (OSError, ValueError, RuntimeError) as exc:
+            if isinstance(exc, NativeInventoryError):
+                existing = next((b for b in blockers if b.get('details') == exc.details), None)
+                if existing is not None:
+                    existing['affected_thread_ids'].append(thread_id)
+                else:
+                    blockers.append({'blocker_code': 'native_inventory_incomplete',
+                                     'details': exc.details, 'affected_thread_ids': [thread_id]})
+                continue
             code = str(exc) if type(exc) is ValueError else "native_binding_unverified"
             blockers.append({"blocker_code": code, "thread_id": thread_id})
     if blockers:

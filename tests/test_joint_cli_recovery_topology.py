@@ -352,6 +352,59 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
                 with self.assertRaises(sqlite3.OperationalError): db.execute('BEGIN EXCLUSIVE')
 
 
+@unittest.skipUnless(os.name == 'nt', 'Windows held lifecycle')
+class CatalogTopologyTests(unittest.TestCase):
+    setUp = TopologyTests.setUp
+    cold = TopologyTests.cold
+    assert_blocked = TopologyTests.assert_blocked
+
+    def configure_implicit(self):
+        from tests.test_cindy_references import create_database
+        self.claude = self.f.user/'.claude'
+        transcript = self.claude/'projects/project'/('abababab-abab-4bab-8bab-abababababab.jsonl')
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({'sessionId': transcript.stem, 'private': 'PRIVATE_BODY'})+'\n')
+        self.claude_id = transcript.stem
+        self.reference_database = self.f.base/'appdata/CindyGlobal/cindy-local-v1.db'
+        self.reference_database.parent.mkdir(parents=True)
+        create_database(self.reference_database, [('cindy-keeper', self.claude_id, 'active', 'cc')])
+        settings = self.f.t3/'userdata/settings.json'
+        config = json.loads(settings.read_text())
+        config['providerInstances']['claudeAgent'] = {
+            'driver': 'claudeAgent', 'config': {'homePath': str(self.claude)}}
+        settings.write_text(json.dumps(config))
+
+    def test_reference_catalog_failure_is_public_then_repaired_chain_finishes(self):
+        with closing(sqlite3.connect(self.f.t3/'userdata/statev2.sqlite')) as db:
+            for number in range(2):
+                add_thread(db, 'new-claude-'+str(number), native=self.claude_id, driver='claudeAgent')
+        with closing(sqlite3.connect(self.reference_database)) as db:
+            db.execute('ALTER TABLE sessions RENAME TO hidden_sessions')
+        payload = self.assert_blocked('catalog-reference-schema')
+        blocker = payload['blockers'][0]
+        self.assertEqual(blocker['blocker_code'], 't3code_binding_discovery_blocked')
+        sources = blocker['details']['sources']
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]['affected_thread_ids'], ['new-claude-0', 'new-claude-1'])
+        error = sources[0]['details']['errors'][0]
+        self.assertEqual(error['path'], str(self.reference_database))
+        self.assertEqual(error['error_type'], 'CindyReferenceError')
+        self.assertIn('sessions', error['details']['causes'][0]['reason'])
+        self.assertNotIn('PRIVATE_BODY', json.dumps(payload))
+        with closing(sqlite3.connect(self.reference_database)) as db:
+            db.execute('ALTER TABLE hidden_sessions RENAME TO sessions')
+        result, payload = self.cold('catalog-repaired-first')
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertTrue(payload['goal_satisfied'])
+        self.assertFalse(self.store.lock_exists())
+        audit = next(self.store.directory.glob('recovery-*.json'))
+        original = audit.read_bytes()
+        result, payload = self.cold('catalog-repaired-second')
+        self.assertEqual(result.returncode, 0, payload)
+        self.assertTrue(payload['goal_satisfied'])
+        self.assertEqual(audit.read_bytes(), original)
+
+
 @unittest.skipUnless(os.name == 'nt' and os.environ.get('LAM_REHEARSAL_CODEX_BINARY'),
                      'opt-in copied installed Codex runtime; all stores synthetic')
 class MixedTopologyTests(unittest.TestCase):

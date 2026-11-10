@@ -99,7 +99,14 @@ audits; they are not eligible for ordinary receipt expiry or broad cleanup.
 Long external controllers must not impose a short total wall-clock kill deadline
 on a multi-stage mutator. The diagnostic wrapper
 `python -m local_agent_manager.supervised_cli <stack-log> <interval-seconds> <CLI args...>`
-runs normal CLI dispatch and periodically records Python thread stacks. The
+runs normal CLI dispatch and records Python thread stacks periodically and
+immediately on terminal failure. Binding discovery groups a failed native root
+once, with its affected thread IDs and catalog source metadata. Claude and
+Cindy failures retain exception types, OS/SQLite error codes, source paths and
+stack locations and controlled policy reasons without arbitrary exception text,
+record bodies or frame locals. A failed
+catalog remains a blocker for every dependent thread during that discovery.
+The
 `wait_with_diagnostics` helper records progress-idle suspicions and process exit
 without killing/replaying the writer; CPU activity or heartbeat alone never
 proves success. Inspect a stalled phase and its stacks before any manual

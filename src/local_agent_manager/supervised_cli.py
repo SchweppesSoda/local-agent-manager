@@ -68,7 +68,14 @@ def main():
         faulthandler.dump_traceback_later(float(interval), repeat=True, file=stacks)
         try:
             from .entrypoint import main as cli_main
-            return cli_main(arguments)
+            code = cli_main(arguments)
+            if code:
+                # Terminal failures often precede the periodic sample.
+                faulthandler.dump_traceback(file=stacks, all_threads=True)
+            return code
+        except BaseException:
+            faulthandler.dump_traceback(file=stacks, all_threads=True)
+            raise
         finally:
             faulthandler.cancel_dump_traceback_later()
 

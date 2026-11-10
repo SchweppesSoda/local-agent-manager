@@ -60,6 +60,11 @@ class ClaudeSelectionError(ValueError):
 class ClaudeInventoryError(RuntimeError):
     """A storage boundary could not be inventoried safely."""
 
+    @property
+    def diagnostic_reason(self):
+        # Call sites use fixed policy labels and line numbers, never bodies.
+        return str(self)
+
 
 @dataclass(frozen=True)
 class ClaudePaths:
@@ -78,6 +83,7 @@ class ClaudeInventoryFailure:
     message: str
     path: Path | None = None
     blocks_delete: bool = True
+    details: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +93,7 @@ class ClaudeInventoryFailure:
             "message": self.message,
             "path": str(self.path) if self.path else None,
             "blocks_delete": self.blocks_delete,
+            "details": dict(self.details or {}),
         }
 
 
@@ -301,10 +308,12 @@ def build_claude_session_catalog(
             claude_config_dir=claude_config_dir,
         )
     except Exception as exc:
+        from .inventory_diagnostics import exception_metadata
         fallback = config_dir if config_dir is not None else claude_config_dir
         root = _absolute_path(Path(fallback)) if fallback is not None else _absolute_path((Path.home() if home is None else Path(home)) / ".claude")
         return ClaudeSessionCatalog(root, errors=(ClaudeInventoryFailure(
             root, "claude-paths", type(exc).__name__, "Unable to resolve Claude config directory",
+            details=exception_metadata(exc),
         ),))
 
     failures: list[ClaudeInventoryFailure] = []
@@ -342,8 +351,10 @@ def build_claude_session_catalog(
     for error in reference_error_list:
         message = _field(error, ("message",))
         failures.append(ClaudeInventoryFailure(
-            paths.config_dir, "claude-references", type(error).__name__,
+            paths.config_dir, "claude-references", _field(error, ("error_type",)) or type(error).__name__,
             message if isinstance(message, str) and message else "Frontend reference inventory is incomplete",
+            path=Path(_field(error, ("database",))) if _field(error, ("database",)) else None,
+            details=_field(error, ("details",)),
         ))
 
     reference_map: dict[str, list[tuple[Any, Mapping[str, Any], str]]] = {}
@@ -816,8 +827,10 @@ def _stream_sha256(path: Path) -> str:
 
 
 def _failure(config: Path, source: str, exc: Exception, path: Path | None = None) -> ClaudeInventoryFailure:
+    from .inventory_diagnostics import exception_metadata
     message = str(exc) if isinstance(exc, ClaudeInventoryError) else "Claude session inventory operation failed"
-    return ClaudeInventoryFailure(config, source, type(exc).__name__, message, path)
+    return ClaudeInventoryFailure(config, source, type(exc).__name__, message, path,
+                                  details=exception_metadata(exc))
 
 
 def _safe_iterdir(path: Path) -> list[Path]:

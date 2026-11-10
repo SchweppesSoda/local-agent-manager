@@ -20,6 +20,79 @@ NATIVE = "33333333-3333-4333-8333-333333333333"
 
 
 class T3DiscoveryTests(unittest.TestCase):
+    def claude_threads(self):
+        home = self.base/'.claude'
+        project = home/'projects/project'
+        project.mkdir(parents=True)
+        transcript = project/(NATIVE+'.jsonl')
+        transcript.write_text(json.dumps({'sessionId': NATIVE, 'private': 'PRIVATE_BODY'})+'\n')
+        self.settings['providerInstances']['claudeAgent'] = {
+            'driver': 'claudeAgent', 'config': {'homePath': str(home)}}
+        self.write_settings()
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            for i in range(3):
+                add_thread(db, 'claude-'+str(i), native=NATIVE, driver='claudeAgent')
+        return transcript
+
+    def test_failed_reference_catalog_is_grouped_with_original_source_metadata(self):
+        self.claude_threads()
+        database = self.base/'appdata/CindyGlobal/cindy-local-v1.db'
+        database.parent.mkdir(parents=True)
+        # An actual present database with an unqualified reference schema.
+        with closing(sqlite3.connect(database)) as db:
+            db.execute('CREATE TABLE unrelated (private TEXT)')
+            db.execute("INSERT INTO unrelated VALUES ('PRIVATE_BODY')")
+            db.commit()
+        with self.assertRaises(BindingDiscoveryError) as caught:
+            discover_bindings(self.root)
+        failures = caught.exception.blockers
+        self.assertEqual(len(failures), 1, failures)
+        self.assertEqual(failures[0]['affected_thread_ids'], ['claude-0', 'claude-1', 'claude-2'])
+        error = failures[0]['details']['errors'][0]
+        self.assertEqual(error['path'], str(database))
+        self.assertEqual(error['error_type'], 'CindyReferenceError')
+        self.assertEqual(error['source'], 'claude-references')
+        self.assertTrue(error['details']['causes'][0]['stack'])
+        self.assertIn('sessions', error['details']['causes'][0]['reason'])
+        self.assertNotIn('PRIVATE_BODY', json.dumps(failures))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native sharing violation')
+    def test_real_transcript_handle_preserves_sharing_violation_cause(self):
+        transcript = self.claude_threads()
+        from local_agent_manager.windows_held_files import HeldFiles
+        from local_agent_manager.frozen_files import read_file
+        proof = read_file(transcript.parent, transcript.name)[0]
+        with HeldFiles() as held:
+            held.acquire(transcript.parent, proof)
+            with self.assertRaises(BindingDiscoveryError) as caught:
+                discover_bindings(self.root)
+            errors = caught.exception.blockers[0]['details']['errors']
+            causes = [cause for error in errors for cause in error.get('details', {}).get('causes', ())]
+            # Python's CRT open reports EACCES without retaining WinError 32.
+            self.assertIn(13, [cause['errno'] for cause in causes])
+            self.assertNotIn('PRIVATE_BODY', json.dumps(errors))
+        self.assertTrue(discover_bindings(self.root))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows profile junction')
+    def test_profile_discovery_exception_keeps_path_stage_and_stable_code(self):
+        self.claude_threads()
+        roaming = self.base/'appdata'
+        roaming.mkdir()
+        physical = self.base/'other-profile'
+        physical.mkdir()
+        alias = roaming/'CindyGlobal'
+        subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(physical)],
+                       check=True, capture_output=True)
+        self.addCleanup(alias.rmdir)
+        with self.assertRaises(BindingDiscoveryError) as caught:
+            discover_bindings(self.root)
+        failures = caught.exception.blockers
+        self.assertEqual(len(failures), 1)
+        cause = failures[0]['details']['errors'][0]['details']['causes'][0]
+        self.assertEqual(cause['path'], str(alias))
+        self.assertEqual(cause['stage'], 'cindy_profile')
+        self.assertEqual(cause['code'], 'cindy_profile_link_or_reparse')
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

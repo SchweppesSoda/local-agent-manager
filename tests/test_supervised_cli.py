@@ -8,6 +8,14 @@ from local_agent_manager.supervised_cli import wait_with_diagnostics, WriterStil
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_immediate_failure_dumps_stack_before_periodic_interval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'stacks'
+            code = "import sys;from unittest.mock import patch;from local_agent_manager.supervised_cli import main;sys.argv=['fixture',sys.argv[1],'120'];\nwith patch('local_agent_manager.entrypoint.main',return_value=1): raise SystemExit(main())"
+            result = subprocess.run([sys.executable, '-c', code, str(path)], capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('supervised_cli.py', path.read_text())
+
     def run_child(self, body, observer=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
