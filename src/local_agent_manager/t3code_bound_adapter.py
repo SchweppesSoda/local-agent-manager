@@ -191,6 +191,8 @@ _RUN_EVENT_FIELDS = '''id threadId ordinal providerInstanceId modelSelection pro
     workspacePreparation restartContinuationOfRunId workStartedAt delegatedCompletion delegatedTaskId'''
 _ATTEMPT_EVENT_FIELDS = '''id nativeThreadId runId attemptOrdinal rootNodeId providerInstanceId providerThreadId
     providerTurnId reason status startedAt completedAt'''
+_TRANSFER_EVENT_FIELDS = '''id type sourceThreadId targetThreadId sourcePoint basePoint sourceProviderInstanceId
+    sourceTokenUsage targetProviderInstanceId targetRunId status resolution createdBy error createdAt updatedAt consumedAt'''
 _LEGACY_EVENT_FIELDS = {
     **{name: _THREAD_EVENT_FIELDS for name in ('thread.created', 'thread.deleted', 'thread.metadata-updated',
         'thread.model-selection-updated', 'thread.visited')},
@@ -201,8 +203,10 @@ _LEGACY_EVENT_FIELDS = {
         advancesAppRunCount cwd createdAt''',
     'checkpoint.captured': '''id threadId scopeId runId nodeId parentCheckpointId ordinalWithinScope appRunOrdinal
         ref status files capturedAt''',
-    'context-transfer.created': '''id type sourceThreadId targetThreadId sourcePoint basePoint sourceProviderInstanceId
-        targetProviderInstanceId targetRunId status resolution createdBy error createdAt updatedAt consumedAt''',
+    'context-handoff.updated': '''id transferId threadId targetRunId fromProviderThreadIds toProviderThreadId
+        coveredRunOrdinals strategy status summaryMessageId summaryText history delivery detailInTurnItem
+        createdByProviderInstanceId createdAt updatedAt''',
+    **{name: _TRANSFER_EVENT_FIELDS for name in ('context-transfer.created', 'context-transfer.updated')},
     'message.updated': '''createdBy creationSource id threadId runId nodeId role text context attachments streaming
         createdAt updatedAt delegatedCompletion notification senderThreadId workflowScript''',
     'node.updated': '''id threadId runId parentNodeId rootNodeId kind status countsForRun providerThreadId providerTurnId
@@ -223,7 +227,7 @@ _LEGACY_EVENT_FIELDS = {
         attachments input output exitCode streaming toolName subagentId origin driver providerInstanceId childThreadId
         prompt result progress promptSequence viewedImagePath checkpointId scopeId files patterns results fileName
         diffStr toolSurface toolSource changes planId steps explanation requestId questions responseMode questionAnswer
-        failure retry source outcome summary detail senderThreadId workflowScript''',
+        failure retry source outcome summary detail senderThreadId workflowScript message unresponsiveAt''',
 }
 
 
@@ -263,6 +267,7 @@ def history_references(root, bindings):
         from .t3code_database import THREAD_TABLES, _content_reference
         db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
         _qualify_legacy_events(db)
+        result.extend(_transfer_references(db))
         # A replayable native handle can also occur in a run, handoff or
         # command payload. Inspect every qualified per-thread JSON payload.
         for table in (*THREAD_TABLES, 'orchestration_events'):
@@ -321,6 +326,37 @@ def history_references(root, bindings):
         result.extend(_import_references(db, bindings))
         if db.execute('SELECT 1 FROM projection_threads LIMIT 1').fetchone():
             fail("legacy_restore_closure_unqualified")
+    return result
+
+
+def _transfer_references(db):
+    """Native source/base points and fork results survive in both event mirrors.
+
+    Source handles belong to their context point's thread, fork results to the
+    target. Cross-thread consumption is separately protected by database.closure.
+    A providerTurnRef is a turn cursor, never a native thread handle.
+    """
+    result = []
+    for table, predicate in (
+        (V2 + 'context_transfers', '1'),
+        ('orchestration_v2_events', "event_type IN ('context-transfer.created','context-transfer.updated')"),
+        ('orchestration_events', "aggregate_kind='thread' AND event_type IN ('context-transfer.created','context-transfer.updated')"),
+    ):
+        for point, owner, instance in (
+            ('sourcePoint', '$.sourcePoint.threadId', '$.sourceProviderInstanceId'),
+            ('basePoint', '$.basePoint.threadId', None),
+            ('resolution', '$.targetThreadId', '$.targetProviderInstanceId'),
+        ):
+            ref = f'$.{point}.providerThreadRef'
+            if db.execute(f'''SELECT 1 FROM {table} WHERE ({predicate})
+                    AND json_type(payload_json, ?) NOT IN ('object','null') LIMIT 1''', (ref,)).fetchone():
+                fail('native_reference_shape_unqualified')
+            result.extend(rows(db, f'''SELECT DISTINCT json_extract(payload_json, ?) AS thread_id,
+                    json_extract(payload_json, ?) AS provider_instance_id,
+                    json_extract(payload_json, ?) AS driver, json_extract(payload_json, ?) AS native_id,
+                    json_extract(payload_json, ?) AS strength
+                FROM {table} WHERE ({predicate}) AND json_type(payload_json, ?)='object' ''',
+                (owner, instance, ref + '.driver', ref + '.nativeId', ref + '.strength', ref)))
     return result
 
 

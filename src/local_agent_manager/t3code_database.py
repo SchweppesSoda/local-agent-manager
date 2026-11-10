@@ -73,6 +73,7 @@ def _content_reference(table, column, payload, path, event_type):
         return False
     if table in {'orchestration_v2_events', 'orchestration_events'}:
         table = {'message.updated': V2 + 'messages', 'turn-item.updated': V2 + 'turn_items',
+                 'context-handoff.updated': V2 + 'context_handoffs',
                  'subagent.updated': V2 + 'subagents'}.get(event_type)
     try:
         value = strict_json(payload)
@@ -80,6 +81,16 @@ def _content_reference(table, column, payload, path, event_type):
         return False
     if not isinstance(value, dict):
         return False
+    if table == V2 + 'context_handoffs':
+        if path == '$.summaryText' and isinstance(value.get('summaryText'), str):
+            return True
+        match = re.fullmatch(r'\$\.history\.messages\[([0-9]+)\]\.text', path)
+        history = value.get('history')
+        messages = history.get('messages') if isinstance(history, dict) else None
+        if match and isinstance(messages, list) and int(match[1]) < len(messages):
+            message = messages[int(match[1])]
+            return (isinstance(message, dict) and message.get('role') in {'user', 'assistant'}
+                    and isinstance(message.get('text'), str))
     if (table == V2 + 'messages' and value.get('role') in {'user', 'assistant'}
             and path == '$.text' and isinstance(value.get('text'), str)):
         return True
@@ -165,10 +176,18 @@ def closure(db, ids, *, native_ids=()):
         # All historical nativeThreadRef values are included, not just the
         # current projection. This also catches previous provider switches.
         if "payload_json" in columns:
+            # Context transfers use providerThreadRef, not nativeThreadRef.
+            # Include their source/base and native-fork result in the same
+            # frozen closure without mistaking providerTurnRef for a thread.
+            transfer_ref = "0"
+            if table == V2 + 'context_transfers':
+                transfer_ref = "j.fullkey IN ('$.sourcePoint.providerThreadRef','$.basePoint.providerThreadRef','$.resolution.providerThreadRef')"
+            elif table in {'orchestration_events', 'orchestration_v2_events'}:
+                transfer_ref = "t.event_type IN ('context-transfer.created','context-transfer.updated') AND j.fullkey IN ('$.sourcePoint.providerThreadRef','$.basePoint.providerThreadRef','$.resolution.providerThreadRef')"
             for row in rows(db, f'''SELECT DISTINCT json_extract(j.value,'$.driver') AS driver,
                     json_extract(j.value,'$.nativeId') AS native_id
                 FROM "{table}" AS t,json_tree(t.payload_json) AS j
-                WHERE ({predicate}) AND j.key='nativeThreadRef' AND j.type='object'
+                WHERE ({predicate}) AND (j.key='nativeThreadRef' OR ({transfer_ref})) AND j.type='object'
                 AND NOT lam_content_reference(?, 'payload_json', t.payload_json, j.fullkey, {event_type}) ''', args + (table,)):
                 if row["native_id"] is not None:
                     native_refs.add((identifier(row["driver"]), native_handle(row["driver"], row["native_id"])))

@@ -493,6 +493,10 @@ V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核�
 即使当前 provider home 已改变。直接选择这些导入记录进行完整删除仍会阻挡。
 恢复依赖检查覆盖完整原生删除范围，包括原生发现的后代。所有保留的 provider session
 和历史对象均参与检查。未知旧事件类型、字段或恢复 cursor 继续阻挡。
+已知 `context-handoff.updated` 和 `context-transfer.created/updated` 镜像及投影
+保留恢复保护。handoff 的 delivery 原生 ID 要有同线程强引用证明，transfer 的
+source/base point 和 native-fork 结果按各自线程归属核验。handoff 摘要和历史消息
+正文按内容保留，跨线程 transfer、原生恢复句柄及未知恢复字段仍阻挡。
 其他线程的已证明上传附件及支持格式的提取文本会冻结保留。选区附件、未知同名文件、
 共享附件和未证明归属的文件继续阻挡完整清理。
 
