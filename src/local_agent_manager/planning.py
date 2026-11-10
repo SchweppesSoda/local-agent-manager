@@ -59,6 +59,7 @@ class ActionKind(str, Enum):
     REPAIR_LEGACY_INDEX = "repair_legacy_index"
     DELETE_PI_SESSION = "delete_pi_session"
     DELETE_CLAUDE_SESSION = "delete_claude_session"
+    DELETE_ANTIGRAVITY_CLI_SESSIONS = "delete_antigravity_cli_sessions"
     DELETE_FRONTEND_SESSION = "delete_frontend_session"
     DELETE_SCHEDULE_RUN = "delete_schedule_run"
     DELETE_WORKBUDDY_SESSION = "delete_workbuddy_session"

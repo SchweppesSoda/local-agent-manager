@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .action_registry import action_capability
+from .antigravity_cli_operations import route as antigravity_cli_route
 from .builtin_delete import module_for as builtin_delete
 from .agent_operations import action_binding
 from .path_identity import inventory_path_identity_scope
@@ -143,6 +144,7 @@ class OperationCoordinator:
             "error_count": count(getattr(plan, "errors", ())),
         }
 
+    @antigravity_cli_route('plan')
     def plan_operation(
         self,
         *,
@@ -264,6 +266,7 @@ class OperationCoordinator:
                 blocker_code=getattr(exc, "kind", "operation_backend_failed"),
             )
 
+    @antigravity_cli_route('apply')
     def apply_operation(
         self,
         *,
@@ -527,6 +530,7 @@ class OperationCoordinator:
                 operation_id=operation_id, blocker_code="operation_apply_failed",
             )
 
+    @antigravity_cli_route('run')
     def run_operation(
         self,
         *,
@@ -676,6 +680,7 @@ class OperationCoordinator:
         result["run_receipt_path"] = str(manifest)
         return result
 
+    @antigravity_cli_route('status')
     def status_operation(
         self,
         *,
@@ -746,6 +751,7 @@ class OperationCoordinator:
                 operation_id=operation_id, blocker_code="operation_query_unavailable",
             )
 
+    @antigravity_cli_route('verify')
     def verify_operation(
         self,
         *,

@@ -14,6 +14,9 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
   [Official Desktop inventory and completion](operation-cli.md#official-desktop-inventory-and-completion).
 - Native local-environment registrations: also read
   [native project cleanup](native-project-cleanup.md); project IDs are not thread IDs.
+- Standalone Antigravity CLI: read [native CLI cleanup](operation-cli.md#独立-antigravity-cli-原生清理).
+  Use its exact conversation ID and actual CLI root, including when shared by
+  T3/Paseo. Frontend IDs and the legacy managed ACP home do not authorize it.
 - Existing legacy `agent` integrations: read [Commands](agent-automation.md#commands)
   and [Result contract](agent-automation.md#result-contract) instead of the high-level route.
 - Recovery evidence or rollback copies: read

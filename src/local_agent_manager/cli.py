@@ -1053,6 +1053,10 @@ def _add_common_arguments(
                         help="T3 Code 本地清理的 thread/原生目录/桌面显式绑定（Windows）")
     parser.add_argument("--paseo-root", action="append", default=[], type=Path, metavar="PATH",
                         help="Paseo home（可重复；默认 PASEO_HOME 或 ~/.paseo；只读盘点）")
+    parser.add_argument("--antigravity-root", type=Path, metavar="PATH",
+                        help="独立 agy CLI 原生目录（默认 ~/.gemini/antigravity-cli；不接受托管 ACP 根目录）")
+    parser.add_argument("--antigravity-bin", type=Path, metavar="PATH",
+                        help="独立 agy CLI 可执行文件的显式绝对路径；原生清理需要冻结此运行文件")
     for office_client, label in (("qwenwork", "千问办公 CN"),):
         parser.add_argument("--" + office_client + "-root", action="append", default=[], type=Path, metavar="PATH",
                             help=label + " userData 根目录（可重复；只读盘点）")
@@ -1095,7 +1099,7 @@ def _add_operation_scope_arguments(
 
     parser.add_argument(
         "--client",
-        choices=("native", "codex-native", "cindy", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "paseo", "t3code"),
+        choices=("native", "codex-native", "cindy", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "paseo", "t3code", "antigravity"),
         required=client_required,
         help=(
             "选择一个客户端所有者；codex-native 表示官方 ChatGPT UI/Codex CLI "
@@ -1157,6 +1161,7 @@ def _configure_standard_stream_utf8(stream: TextIO) -> None:
 
 
 _CLIENT_PLATFORM_MAP = {
+    "antigravity": "antigravity",
     "native": "native",
     "codex-native": "native",
     "cindy": "cindy",
@@ -1515,6 +1520,9 @@ def _run_operation_backend(
                 from .t3code_store import default_root
                 operation_kwargs["scope"] = scope
                 operation_kwargs["t3code_roots"] = tuple(args.t3code_root or (default_root(),))
+            if (scope or {}).get('client') == 'antigravity':
+                operation_kwargs.update(antigravity_root=args.antigravity_root, antigravity_bin=args.antigravity_bin,
+                                        t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
             result = coordinator.plan_operation(**operation_kwargs)
         elif verb == "apply":
             operation_kwargs = {
@@ -1545,6 +1553,10 @@ def _run_operation_backend(
             if getattr(args, "t3code_root", None) or getattr(args, "t3code_bindings", None):
                 operation_kwargs["t3code_roots"] = tuple(args.t3code_root or ())
                 operation_kwargs["t3code_bindings"] = args.t3code_bindings
+            if args.antigravity_root:
+                operation_kwargs['antigravity_root'] = args.antigravity_root
+            if args.antigravity_bin:
+                operation_kwargs['antigravity_bin'] = args.antigravity_bin
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
             if (scope or {}).get("t3code_only") or (scope or {}).get("paseo_only"):
@@ -1579,6 +1591,9 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
+            if (scope or {}).get('client') == 'antigravity':
+                operation_kwargs.update(antigravity_root=args.antigravity_root, antigravity_bin=args.antigravity_bin,
+                                        t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
             result = coordinator.run_operation(**operation_kwargs)
         elif verb == "status":
             operation_kwargs = {
@@ -1883,6 +1898,23 @@ def main(
             stderr=error_output,
             coordinator=coordinator,
         )
+
+    if args.command == 'records' and getattr(args, 'client', None) == 'antigravity':
+        from .antigravity_cli_operations import records
+        try:
+            if args.project or args.all_projects or set(args.engine or ()) - {'antigravity'}:
+                raise ValueError('Antigravity CLI records supports exact IDs or the selected native root')
+            payload = records(args.antigravity_root, args.record_id)
+        except Exception as exc:
+            payload = _operation_error_payload(command='records', subcommand='inventory',
+                message=str(exc), blocker_code=getattr(exc, 'kind', 'antigravity_cli_inventory_failed'))
+        if not args.json and payload.get('client') == 'antigravity':
+            output.write(f"Antigravity CLI：{payload['counts']['record_count']} records\n")
+            for record in payload['records']:
+                output.write(f"  {record['record_id']}  parent={record['parent_record_id'] or '-'}\n")
+                output.write(f"    {_display_value(record['native_root'], max_width=240)}\n")
+            return EXIT_OK
+        return _emit_operation_payload(payload, json_output=args.json, stdout=output, stderr=error_output)
 
     if args.command == "records" and getattr(args, "client", None):
         try:

@@ -11,7 +11,7 @@ from pathlib import Path
 from . import frozen_files
 
 
-def exclusive_fd(path, *, writable=False):
+def exclusive_fd(path, *, writable=False, delete=False):
     if os.name != "nt":
         raise frozen_files.FrozenFilesError("windows_file_lease_unavailable")
     import ctypes
@@ -22,7 +22,7 @@ def exclusive_fd(path, *, writable=False):
         ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    handle = kernel.CreateFileW(str(path), 0x80000000 | (0x40000000 if writable else 0),
+    handle = kernel.CreateFileW(str(path), 0x80000000 | (0x40000000 if writable else 0) | (0x10000 if delete else 0),
                                 0, None, 3, 0x200000, None)
     if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -69,18 +69,40 @@ class HeldFiles:
     def __exit__(self, *args):
         return self.stack.__exit__(*args)
 
-    def acquire(self, root, evidence, *, writable=False):
+    def acquire(self, root, evidence, *, writable=False, delete=False):
         root = Path(root)
         key = (str(root), evidence["path"])
         if key in self.handles:
             raise frozen_files.FrozenFilesError("duplicate_file_lease")
         path = self.stack.enter_context(frozen_files._parent_fence(root, evidence["path"]))
-        fd = exclusive_fd(path, writable=writable)
+        fd = exclusive_fd(path, writable=writable, delete=delete)
         self.stack.callback(os.close, fd)
         self.handles[key] = (fd, writable)
         current, _ = self.read(root, evidence["path"])
         if current != evidence:
             raise frozen_files.FrozenFilesError("held_file_evidence_changed")
+
+    def dispose(self, root, relative, *, before):
+        """Delete an already leased file, retaining its pending-delete handle.
+
+        The caller must acquire DELETE access and hold the lease until every
+        other file in its transaction has been checked. No pathname reopen or
+        release/reacquire window is used.
+        """
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+        current, _ = self.read(root, relative)
+        if current != before:
+            raise frozen_files.FrozenFilesError("held_file_evidence_changed")
+        fd, _ = self.handles[(str(root), relative)]
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        kernel.SetFileInformationByHandle.restype = wintypes.BOOL
+        disposition = wintypes.BOOL(True)
+        if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 4,
+                                                 ctypes.byref(disposition), ctypes.sizeof(disposition)):
+            raise ctypes.WinError(ctypes.get_last_error())
 
     def read(self, root, relative, *, content=False, limit=frozen_files.MAX_BYTES):
         fd, _ = self.handles[(str(root), relative)]

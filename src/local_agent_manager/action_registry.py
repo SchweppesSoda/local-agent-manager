@@ -23,6 +23,9 @@ class ActionCapability:
 
 
 ACTION_REGISTRY: Mapping[str, ActionCapability] = {
+    "delete_antigravity_cli_sessions": ActionCapability("delete_antigravity_cli_sessions", True,
+        "delete_antigravity_cli_sessions", True,
+        "exact_cli_sessions_summary_mirrors_resume_cache_and_artifacts_absent"),
     "delete_t3code_server_thread": ActionCapability("delete_t3code_server_thread", True, "delete_t3code_server_thread", False,
         "exact_t3_thread_soft_deleted_worktree_detached_provider_history_preserved"),
     "delete_t3code_frontend": ActionCapability("delete_t3code_frontend", True, "delete_t3code_frontend", True,
@@ -167,7 +170,7 @@ def action_capability(kind: object) -> ActionCapability:
 def capability_field_for_action(kind: object) -> str | None:
     """The client/profile ceiling required by an existing mutation family."""
     family = action_capability(kind).mutation_family
-    if family in {"delete_conversation", "delete_pi_session", "delete_claude_session",
+    if family in {"delete_conversation", "delete_pi_session", "delete_claude_session", "delete_antigravity_cli_sessions",
                   "repair_legacy_index", "remove_desktop_state", "remove_broken_relation",
                   "delete_workbuddy_session", "delete_office_artifacts"}:
         return "native_delete"

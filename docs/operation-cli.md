@@ -358,7 +358,8 @@ local-agent-manager delete run --client paseo --record-id '<完整 Paseo agent I
 
 自动发现核对 provider 环境、逐 agent 的 `launchEnv` 及所有已保存原生句柄。
 逐 agent 环境覆盖 provider 环境，默认目录需由实际原生 ID 或 Pi 文件头证明。
-自定义 provider 实现、额外启动参数、未知原生目录和独立 Antigravity CLI 仍需适配。
+自定义 provider 实现、额外启动参数和未知原生目录仍需显式资格。
+独立 Antigravity CLI 使用下文独立入口；Paseo 的完整清理尚未组合该原生 writer。
 桌面 IndexedDB 存在时使用 `LARJ_PASEO_ELECTRON_RUNTIME` 指向下述已验证依赖。
 绑定文件仍可显式传入，来自实际启动配置和原生证据。示例为
 
@@ -571,7 +572,69 @@ key 和合成会话，不发送模型提示；Windows 的 SQLite 测试临时目
 旧受管运行时已卸载时，其验收自动跳过，不为测试重新安装。CLI 模式的隔离存储验收使用
 `LARJ_AGY_CLI_ACCEPTANCE=1` 和绝对路径 `LARJ_AGY_CLI_BINARY`；测试固定 Windows CLI 1.5.3
 构建摘要，只进行 ACP 握手及无真实凭据的请求，验证它没有沿用 T3 的旧实例目录。
-此验收不授予 CLI 原生删除能力，也不证明实际账号生成成功。
+旧存储探测本身不授予删除能力。独立 CLI writer 的新验收见下节；两者均不证明实际账号生成成功。
+
+## 独立 Antigravity CLI 原生清理
+
+`antigravity` 指使用 CLI 原生存储的会话，而非 T3 thread ID、Paseo agent ID 或托管
+ACP 实例目录。默认根为当前 OS 用户的 `~/.gemini/antigravity-cli`；非默认根必须显式
+指定。`GEMINI_HOME` 不能证明 CLI 使用该根。读取和计划按实际 SQLite DDL、文件格式
+与身份校验，不设产品版本白名单；写入目前需要 Windows 的排他文件句柄。
+
+```powershell
+local-agent-manager records --client antigravity --antigravity-root 'D:\Profile\.gemini\antigravity-cli' --json
+local-agent-manager delete plan --client antigravity --record-id '<完整 CLI 会话 UUID>' --antigravity-root 'D:\Profile\.gemini\antigravity-cli' --antigravity-bin 'C:\Apps\agy.exe' --out plan.json --json
+local-agent-manager delete apply --operation-id '<返回的 ID>' --plan plan.json --authorized-plan-sha256 '<返回的 SHA256>' --clients-closed --json
+local-agent-manager operation status --operation-id '<返回的 ID>' --plan plan.json --json
+local-agent-manager operation verify --operation-id '<返回的 ID>' --plan plan.json --json
+```
+
+同一选择可用 `delete run`、相同 root/bin 参数、`--clients-closed --yes` 完成计划和执行。
+只接受完整 UUID，可重复 `--record-id`；没有 project/all-projects 或前缀批量删除。
+`--antigravity-bin` 必须是已核实的实际 CLI 文件，计划冻结其身份和摘要；写入不启动它，
+不停止任何进程。操作日志固定存入原生根的管理器控制目录，避免与其他同根操作失去锁关联。
+外部 `--out` 只是可审阅副本；也可用 `--operation-home '<原生根>'` 定位原始日志。
+
+冻结范围包括 `conversations/<UUID>.db` 及 SQLite 侧文件、`brain/<UUID>`、
+仅含 title 的 `annotations/<UUID>.pbtxt`、零字节 `presence/<UUID>.lock`、
+`conversation_summaries.db` 的精确行、`jetbox_summaries_proto.pb` 的 UUID map entry、
+`cache/conversation_metadata.json` 和 `cache/last_conversations.json` 中的目标记录。
+protobuf map 的值必须与数据库的 raw summary 对应，未选 map entry 保持原字节。
+摘要索引可证的子会话纳入计划的 `selected_ids`；未选父引用、无法解码的
+`parent_references`/subtrajectory、group/battle 关系、未知备份和格式不自动吸收。
+workspace、设置、凭据、skills、运行文件及诊断日志保留。
+`bin`、`mcp`、`updater` 原样保留；只接受指向 `log/` 单个文件的 `cli.log` 符号链接，
+冻结链接本身且不跟随，其他未知链接阻挡。附属文件须与摘要中的精确 ID 对应；
+未知注释字段、非空 presence 文件及已打开的锁文件均不绕过。
+日志可能包含历史诊断文本；本功能不承诺全盘敏感文本擦除、云端删除、其他 OS 用户
+或未知复制目录清理。
+
+默认、环境指定及额外 `--t3code-root`/`--paseo-root` 均作为保护来源；显式根不取消
+默认保护。T3 所有合格数据库历史单元、Paseo agent/atomic/schedule/creation/receipt
+恢复文件存在目标 ID 时阻挡，不按前端软删除状态豁免，也不凭相同 UUID猜测归属。
+这些前端仍运行或其来源读取失败时不写入。本入口不删除 T3/Paseo 记录；现有托管
+ACP writer 仍拒绝 CLI 绑定，T3/Paseo 的 CLI 原生与前端联合删除尚未开放。
+若存在引用，应在已授权、已支持的前端完整清理路径解决；不能编辑日志状态或关闭保护。
+
+writer 对运行文件、共享重写文件和待删会话文件持有 Windows 排他句柄，对已有前端
+保护文件也持有句柄；摘要数据库锁本身不是 CLI 全局启动锁。文件集合和未选记录有
+冻结证据，写后重新核验。未知运行文件、其他客户端的私有内存和未发现配置不属于
+已证明范围；不能以一次进程快照承诺任意未来启动都被阻止。
+共享文件在私有副本上计算 after，原文件通过持有句柄写入；跨文件不是原子事务。
+捕获到共享写入失败时在原句柄内恢复 before；崩溃或删到一半保持 `unknown`，不重放。
+`native-recovery/` 保存必要 before images，状态维护保留该目录。只在精确终验通过后
+清除核实过的恢复副本；其余残留需独立恢复判断，本实现不自动覆盖崩溃后改变的文件。
+
+开发验收：设置 `LARJ_AGY_CLI_ACCEPTANCE=1`、绝对路径 `LARJ_AGY_CLI_BINARY`，运行
+`python -m unittest tests.test_t3code_runtime_acceptance.AgyCliAcceptanceTests`。
+使用隔离用户 home、假 key、拒绝网络的代理，仅创建空会话，不提交模型提示。
+新原生验收核对镜像删除、未选会话字节保持、真实 CLI 重开并加载保留会话后目标不复现。
+空会话可能不出现在 `session/list`，因此列表为空不是删除成功证据。
+
+依据：[官方 resume/cache 文档](https://antigravity.google/docs/cli/commands/resume)、
+[官方 CLI ACP](https://antigravity.google/docs/ide/extensions/acp/)、
+[ACP 可选删除语义](https://agentclientprotocol.com/protocol/v1/session-delete)，
+以及仓库隔离运行时验收和随包存储 schema。官方 F4 删除不等价于上述本地闭包核验。
 
 ## WorkBuddy local sessions
 

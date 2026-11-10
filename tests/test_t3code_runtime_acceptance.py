@@ -310,6 +310,106 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
 @unittest.skipUnless(os.name=='nt' and os.environ.get('LARJ_AGY_CLI_ACCEPTANCE')=='1',
                      'Opt in with an explicit agy CLI path; temporary profiles only')
 class AgyCliAcceptanceTests(unittest.TestCase):
+    def test_cli_native_cleanup_reopen_preserves_other_session(self):
+        from local_agent_manager import antigravity_cli_cleanup as native
+        from local_agent_manager.antigravity_cli_restore import PROTO, METADATA, proto_entries
+        binary = Path(os.environ['LARJ_AGY_CLI_BINARY'])
+        self.assertTrue(binary.is_absolute())
+        with tempfile.TemporaryDirectory(prefix='agy-native-') as directory:
+            root = Path(directory).resolve()
+            env = isolated_env(root)
+            env.update(GEMINI_API_KEY='fixture-not-a-valid-key', GOOGLE_API_KEY='fixture-not-a-valid-key',
+                       HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9',
+                       ALL_PROXY='http://127.0.0.1:9', NO_PROXY='', BROWSER='false')
+            profile = root/'.gemini/antigravity-cli'
+            def client_for(proc):
+                client = AcpClient(proc)
+                info = client.call('initialize', {'protocolVersion': 1, 'clientCapabilities': {}})
+                self.assertNotIn('delete', info['agentCapabilities']['sessionCapabilities'])
+                client.call('authenticate', {'methodId': 'gemini-api-key'})
+                return client
+            def settled():
+                # Runtime summary writes are asynchronous. Poll only this
+                # synthetic local database, without starting a model turn.
+                deadline = time.monotonic()+10
+                while time.monotonic() < deadline:
+                    try:
+                        with closing(sqlite3.connect(profile/native.SUMMARY)) as db:
+                            if db.execute('SELECT count(*) FROM conversation_summaries').fetchone()[0] == 2:
+                                return
+                    except sqlite3.Error:
+                        pass
+                    time.sleep(.1)
+                self.fail('Synthetic summary did not settle')
+            with process([binary, 'acp', '--disable-telemetry'], root, env, piped=True) as proc:
+                client = client_for(proc)
+                ids = [client.call('session/new', {'cwd': str(root), 'mcpServers': []})['sessionId'] for _ in range(2)]
+                for sid in ids: client.call('session/close', {'sessionId': sid})
+                settled()
+                client.call('session/list', {})
+            # Reopening materializes the second metadata cache. Empty sessions
+            # are intentionally hidden by session/list; that list is not our
+            # proof of deletion. No prompt or network generation is attempted.
+            with process([binary, 'acp', '--disable-telemetry'], root, env, piped=True) as proc:
+                client = client_for(proc)
+                client.call('session/list', {})
+                settled()
+                time.sleep(.5)
+            (profile/native.CACHE).write_text(json.dumps({str(root): ids[0], str(root/'keep'): ids[1]}))
+            artifact = profile/'brain'/ids[0]/'artifact.md'
+            artifact.parent.mkdir(exist_ok=True, parents=True); artifact.write_text('synthetic artifact')
+            # Auxiliary shapes independently projected from local CLI metadata:
+            # exact summary IDs, a title-only pbtxt, and an empty presence lock.
+            for sid in ids:
+                (profile/'annotations').mkdir(exist_ok=True)
+                (profile/'annotations'/(sid+'.pbtxt')).write_text('title: "synthetic title"\n')
+                (profile/'presence').mkdir(exist_ok=True)
+                (profile/'presence'/(sid+'.lock')).touch()
+            keeper = profile/'conversations'/(ids[1]+'.db')
+            before = keeper.read_bytes()
+            launch_blocked = []
+            def probe_lease(event):
+                if event.get('stage') == 'recovery_images_durable':
+                    try:
+                        subprocess.run([str(binary), '--version'], env=env, cwd=root,
+                                       capture_output=True, timeout=10, check=False)
+                    except OSError as exc:
+                        launch_blocked.append(getattr(exc, 'winerror', None))
+            with patch('pathlib.Path.home', return_value=root), patch.dict(os.environ, env, clear=True):
+                coordinator = OperationCoordinator(CleanupService())
+                plan = coordinator.plan_operation(client='antigravity', record_ids=[ids[0]],
+                    antigravity_root=profile, antigravity_bin=binary, plan_path=root/'plan.json')
+                self.assertEqual(plan['goal_status'], 'ready', plan)
+                result = coordinator.apply_operation(operation_id=plan['operation_id'], plan_path=root/'plan.json',
+                    plan_sha256=plan['plan_sha256'], clients_closed=True, census=lambda: [],
+                    progress_callback=probe_lease)
+                self.assertEqual(result['goal_status'], 'complete', result)
+                self.assertEqual(launch_blocked, [32], 'Actual CLI launch must fail with a sharing violation')
+                verified = OperationCoordinator(CleanupService()).verify_operation(
+                    operation_id=plan['operation_id'], plan_path=root/'plan.json')
+                self.assertEqual(verified['goal_status'], 'complete', verified)
+            self.assertEqual(keeper.read_bytes(), before)
+            self.assertFalse(artifact.parent.exists())
+            self.assertFalse((profile/'annotations'/(ids[0]+'.pbtxt')).exists())
+            self.assertFalse((profile/'presence'/(ids[0]+'.lock')).exists())
+            self.assertTrue((profile/'annotations'/(ids[1]+'.pbtxt')).exists())
+            self.assertTrue((profile/'presence'/(ids[1]+'.lock')).exists())
+            self.assertNotIn(ids[0], proto_entries((profile/PROTO).read_bytes()))
+            if (profile/METADATA).exists():
+                self.assertNotIn(ids[0], json.loads((profile/METADATA).read_bytes())['conversations'])
+            with process([binary, 'acp', '--disable-telemetry'], root, env, piped=True) as proc:
+                client = client_for(proc)
+                client.call('session/load', {'sessionId': ids[1], 'cwd': str(root), 'mcpServers': []})
+                client.call('session/close', {'sessionId': ids[1]})
+                time.sleep(.5)
+            self.assertFalse((profile/'conversations'/(ids[0]+'.db')).exists())
+            self.assertFalse((profile/'annotations'/(ids[0]+'.pbtxt')).exists())
+            self.assertFalse((profile/'presence'/(ids[0]+'.lock')).exists())
+            with closing(sqlite3.connect(profile/native.SUMMARY)) as db:
+                self.assertEqual({r[0] for r in db.execute('SELECT conversation_id FROM conversation_summaries')}, {ids[1]})
+            self.assertNotIn(ids[0], proto_entries((profile/PROTO).read_bytes()))
+            self.assertNotIn(ids[0], (profile/native.CACHE).read_text())
+
     def test_cli_153_uses_user_profile_despite_t3_gemini_home(self):
         binary=Path(os.environ['LARJ_AGY_CLI_BINARY'])
         self.assertTrue(binary.is_absolute())
@@ -321,16 +421,20 @@ class AgyCliAcceptanceTests(unittest.TestCase):
             native=gemini/'antigravity-acp';native.mkdir(parents=True)
             (native/'settings.json').write_text(json.dumps({'auth':{'type':'gemini-api-key'}}))
             env=isolated_env(root);env.update(GEMINI_HOME=str(gemini),AGY_ACP_FORCE_FILE_STORAGE='1',
-                GEMINI_API_KEY='fixture-not-a-valid-key',HTTP_PROXY='http://127.0.0.1:9',
-                HTTPS_PROXY='http://127.0.0.1:9',BROWSER='false',PYTHONUNBUFFERED='1')
+                GEMINI_API_KEY='fixture-not-a-valid-key',GOOGLE_API_KEY='fixture-not-a-valid-key',
+                HTTP_PROXY='http://127.0.0.1:9',HTTPS_PROXY='http://127.0.0.1:9',
+                ALL_PROXY='http://127.0.0.1:9',NO_PROXY='',BROWSER='false',PYTHONUNBUFFERED='1')
             with process([binary,'acp'],root,env,piped=True) as p:
                 client=AcpClient(p)
                 info=client.call('initialize',{'protocolVersion':1,'clientCapabilities':{}})
                 self.assertEqual(info['agentInfo']['version'],'1.5.3')
                 self.assertNotIn('delete',info['agentCapabilities']['sessionCapabilities'])
-                with self.assertRaisesRegex(AssertionError,'ACP fixture request failed: session/new'):
-                    client.call('session/new',{'cwd':str(root),'mcpServers':[]})
+                client.call('authenticate', {'methodId': 'gemini-api-key'})
+                session = client.call('session/new',{'cwd':str(root),'mcpServers':[]})['sessionId']
+                client.call('session/close', {'sessionId': session})
+                time.sleep(.5)
             self.assertTrue((root/'.gemini/antigravity-cli/conversation_summaries.db').is_file())
+            self.assertTrue((root/'.gemini/antigravity-cli/conversations'/(session+'.db')).is_file())
             self.assertEqual({p.name for p in native.iterdir()},{'settings.json'})
 
 

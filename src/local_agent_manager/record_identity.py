@@ -39,6 +39,7 @@ class ClientName(str, Enum):
     QWENWORK = "qwenwork"
     PASEO = "paseo"
     T3CODE = "t3code"
+    ANTIGRAVITY = "antigravity"
 
 
 # A frontend backend name alone does not prove which native store owns a
@@ -530,6 +531,9 @@ def capability_for(
     if normalized_client == "workbuddy" and normalized_engine == "workbuddy":
         return EngineCapability("workbuddy", "workbuddy", native_delete=True, frontend_reference_delete=True, verify=True,
             reason="Exact supported local sessions or proven local-only pinned references; no remote deletion")
+    if normalized_client == "antigravity" and normalized_engine == "antigravity":
+        return EngineCapability("antigravity", "antigravity", native_delete=True, verify=True,
+            reason="Exact CLI IDs in qualified local schemas; Windows leases and frozen frontend guards required")
     if normalized_client == "qwenwork" and normalized_engine == normalized_client:
         return EngineCapability(normalized_client, normalized_engine, native_delete=True,
             frontend_session_delete=True, verify=True,

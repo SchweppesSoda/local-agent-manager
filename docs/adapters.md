@@ -831,14 +831,24 @@ Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Go
 
 T3 的完整清理另支持 Windows 托管 ACP 1.4.5 的固定运行文件摘要与原生数据库 DDL。
 同时冻结 provider 设置及默认受管选择的 `active.json`；旧程序仍在磁盘上不构成当前选择证据。
-切换到 CLI、自定义程序不匹配或计划后的选择漂移均在写入前阻挡。CLI 1.5.3 模式未取得
-完整原生删除资格，保留旧双文件适配不意味着 CLI 可以使用它。
+切换到 CLI、自定义程序不匹配或计划后的选择漂移均在写入前阻挡。CLI 模式不能使用
+旧双文件适配；独立 CLI 的受限原生 writer 另有入口和资格，见下文。
 实例路径由 provider instance ID 的 SHA-256 决定；当前及历史强引用、数据库内 trajectory/cascade
 ID 和精确 UUID 文件名共同证明归属，不能仅凭 cwd 删除。原生清理与 T3 数据清理共享一个
 批准动作和 writer 边界。删除所选 `.db`、SQLite 侧文件、`.meta`、`brain/<UUID>`；保留
 设置、凭据、skills、运行文件、工作树及未选会话。未知顶层文件、备份、schema、父引用或
 子轨迹关系阻挡。ACP 1.4.5 未声明 `session/delete`，这里没有伪造该 RPC。
 见 [绑定和验收方法](operation-cli.md#antigravity-acp-完整删除绑定)。
+
+独立 CLI 的 `records/delete --client antigravity` 现支持实际 DDL/格式校验后的
+Windows 本地清理。`antigravity_cli_cleanup`、`antigravity_cli_restore` 冻结并清理精确
+会话文件、共享摘要、protobuf/JSON 恢复镜像、workspace resume cache 与会话产物，
+`antigravity_cli_operations` 通过公共 coordinator 复用 OperationStore、根级 mutation
+gate 和 status/verify。计划不含正文，共享数据库的未选 typed cells 以逻辑摘要核验。
+`antigravity_cli_guards` 将已知 T3/Paseo 当前、历史和恢复引用作为独立保护来源；
+其前端 writer 尚未与 CLI 原生删除组合，不因独立入口可写就宣称两者完整删除已支持。
+未知 protobuf 关系、schema、镜像不一致和关联前端引用保持阻挡。完整范围、恢复限制
+及命令见 [独立 CLI 原生清理](operation-cli.md#独立-antigravity-cli-原生清理)。
 
 Google CLI 的官方 `/resume` 界面支持选定会话删除。操作前核对 CLI 版本与
 picker 显示的快捷键。1.1.13 起改为 `F4`，1.4.8 修正删除时遗漏运行中子代理、

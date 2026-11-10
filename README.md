@@ -53,6 +53,12 @@ Antigravity 的独立 CLI、T3 受管 ACP、T3 的 `agy acp` 模式、桌面程�
 provider 名称不能证明原生数据归属；未验证的原生格式和完整删除范围继续阻挡。
 具体来源、目录层次与技能操作方法见 [Antigravity 边界](docs/adapters.md#antigravity)。
 
+独立 agy CLI 可用 `records --client antigravity` 盘点，并按完整原生会话 ID 执行
+`delete plan/apply/run` 与 `operation status/verify`。Windows writer 清理已验证格式的
+会话数据库、共享摘要与恢复镜像、workspace resume cache 和会话产物；保留未选记录。
+已知 T3/Paseo 历史或恢复引用、未知关系和格式会阻挡。此入口不替代前端完整清理，
+也不沿用旧托管 ACP 的目录绑定。用法与限制见 [独立 CLI 原生清理](docs/operation-cli.md#独立-antigravity-cli-原生清理)。
+
 安装 skill 时将完整 `skills/agent-management` 目录复制到当前 Codex skills 目录；保留
 仓库安装，以便调用 CLI 和读取与该版本相匹配的操作契约。重新加载技能后即可使用。
 
