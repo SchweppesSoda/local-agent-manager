@@ -283,6 +283,24 @@ class CliFormatTests(unittest.TestCase):
         with self.assertRaisesRegex(agy.CleanupError, 'paseo_native_or_restore'):
             guards.freeze([{'client': 'paseo', 'root': str(paseo)}], [TARGET])
 
+    def test_t3_passive_audit_exception_cannot_hide_other_restore_fields_or_json_keys(self):
+        from tests.t3code_support import create_store, add_thread, insert, V2
+        t3 = self.base/'guard-t3'
+        with closing(create_store(t3)) as db:
+            add_thread(db, 'keeper')
+            for payload in (
+                {'type': 'command_execution', 'input': TARGET, 'resume': TARGET},
+                {'type': 'command_execution', 'input': {'resume': TARGET}},
+                {'type': 'dynamic_tool', 'toolName': 'unknown.restore', 'input': {'threadId': TARGET}},
+                {'type': 'command_execution', 'input': 'audit', TARGET: 'restorable'},
+            ):
+                insert(db, V2+'turn_items', turn_item_id='restore', thread_id='keeper', payload_json=json.dumps(payload))
+                db.commit()
+                with self.assertRaisesRegex(agy.CleanupError, 't3code_native_or_restore'):
+                    guards.freeze([{'client': 't3code', 'root': str(t3)}], [TARGET])
+                db.execute(f'DELETE FROM {V2}turn_items WHERE turn_item_id=?', ('restore',))
+                db.commit()
+
     def test_compatibility_aliases(self):
         from local_agent_record_janitor import antigravity_cli_cleanup, antigravity_cli_operations, antigravity_cli_guards
         self.assertIs(antigravity_cli_cleanup, agy)

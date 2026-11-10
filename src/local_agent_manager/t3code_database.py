@@ -68,17 +68,37 @@ def _require_shared_session(db, session_id, selected):
 
 
 def _content_reference(table, column, payload, path, event_type):
-    """Classify known user mentions and read-tool audit data in other chats."""
+    """Classify known dialogue text, mentions and read-tool audit locations."""
     if column != 'payload_json' or not isinstance(payload, str) or not isinstance(path, str):
         return False
     if table in {'orchestration_v2_events', 'orchestration_events'}:
-        table = {'message.updated': V2 + 'messages', 'turn-item.updated': V2 + 'turn_items'}.get(event_type)
+        table = {'message.updated': V2 + 'messages', 'turn-item.updated': V2 + 'turn_items',
+                 'subagent.updated': V2 + 'subagents'}.get(event_type)
     try:
         value = strict_json(payload)
     except (ValueError, TypeError):
         return False
     if not isinstance(value, dict):
         return False
+    if (table == V2 + 'messages' and value.get('role') in {'user', 'assistant'}
+            and path == '$.text' and isinstance(value.get('text'), str)):
+        return True
+    if table == V2 + 'subagents' and path == '$.prompt' and isinstance(value.get('prompt'), str):
+        return True
+    if table == V2 + 'turn_items':
+        kind = value.get('type')
+        if (kind in {'user_message', 'assistant_message'} and path == '$.text'
+                and isinstance(value.get('text'), str)):
+            return True
+        if (kind == 'command_execution' and path in {'$.input', '$.output'}
+                and isinstance(value.get(path[2:]), str)):
+            return True
+        if kind == 'subagent' and path == '$.prompt' and isinstance(value.get('prompt'), str):
+            return True
+        if (kind == 'dynamic_tool' and value.get('toolName') == 't3-code.delegate_task'
+                and path == '$.input.task' and isinstance(value.get('input'), dict)
+                and isinstance(value['input'].get('task'), str)):
+            return True
     user_message = table == V2 + 'messages' and value.get('role') == 'user'
     user_item = table == V2 + 'turn_items' and value.get('type') == 'user_message'
     if user_message or user_item:

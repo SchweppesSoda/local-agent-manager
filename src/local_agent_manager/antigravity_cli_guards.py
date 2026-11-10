@@ -56,6 +56,7 @@ def freeze(sources, ids, *, joint=None):
             remaining(joint['files'])
         if source['client'] == 't3code':
             from .t3code_store import RELATIVE, qualify
+            from .t3code_database import _content_reference
             from .t3code_cleanup_files import _names, _require_known_database_family
             _require_known_database_family(root)
             item['directories'] = [_names(root, name) for name in
@@ -64,13 +65,14 @@ def freeze(sources, ids, *, joint=None):
                 fail('t3code_recovery_source_unqualified')
             with private_database(root, RELATIVE) as (db, proofs, _):
                 qualify(db)
+                db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
                 if owned:
                     from .t3code_database import _transform
                     from .office_database import logical_hash
                     database = joint['files']['database']
                     current = logical_hash(db)
                     if current == database['before_sha256']:
-                        _transform(db, database['thread_ids'])
+                        _transform(db, database['thread_ids'], native_ids=database.get('protected_native_ids', ()))
                     elif current != database['after_sha256']:
                         fail('joint_database_state_unknown')
                     if logical_hash(db) != database['after_sha256']:
@@ -84,18 +86,24 @@ def freeze(sources, ids, *, joint=None):
                 for table in tables:
                     quoted = '"'+table.replace('"', '""')+'"'
                     columns = [r[1] for r in db.execute('PRAGMA table_info('+quoted+')')]
+                    event_type = 't.event_type' if 'event_type' in columns else 'NULL'
                     for column in columns:
+                        if table == 'projection_thread_messages' and column == 'text':
+                            continue
                         qcol = '"'+column.replace('"', '""')+'"'
                         for sid in ids:
-                            if db.execute('SELECT 1 FROM '+quoted+' WHERE instr(CAST('+qcol+' AS BLOB),?)>0 LIMIT 1',
+                            if db.execute('SELECT 1 FROM '+quoted+' WHERE NOT json_valid('+qcol+') '
+                                          'AND instr(CAST('+qcol+' AS BLOB),?)>0 LIMIT 1',
                                           (sid.encode(),)).fetchone():
                                 fail('t3code_native_or_restore_reference')
                             # JSON escapes must not hide a UUID from the
                             # cross-profile guard. Interpret JSON only as a
                             # protection source, never as ownership proof.
                             if db.execute('SELECT 1 FROM '+quoted+' AS t, json_tree(CASE WHEN json_valid(t.'+qcol+') '
-                                          'THEN t.'+qcol+" ELSE 'null' END) AS j WHERE j.type='text' AND instr(j.value,?)>0 LIMIT 1",
-                                          (sid,)).fetchone():
+                                          'THEN t.'+qcol+" ELSE 'null' END) AS j WHERE "
+                                          "((j.type='text' AND instr(j.value,?)>0) OR instr(CAST(j.key AS TEXT),?)>0) "
+                                          'AND NOT lam_content_reference(?, ?, t.'+qcol+',j.fullkey,'+event_type+') LIMIT 1',
+                                          (sid, sid, table, column)).fetchone():
                                 fail('t3code_native_or_restore_reference')
                 item['files'] = [] if owned else proofs
                 if owned:

@@ -475,6 +475,8 @@ local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --cl
 位于选区之外。未知共享格式、owner 位于选区、恢复引用及真实跨线程 transfer 继续阻挡。
 当前其他对话中的用户 thread mention，以及 `t3-code.t3_thread_read` 的已知输入/输出
 审计内容属于各自对话的内容。其引用文本继续保留，原线程清理按指定记录边界执行。
+已知消息正文、命令执行文本和子任务 prompt 中的 ID 文字也按对话内容保留。
+JSON 恢复字段、未知工具引用和包含目标 ID 的未知键仍作为恢复依赖检查。
 
 V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核验。已知 Codex／Claude
 导入 cursor 和 transcript 元数据作为只读保护源，按引擎和原生 ID 保护历史来源，

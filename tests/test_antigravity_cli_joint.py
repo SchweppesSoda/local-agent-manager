@@ -145,6 +145,38 @@ class JointTests(unittest.TestCase):
     def test_t3_fullflow_cold_apply_child_closure_and_no_replay(self):
         self.assert_fullflow('t3code')
 
+    def test_t3_joint_cleanup_preserves_known_audit_text(self):
+        adapter = self.setup_client('t3code')
+        payloads = [
+            (V2+'messages', {'role': 'user', 'text': 'Mention '+TARGET}, None),
+            (V2+'turn_items', {'type': 'command_execution', 'input': 'inspect '+TARGET, 'output': TARGET}, 'turn-item.updated'),
+            (V2+'turn_items', {'type': 'dynamic_tool', 'toolName': 't3-code.delegate_task',
+                              'input': {'task': 'Review '+TARGET}}, 'turn-item.updated'),
+            (V2+'turn_items', {'type': 'subagent', 'prompt': 'Review '+TARGET}, 'turn-item.updated'),
+            (V2+'subagents', {'prompt': 'Review '+TARGET}, 'subagent.updated'),
+        ]
+        with closing(sqlite3.connect(self.t3/'userdata/statev2.sqlite')) as db:
+            for index, (table, payload, event_type) in enumerate(payloads):
+                if table == V2+'messages':
+                    db.execute(f'UPDATE {table} SET payload_json=? WHERE thread_id=?', (json.dumps(payload), OTHER))
+                elif table == V2+'turn_items':
+                    insert(db, table, turn_item_id='audit-'+str(index), thread_id=OTHER, payload_json=json.dumps(payload))
+                else:
+                    insert(db, table, subagent_id='audit-task', thread_id=OTHER, child_thread_id=None,
+                           provider='antigravity', provider_instance_id='antigravity', status='completed', payload_json=json.dumps(payload))
+                insert(db, 'orchestration_events', event_id='mirror-'+str(index), aggregate_kind='thread', stream_id=OTHER,
+                       stream_version=index+1, event_type=event_type or 'message.updated',
+                       payload_json=json.dumps(payload), metadata_json='{}')
+                insert(db, 'orchestration_v2_events', event_id='mirror-v2-'+str(index), thread_id=OTHER,
+                       event_type=event_type or 'message.updated', payload_json=json.dumps(payload))
+            db.commit()
+        plan = self.plan('t3code', adapter)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        with closing(sqlite3.connect(self.t3/'userdata/statev2.sqlite')) as db:
+            self.assertEqual(json.loads(db.execute(f'SELECT payload_json FROM {V2}messages WHERE thread_id=?', (OTHER,)).fetchone()[0]), payloads[0][1])
+
     def test_paseo_fullflow_cold_apply_child_closure_and_no_replay(self):
         self.assert_fullflow('paseo')
 
