@@ -5,11 +5,39 @@ native home or authorize removal of a frontend record. Deleted/archived
 frontend rows remain protection sources while they retain a native handle.
 """
 from pathlib import Path
+from contextlib import contextmanager
+from contextvars import ContextVar
 import time
 
 from . import frozen_files as ff
 from .antigravity_cli_cleanup import fail, private_database, root_path
 from .record_identity import canonical_path
+
+_leased = ContextVar('joint_cli_guard_files', default=None)
+
+
+@contextmanager
+def leased_reads(evidence, held):
+    """Only the exact protection-source files already acquired by this scope."""
+    proofs = {(canonical_path(s['root']), p['path']): (s['root'], p)
+              for s in evidence for p in s.get('files', ())}
+    token = _leased.set((held, proofs))
+    try:
+        yield
+    finally:
+        _leased.reset(token)
+
+
+def read_source(root, relative, **options):
+    ticket = _leased.get()
+    item = ticket[1].get((canonical_path(root), relative)) if ticket else None
+    if item is None:
+        return ff.read_file(root, relative, **options)
+    source_root, expected = item
+    proof, raw = ticket[0].read(Path(source_root), relative, **options)
+    if proof != expected:
+        fail('guard_source_changed')
+    return proof, raw
 
 
 def locations(*, t3code_roots=(), paseo_roots=()):
@@ -63,7 +91,7 @@ def freeze(sources, ids, *, joint=None):
                                    ('userdata', 'userdata/backups', 'userdata/snapshots')]
             if any(d.get('entries') for d in item['directories'][1:]):
                 fail('t3code_recovery_source_unqualified')
-            with private_database(root, RELATIVE) as (db, proofs, _):
+            with private_database(root, RELATIVE, reader=read_source) as (db, proofs, _):
                 qualify(db)
                 db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
                 if owned:
@@ -116,7 +144,7 @@ def freeze(sources, ids, *, joint=None):
                     item['directories'] = item['directories'][1:]
         elif source['client'] == 'paseo':
             from .paseo_cleanup_files import rows, transform
-            entries, directories = rows(root)
+            entries, directories = rows(root, reader=read_source)
             item['directories'] = directories
             item['files'] = []
             for entry in entries:

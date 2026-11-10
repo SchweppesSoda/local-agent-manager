@@ -144,7 +144,7 @@ def _acp_binding(root, row, instance, runtime_binaries):
         server = local_root(binary)
         if server.name != "agy_acp_server.exe":
             from .antigravity_cli_binding import runtime, environment, home_for
-            runtime(server)
+            runtime(server, profile_root=root)
             home = home_for(environment(instance.get('environment', {})))
             native_root = _plain_directory(home/'.gemini/antigravity-cli')
             runtime_binaries.add(str(server))
@@ -159,7 +159,8 @@ def _acp_binding(root, row, instance, runtime_binaries):
         directory = release[0].parent
     binaries = []
     for name in RUNTIMES:
-        proof, _ = frozen_files.read_file(directory, name)
+        from .t3code_lifecycle import read_binary
+        proof = read_binary(root, directory/name)
         if not proof['size']:
             raise ValueError("antigravity_managed_runtime_unqualified")
         binaries.append(str(directory / name))
@@ -176,7 +177,13 @@ def discover_bindings(root=None):
     from .t3code_server_delete import _bundled_install, _RUNTIME_FILES, _environment_id
 
     root = _plain_directory(default_root() if root is None else root)
-    settings_proof, raw = frozen_files.read_file(root, "userdata/settings.json", content=True, limit=1024 * 1024)
+    def settings_read():
+        from .antigravity_cli_joint import held_settings
+        current = held_settings(root, 'userdata/settings.json')
+        return current if current is not None else frozen_files.read_file(
+            root, 'userdata/settings.json', content=True, limit=1024*1024)
+
+    settings_proof, raw = settings_read()
     settings = strict_json(raw.decode("utf-8-sig"))
     instances = settings.get("providerInstances") if isinstance(settings, dict) else None
     if not isinstance(instances, dict):
@@ -184,7 +191,8 @@ def discover_bindings(root=None):
     data = read_database(root)
     install = _plain_directory(_bundled_install())
     binary = install / _RUNTIME_FILES[0]
-    frozen_files.read_file(binary.parent, binary.name)
+    from .t3code_lifecycle import read_binary
+    read_binary(root, binary)
     binaries = {str(binary)}
     bindings, blockers, cache = [], [], {}
     for thread_id, copies in sorted(data["threads"].items()):
@@ -242,6 +250,6 @@ def discover_bindings(root=None):
             native_id = canonical_path(local_root(item["native_id"])) if binding["engine"] == "pi" else item["native_id"]
             if native_id not in ids:
                 raise BindingDiscoveryError([{"blocker_code": "historical_native_root_unproven", "thread_id": item["thread_id"]}])
-    if frozen_files.read_file(root, "userdata/settings.json")[0] != settings_proof:
+    if settings_read()[0] != settings_proof:
         raise BindingDiscoveryError([{"blocker_code": "t3code_provider_settings_changed"}])
     return manifest

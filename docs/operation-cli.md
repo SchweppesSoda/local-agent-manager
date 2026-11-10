@@ -38,8 +38,17 @@ original frontend child permits current schema/integrity, target absence, frozen
 unselected thread membership, preserved file hashes, native after-state and all
 current restoration-reference guards to replace the old whole-database equality
 test. The desktop decoder must find zero selected target pairs; its current
-logical hash is recorded. Continued content/settings are not claimed byte-identical
-to the old snapshot. A new unselected thread must acquire a positively discovered
+logical hash is recorded. Continued conversation content is not claimed byte-identical
+to the old snapshot. Provider-selection settings must still match the frozen bytes
+and mode. A byte-identical atomic rewrite is admitted with a newly frozen physical
+identity and both proofs in the audit; changed settings are refused. Settings are
+verified before admission and leased throughout recovery. Runtime evidence
+is verified before the lifecycle hold; discovery and subsequent verification read
+the exact admitted binaries through their original exclusive handles. Non-owning
+frontend guard files likewise use their held handles, without releasing leases
+for a pathname recheck. An unheld path receives no lease exemption, and changed
+programs, settings or guard sources remain blockers.
+A new unselected thread must acquire a positively discovered
 protection binding; it cannot expand the frozen deletion authorization.
 
 After all these checks, the protocol publishes a separate retained

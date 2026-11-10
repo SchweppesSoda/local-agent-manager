@@ -127,11 +127,12 @@ def sources(root):
     return paths, directories
 
 
-def rows(root):
+def rows(root, *, reader=None):
+    reader = reader or frozen_files.read_file
     paths, before = sources(root)
     result, total = [], 0
     for entry in paths:
-        proof, raw = frozen_files.read_file(root, entry["path"], content=True, limit=4 * 1024 * 1024)
+        proof, raw = reader(root, entry["path"], content=True, limit=4 * 1024 * 1024)
         total += len(raw)
         if total > 64 * 1024 * 1024:
             fail("file_closure_budget_exceeded")

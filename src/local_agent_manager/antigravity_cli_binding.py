@@ -27,9 +27,12 @@ def check_binding(manifest, binding):
         native.fail('binding_root_or_runtime_unproven')
 
 
-def runtime(binary, manifest=None):
+def runtime(binary, manifest=None, *, profile_root=None):
     binary = Path(binary)
-    if manifest:
+    if profile_root is not None:
+        from .t3code_lifecycle import read_binary
+        proof = {'root': str(binary.parent), 'file': read_binary(profile_root, binary)}
+    elif manifest:
         from . import t3code_lifecycle, paseo_lifecycle
         boundary = (t3code_lifecycle.current_boundary(manifest['profile_root'])
                     or paseo_lifecycle.current_boundary(manifest['profile_root']))
@@ -39,6 +42,8 @@ def runtime(binary, manifest=None):
             if len(matches) != 1:
                 native.fail('runtime_not_held')
             proof = matches[0]
+            if t3code_lifecycle.current_boundary(manifest['profile_root']):
+                proof = {'root': proof['root'], 'file': t3code_lifecycle.read_binary(manifest['profile_root'], binary)}
         else:
             proof = {'root': str(binary.parent), 'file': ff.read_file(binary.parent, binary.name)[0]}
     else:

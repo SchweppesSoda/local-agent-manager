@@ -193,6 +193,7 @@ def execution_scope(document, evidence, client, census=None):
     with ExitStack() as stack:
         held = stack.enter_context(HeldFiles())
         guards.acquire(evidence['cli_guards'], held)
+        stack.enter_context(guards.leased_reads(evidence['cli_guards'], held))
         settings_paths = set()
         for target in selected:
             proof = target['cli_selection']['settings']
@@ -227,7 +228,6 @@ def execution_scope(document, evidence, client, census=None):
                             + module.paseo_indexeddb.remaining(desktop['indexeddb']))
             except (OSError, ValueError, RuntimeError):
                 pass
-            held.__exit__(None, None, None)
             guard_error = None
             try:
                 recheck(evidence, client)
@@ -244,7 +244,8 @@ def held_settings(root, relative):
     if ticket and canonical_path(root) == canonical_path(ticket[0]['root']):
         if (str(Path(root)), relative) in ticket[3].handles:
             return ticket[3].read(Path(root), relative, content=True)
-    return None
+    from .joint_cli_recovery import held_settings as recovery_settings
+    return recovery_settings(root, relative)
 
 
 def runtime_is_held(evidence):

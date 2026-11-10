@@ -16,6 +16,18 @@ from .windows_held_files import HeldFiles
 from . import frozen_files as ff
 
 _active = ContextVar('joint_cli_readonly_recovery', default=None)
+_settings = ContextVar('joint_cli_recovery_settings', default=None)
+
+
+def held_settings(root, relative):
+    ticket = _settings.get()
+    key = (str(Path(root)), relative)
+    if ticket is None or key not in ticket[1]:
+        return None
+    proof, raw = ticket[0].read(Path(root), relative, content=True, limit=1024*1024)
+    if proof != ticket[1][key]:
+        raise RuntimeError('joint_recovery_provider_selection_changed')
+    return proof, raw
 
 
 def require_process_absent(pid, created_at=None):
@@ -99,6 +111,8 @@ def recovery_scope(document, coordinator, approved_hash):
     frontends = []
     with ExitStack() as stack:
         held = stack.enter_context(HeldFiles())
+        settings = {}
+        selection_proofs = {}
         for action in document['actions']:
             payload = action.get('impact', {}).get('external_action_payload', {})
             for client in ('t3code', 'paseo'):
@@ -108,6 +122,27 @@ def recovery_scope(document, coordinator, approved_hash):
                 # Holds the actual startup boundary and binaries; an online
                 # frontend is a blocker, never a request to close the host.
                 lifecycle = t3code_lifecycle if client == 't3code' else paseo_lifecycle
+                # Verify selection before admission, then keep the exact
+                # settings leased for every subsequent discovery/recheck.
+                from .antigravity_cli_binding import selection
+                for target in joint.targets(evidence):
+                    current = selection(evidence['binding_manifest'], target['binding'], client)
+                    original = target['cli_selection']
+                    # Reopened frontends atomically rewrite identical settings.
+                    # Accept only byte/mode-identical selection, not arbitrary
+                    # settings evolution. Freeze the current physical identity
+                    # before leasing it; never rewrite the original plan proof.
+                    if (current['runtime'] != original['runtime'] or any(
+                            current['settings'][k] != original['settings'][k]
+                            for k in ('path', 'size', 'sha256', 'mode'))):
+                        raise RuntimeError('joint_recovery_provider_selection_changed')
+                    proof = current['settings']
+                    selection_proofs[evidence['root']] = {'original': original['settings'], 'current': proof,
+                        'basis': 'byte_identical_selection_under_current_file_lease'}
+                    key = (str(Path(evidence['root'])), proof['path'])
+                    if key not in settings:
+                        held.acquire(Path(evidence['root']), proof)
+                        settings[key] = proof
                 stack.enter_context(lifecycle.hold(evidence))
                 guards.require_closed(evidence['cli_guards'])
                 frontends.append((evidence, client))
@@ -168,6 +203,7 @@ def recovery_scope(document, coordinator, approved_hash):
                         'audit': {'schema_version': 'lam.joint-cli-recovery.v1',
                             'parent_operation_id': document['operation_id'], 'parent_plan_sha256': approved_hash,
                             'reservation_plan_sha256': plan['plan_sha256'], 'original_lock': lock,
+                            'current_provider_settings': selection_proofs[evidence['root']],
                             'original_lock_sha256': proof['sha256'], 'children': children,
                             'writer_exit': process_proof,
                             'writer_model': 'synchronous_in_process_no_native_job',
@@ -175,14 +211,17 @@ def recovery_scope(document, coordinator, approved_hash):
                                 for p in (store.plan_path, store.state_path, store.events_path)},
                             'verified_at': utc_now()}, 'completed': False}
         token = _active.set(entries)
+        settings_token = _settings.set((held, settings))
         try:
             # The receipt/process/handle ticket is installed before the guard
             # refresh, which itself checks the owning frontend database.
             for evidence, client in frontends:
                 joint.recheck(evidence, client)
                 guards.acquire(evidence['cli_guards'], held)
+                stack.enter_context(guards.leased_reads(evidence['cli_guards'], held))
             yield entries
         finally:
+            _settings.reset(settings_token)
             _active.reset(token)
             for entry in entries.values():
                 if entry['completed']:

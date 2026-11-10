@@ -167,8 +167,9 @@ def _check(db, contract):
 
 
 @contextmanager
-def private_database(root, relative):
+def private_database(root, relative, *, reader=None):
     """Never let a metadata read initialize SHM in the user's WAL database."""
+    reader = reader or ff.read_file
     proofs = []
     with tempfile.TemporaryDirectory(prefix='lam-agy-db-') as directory:
         target = Path(directory) / 'copy.db'
@@ -177,7 +178,7 @@ def private_database(root, relative):
             path = ff.checked_path(root, relative + suffix)
             if not path.exists() and suffix:
                 continue
-            proof, raw = ff.read_file(root, relative + suffix, content=True, limit=ff.MAX_BYTES-total)
+            proof, raw = reader(root, relative + suffix, content=True, limit=ff.MAX_BYTES-total)
             total += len(raw)
             proofs.append(proof)
             if suffix == '-journal' and raw:
@@ -187,7 +188,7 @@ def private_database(root, relative):
         with closing(sqlite3.connect(target)) as db:
             db.row_factory = sqlite3.Row
             yield db, proofs, target
-        if any(ff.read_file(root, p['path'])[0] != p for p in proofs):
+        if any(reader(root, p['path'])[0] != p for p in proofs):
             fail('database_changed')
 
 

@@ -115,19 +115,18 @@ def check_binding(manifest, binding):
 
 
 def runtime(binding, profile_root):
-    from .t3code_lifecycle import current_boundary
+    from .t3code_lifecycle import current_boundary, read_binary
     boundary = current_boundary(profile_root)
     result = []
     for name in sorted(RUNTIMES):
         binary = Path(next(p for p in binding['acp_runtime_binaries'] if Path(p).name == name))
         if boundary:
-            # HeldFiles deliberately prevents reopening an executable. Its
-            # already-verified frozen proof remains authoritative in the hold.
+            # Recheck through the lifecycle's original exclusive handle.
             item = next((i for i in boundary['lifecycle']['binaries']
                          if canonical_path(Path(i['root']) / i['file']['path']) == canonical_path(binary)), None)
             if item is None:
                 fail('antigravity_runtime_not_held')
-            proof = item['file']
+            proof = read_binary(profile_root, binary)
         else:
             proof, _ = frozen_files.read_file(binary.parent, name)
         if not proof['size']:

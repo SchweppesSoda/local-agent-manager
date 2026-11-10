@@ -11,12 +11,35 @@ from .t3code_store import fail
 from .windows_held_files import HeldFiles
 
 _active = ContextVar("t3code_lifecycle", default=None)
+_held = ContextVar("t3code_lifecycle_files", default=None)
 OWNER = "userdata/server-owner.sqlite"
 
 
 def current_boundary(root):
     value = _active.get()
     return value if value and canonical_path(value["root"]) == canonical_path(root) else None
+
+
+def read_binary(root, binary):
+    """Read only an exact runtime admitted by this profile's active hold.
+
+    No cached-proof exemption and no release/reopen window: recheck identity,
+    revision and bytes through the original exclusive handle on every read.
+    Outside a lifecycle boundary the normal path reader remains authoritative.
+    """
+    boundary = current_boundary(root)
+    binary = Path(binary)
+    if boundary is None:
+        return frozen_files.read_file(binary.parent, binary.name)[0]
+    matches = [item for item in boundary['lifecycle']['binaries']
+               if canonical_path(Path(item['root'])/item['file']['path']) == canonical_path(binary)]
+    if len(matches) != 1 or _held.get() is None:
+        fail('runtime_not_held')
+    item = matches[0]
+    proof, _ = _held.get().read(Path(item['root']), item['file']['path'])
+    if proof != item['file']:
+        fail('held_lifecycle_evidence_changed')
+    return proof
 
 
 def freeze(manifest):
@@ -90,7 +113,9 @@ def hold(evidence, *, census=None):
             fail("owner_lock_schema_unverified")
         require_closed(evidence, census=census)
         token = _active.set(evidence)
+        held_token = _held.set(held)
         try:
             yield
         finally:
+            _held.reset(held_token)
             _active.reset(token)
