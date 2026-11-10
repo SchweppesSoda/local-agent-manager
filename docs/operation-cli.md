@@ -465,6 +465,25 @@ local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --cl
 无法证明的旧 home、历史句柄、原生格式及共享引用会汇总报告并保留。
 自动发现失败时 plan 仍生成阻挡计划，不会将完整清理自动改成 T3 软删除。
 
+配置中的安装器链接会解析为实际运行文件，并继续验证文件身份和原生 ID 归属。
+自定义 provider instance 在历史 run/attempt 中的名称，需要由同线程的 instance、
+默认 provider 和持久化 driver 共同证明。已登记的子任务线程也会加入后代范围，
+子任务的 provider 按子线程归属核验。
+
+已知共享 provider session 保留其全局行及未选线程的绑定，只清理选中线程的绑定。
+该路径要求共享 ID、instance、driver、status 和 payload 相符，且全局行的当前 owner
+位于选区之外。未知共享格式、owner 位于选区、恢复引用及真实跨线程 transfer 继续阻挡。
+当前其他对话中的用户 thread mention，以及 `t3-code.t3_thread_read` 的已知输入/输出
+审计内容属于各自对话的内容。其引用文本继续保留，原线程清理按指定记录边界执行。
+
+V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核验。已知 Codex／Claude
+导入 cursor 和 transcript 元数据作为只读保护源，按引擎和原生 ID 保护历史来源，
+即使当前 provider home 已改变。直接选择这些导入记录进行完整删除仍会阻挡。
+恢复依赖检查覆盖完整原生删除范围，包括原生发现的后代。所有保留的 provider session
+和历史对象均参与检查。未知旧事件类型、字段或恢复 cursor 继续阻挡。
+其他线程的已证明上传附件及支持格式的提取文本会冻结保留。选区附件、未知同名文件、
+共享附件和未证明归属的文件继续阻挡完整清理。
+
 Antigravity 记录仍使用 `unsupported:antigravity`；元数据的
 `provider_backend_family_hint=antigravity-acp` 只描述内置实现线索，
 `native_cleanup_status=requires_t3code_binding` 表示需要显式绑定才能验证原生清理资格。
@@ -634,6 +653,12 @@ after-state 得到确认才解除占用，不能通过重建计划或删除管�
 未选会话、凭据、配置、skills、工作目录和未授权前端 profile 不在删除范围。
 
 ## 独立 Antigravity CLI 原生清理
+
+摘要库中的已知 `conversations_fts` 全文索引与 `search_schema_version` 可参与清理。
+计划校验 FTS 声明、SQLite shadow tables、索引完整性并冻结完整 schema 摘要。
+删除按 `conversation_id` 清理全部 chunk，随后依据保留内容重建索引，并沿用
+`secure_delete`、VACUUM、前后逻辑摘要及恢复镜像验证。检查时间标记
+`last_check.timestamp` 按原样保留。索引重建行为见 [SQLite FTS5 文档](https://www.sqlite.org/fts5.html#the_rebuild_command)。
 
 `antigravity` 指使用 CLI 原生存储的会话，而非 T3 thread ID、Paseo agent ID 或托管
 ACP 实例目录。默认根为当前 OS 用户的 `~/.gemini/antigravity-cli`；非默认根必须显式

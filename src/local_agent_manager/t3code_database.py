@@ -15,6 +15,7 @@ import time
 from . import frozen_files
 from .office_database import logical_hash
 from .sqlite_utils import connect_readonly
+from .providers.t3 import strict_json
 from .t3code_store import CONTRACT, RELATIVE, V2, T3CodeError, database_path, fail, identifier, native_handle, qualify, rows
 
 SCHEMA = "larj.t3code-database.v1"
@@ -41,7 +42,59 @@ def _check(db):
         fail("relations_inconsistent")
 
 
-def closure(db, ids):
+def _require_shared_session(db, session_id, selected):
+    observed = rows(db, f'''SELECT provider_session_id,thread_id,provider,provider_instance_id,status,payload_json
+        FROM {V2}provider_sessions WHERE provider_session_id=?''', (session_id,))
+    if len(observed) != 1:
+        fail('shared_provider_session')
+    row = observed[0]
+    instance = row['provider_instance_id']
+    payload = strict_json(row['payload_json'])
+    if (not instance or session_id != 'provider-session:provider-instance:' + instance + ':shared'
+            or row['thread_id'] in selected or not isinstance(payload, dict)
+            or payload.get('id') != session_id or payload.get('providerInstanceId') != instance
+            or payload.get('driver') not in {'codex', 'claudeAgent', 'pi', 'antigravity'}
+            or row['provider'] not in {instance, payload.get('driver')}
+            or row['status'] not in {'ready', 'stopped', 'error'}
+            or payload.get('status') != row['status']):
+        fail('shared_provider_session')
+    if row['thread_id'] is not None and not db.execute(
+            f'SELECT 1 FROM {V2}threads WHERE thread_id=?', (row['thread_id'],)).fetchone():
+        fail('shared_provider_session')
+    if db.execute(f'''SELECT 1 FROM {V2}provider_sessions AS t,json_tree(t.payload_json) AS j
+            WHERE t.provider_session_id=? AND j.key IN ('nativeThreadId','nativeThreadRef','threadId')
+            AND j.type!='null' LIMIT 1''', (session_id,)).fetchone():
+        fail('shared_provider_session_restore_reference')
+
+
+def _content_reference(table, column, payload, path, event_type):
+    """Classify known user mentions and read-tool audit data in other chats."""
+    if column != 'payload_json' or not isinstance(payload, str) or not isinstance(path, str):
+        return False
+    if table in {'orchestration_v2_events', 'orchestration_events'}:
+        table = {'message.updated': V2 + 'messages', 'turn-item.updated': V2 + 'turn_items'}.get(event_type)
+    try:
+        value = strict_json(payload)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    user_message = table == V2 + 'messages' and value.get('role') == 'user'
+    user_item = table == V2 + 'turn_items' and value.get('type') == 'user_message'
+    if user_message or user_item:
+        match = re.fullmatch(r'\$\.context\.records\[([0-9]+)\]\.threadId', path)
+        context = value.get('context')
+        records = context.get('records') if isinstance(context, dict) else None
+        if match and isinstance(records, list) and int(match[1]) < len(records):
+            record = records[int(match[1])]
+            return isinstance(record, dict) and record.get('kind') == 'thread'
+    if (table == V2 + 'turn_items' and value.get('type') == 'dynamic_tool'
+            and value.get('toolName') == 't3-code.t3_thread_read'):
+        return path.startswith(('$.input.', '$.input[', '$.output.', '$.output['))
+    return False
+
+
+def closure(db, ids, *, native_ids=()):
     ids = tuple(sorted({identifier(i) for i in ids}))
     if not ids:
         fail("empty_selection")
@@ -60,21 +113,23 @@ def closure(db, ids):
     bindings = rows(db, f"SELECT provider_session_id,thread_id FROM {V2}provider_session_bindings")
     sessions = {r['provider_session_id'] for r in bindings if r['thread_id'] in ids}
     sessions.update(r[0] for r in db.execute(f"SELECT provider_session_id FROM {V2}provider_sessions WHERE {where}", ids))
-    if any(r['provider_session_id'] in sessions and r['thread_id'] not in ids for r in bindings):
-        fail("shared_provider_session")
+    shared = {r['provider_session_id'] for r in bindings if r['provider_session_id'] in sessions and r['thread_id'] not in ids}
     if sessions:
         session_ids = tuple(sorted(sessions))
-        if db.execute(f"SELECT 1 FROM {V2}provider_sessions WHERE {_where('provider_session_id',session_ids)} AND thread_id IS NOT NULL AND NOT ({where}) LIMIT 1", session_ids + ids).fetchone():
-            fail("shared_provider_session")
-        if db.execute(f"SELECT 1 FROM {V2}provider_threads WHERE {_where('provider_session_id',session_ids)} AND (thread_id IS NULL OR NOT ({where})) LIMIT 1", session_ids + ids).fetchone():
-            fail("shared_provider_session")
+        for table, other_owner in (('provider_sessions', f'thread_id IS NOT NULL AND NOT ({where})'),
+                                   ('provider_threads', f'thread_id IS NULL OR NOT ({where})')):
+            shared.update(r[0] for r in db.execute(f'''SELECT provider_session_id FROM {V2}{table}
+                WHERE {_where('provider_session_id',session_ids)} AND ({other_owner})''', session_ids + ids))
+        for session_id in sorted(shared):
+            _require_shared_session(db, session_id, ids)
+    owned_sessions = sessions - shared
     # Unknown non-thread event ownership cannot be absorbed by an ID match.
     for table, column in (("orchestration_events", "stream_id"), ("orchestration_command_receipts", "aggregate_id")):
         if db.execute(f"SELECT 1 FROM {table} WHERE {_where(column,ids)} AND aggregate_kind != 'thread' LIMIT 1", ids).fetchone():
             fail("legacy_aggregate_ownership_unverified")
     statements = [(table, where, ids) for table in THREAD_TABLES if table != V2 + "provider_sessions"]
-    if sessions:
-        statements.append((V2 + "provider_sessions", _where("provider_session_id", tuple(sorted(sessions))), tuple(sorted(sessions))))
+    if owned_sessions:
+        statements.append((V2 + "provider_sessions", _where("provider_session_id", tuple(sorted(owned_sessions))), tuple(sorted(owned_sessions))))
     statements.extend((
         (V2 + "context_transfers", _where("source_thread_id", ids), ids),
         ("orchestration_events", "aggregate_kind='thread' AND " + _where("stream_id", ids), ids),
@@ -82,33 +137,60 @@ def closure(db, ids):
     ))
     counts = {}
     native_refs = set()
+    db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
     for table, predicate, args in statements:
         counts[table] = db.execute(f'SELECT count(*) FROM "{table}" WHERE {predicate}', args).fetchone()[0]
-        # An unselected event/projection that mentions an exact selected ID
-        # may replay a relationship. Conservatively block instead of editing it.
         columns = [r[1] for r in db.execute(f'PRAGMA table_info("{table}")')]
-        for column in (c for c in columns if c.endswith("_json")):
-            if db.execute(f'''SELECT 1 FROM "{table}" AS t, json_tree(t."{column}") AS j
-                WHERE NOT ({predicate}) AND j.type='text' AND {_where('j.value',ids)} LIMIT 1''', args + ids).fetchone():
-                fail("unselected_restore_reference")
+        event_type = 't.event_type' if 'event_type' in columns else 'NULL'
         # All historical nativeThreadRef values are included, not just the
         # current projection. This also catches previous provider switches.
         if "payload_json" in columns:
             for row in rows(db, f'''SELECT DISTINCT json_extract(j.value,'$.driver') AS driver,
                     json_extract(j.value,'$.nativeId') AS native_id
                 FROM "{table}" AS t,json_tree(t.payload_json) AS j
-                WHERE ({predicate}) AND j.key='nativeThreadRef' AND j.type='object' ''', args):
+                WHERE ({predicate}) AND j.key='nativeThreadRef' AND j.type='object'
+                AND NOT lam_content_reference(?, 'payload_json', t.payload_json, j.fullkey, {event_type}) ''', args + (table,)):
                 if row["native_id"] is not None:
                     native_refs.add((identifier(row["driver"]), native_handle(row["driver"], row["native_id"])))
     active = db.execute(f"SELECT 1 FROM orchestration_v2_effect_outbox WHERE {where} AND status IN ('pending','running') LIMIT 1", ids).fetchone()
     if active:
         fail("pending_effects")
-    return {"counts": counts, "provider_session_ids": sorted(sessions),
-        "native_references": [{"driver": d, "native_id": i} for d, i in sorted(native_refs)]}, statements
+    protected_ids = tuple(sorted(set(ids) | set(native_ids) | {native_id for _, native_id in native_refs}))
+    # Check both app IDs and frozen native IDs. A retained recovery object
+    # must not hide a dependency under an unfamiliar reference field.
+    for table, predicate, args in statements:
+        if table == V2 + 'provider_sessions':
+            continue
+        columns = [r[1] for r in db.execute(f'PRAGMA table_info("{table}")')]
+        event_type = 't.event_type' if 'event_type' in columns else 'NULL'
+        for column in (c for c in columns if c.endswith('_json')):
+            if db.execute(f'''SELECT 1 FROM "{table}" AS t,json_tree(t."{column}") AS j
+                WHERE NOT ({predicate}) AND j.type='text' AND {_where('j.value',protected_ids)}
+                AND NOT lam_content_reference(?, ?, t."{column}", j.fullkey, {event_type})
+                LIMIT 1''', args + protected_ids + (table, column)).fetchone():
+                fail('unselected_restore_reference')
+    # Every retained session is a protection source, including sessions with
+    # no selected binding. The deletion statements alone do not cover them.
+    retained = '1'
+    retained_args = ()
+    if owned_sessions:
+        retained_args = tuple(sorted(owned_sessions))
+        retained = 'NOT (' + _where('t.provider_session_id', retained_args) + ')'
+    if db.execute(f'''SELECT 1 FROM {V2}provider_sessions AS t,json_tree(t.payload_json) AS j
+            WHERE ({retained}) AND j.type='text' AND {_where('j.value',protected_ids)}
+            LIMIT 1''', retained_args + protected_ids).fetchone():
+        fail('shared_provider_session_restore_reference')
+    result = {"counts": counts, "provider_session_ids": sorted(owned_sessions),
+              "native_references": [{"driver": d, "native_id": i} for d, i in sorted(native_refs)]}
+    if shared:
+        result['preserved_provider_session_ids'] = sorted(shared)
+    if native_ids:
+        result['protected_native_ids'] = sorted(set(native_ids))
+    return result, statements
 
 
-def _transform(db, ids):
-    owned, statements = closure(db, ids)
+def _transform(db, ids, *, native_ids=()):
+    owned, statements = closure(db, ids, native_ids=native_ids)
     for table, predicate, args in statements:
         changed = db.execute(f'DELETE FROM "{table}" WHERE {predicate}', args).rowcount
         if changed != owned["counts"][table]:
@@ -117,7 +199,7 @@ def _transform(db, ids):
         fail("relations_inconsistent")
 
 
-def freeze(root, ids):
+def freeze(root, ids, *, native_ids=()):
     ids = sorted({identifier(i) for i in ids})
     path = database_path(root)
     identity = list(frozen_files._identity(path.stat()))
@@ -126,7 +208,7 @@ def freeze(root, ids):
         deadline = time.monotonic() + 20
         source.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         _check(source)
-        owned, _ = closure(source, ids)
+        owned, _ = closure(source, ids, native_ids=native_ids)
         before = logical_hash(source)
         with tempfile.TemporaryDirectory(prefix="larj-t3code-simulation-") as directory:
             with closing(sqlite3.connect(Path(directory) / "state.sqlite")) as simulation:
@@ -134,7 +216,7 @@ def freeze(root, ids):
                 simulation.row_factory = sqlite3.Row
                 simulation.execute("PRAGMA foreign_keys=ON")
                 simulation.execute("PRAGMA secure_delete=ON")
-                _transform(simulation, ids)
+                _transform(simulation, ids, native_ids=native_ids)
                 staged = logical_hash(simulation)
                 simulation.commit()
                 after = logical_hash(simulation)
@@ -150,6 +232,10 @@ def validate(evidence):
     ids = evidence.get("thread_ids")
     if not isinstance(ids, list) or not ids or ids != sorted({identifier(i) for i in ids}):
         fail("database_evidence_invalid")
+    native_ids = evidence.get('protected_native_ids', [])
+    if (not isinstance(native_ids, list) or any(not isinstance(i, str) or not i or '\0' in i for i in native_ids)
+            or native_ids != sorted(set(native_ids))):
+        fail('database_evidence_invalid')
     for key in ("before_sha256", "staged_sha256", "after_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get(key, ""))):
             fail("database_evidence_invalid")
@@ -196,12 +282,12 @@ def apply(evidence, *, phase_callback, truncate_wal=False):
             _check(db)
             if logical_hash(db) != evidence["before_sha256"]:
                 fail("database_changed")
-            owned, _ = closure(db, evidence["thread_ids"])
+            owned, _ = closure(db, evidence["thread_ids"], native_ids=evidence.get('protected_native_ids', ()))
             if owned != {key: evidence[key] for key in owned}:
                 fail("database_closure_changed")
             phase_callback("mutation_started")
             started = True
-            _transform(db, evidence["thread_ids"])
+            _transform(db, evidence["thread_ids"], native_ids=evidence.get('protected_native_ids', ()))
             if logical_hash(db) != evidence["staged_sha256"]:
                 fail("database_after_state_unverified")
             db.commit()

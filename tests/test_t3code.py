@@ -202,6 +202,37 @@ class T3CodeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unselected_restore_reference"):
             database.freeze(self.home, ["selected"])
 
+    def test_user_thread_mentions_and_read_tool_audit_data_are_preserved(self):
+        add_thread(self.db, 'selected')
+        add_thread(self.db, 'keeper')
+        message = {'role': 'user', 'context': {'records': [{'kind': 'thread', 'threadId': 'selected'}]}}
+        self.db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?', (json.dumps(message), 'keeper'))
+        item = {'type': 'dynamic_tool', 'toolName': 't3-code.t3_thread_read',
+                'input': {'threadId': 'selected'}, 'output': {'thread': {'threadId': 'selected'}}}
+        insert(self.db, V2+'turn_items', turn_item_id='read-audit', thread_id='keeper', payload_json=json.dumps(item))
+        insert(self.db, 'orchestration_events', event_id='read-mirror', aggregate_kind='thread',
+               stream_id='keeper', event_type='turn-item.updated', payload_json=json.dumps(item), metadata_json='{}')
+        insert(self.db, 'orchestration_v2_events', event_id='read-v2-mirror', thread_id='keeper',
+               event_type='turn-item.updated', payload_json=json.dumps(item))
+        insert(self.db, 'orchestration_v2_events', event_id='mention-v2-mirror', thread_id='keeper',
+               event_type='message.updated', payload_json=json.dumps(message))
+        self.db.commit()
+        evidence = database.freeze(self.home, ['selected'])
+        database.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(database.remaining(evidence), 0)
+        self.assertEqual(json.loads(self.db.execute(f'SELECT payload_json FROM {V2}messages WHERE thread_id=?', ('keeper',)).fetchone()[0]), message)
+        self.assertEqual(json.loads(self.db.execute(f'SELECT payload_json FROM {V2}turn_items WHERE turn_item_id=?', ('read-audit',)).fetchone()[0]), item)
+
+    def test_unknown_context_or_mutating_tool_references_remain_blockers(self):
+        add_thread(self.db, 'selected')
+        add_thread(self.db, 'keeper')
+        for kind in ('restore', 'unknown'):
+            payload = {'role': 'user', 'context': {'records': [{'kind': kind, 'threadId': 'selected'}]}}
+            self.db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?', (json.dumps(payload), 'keeper'))
+            self.db.commit()
+            with self.assertRaisesRegex(ValueError, 'unselected_restore_reference'):
+                database.freeze(self.home, ['selected'])
+
     def test_unbound_delete_cannot_become_verified_or_mutate(self):
         add_thread(self.db, "selected", native="native-1")
         path = self.root / "plan.json"
@@ -236,6 +267,82 @@ class T3CodeTests(unittest.TestCase):
         database.apply(evidence, phase_callback=lambda _: None)
         self.assertEqual(database.remaining(evidence), 0)
         self.assertEqual(self.db.execute(f"SELECT count(*) FROM {V2}provider_sessions").fetchone()[0], 0)
+
+    def test_qualified_shared_session_and_other_binding_survive_exact_thread_deletion(self):
+        add_thread(self.db, 'selected', native='native-selected')
+        add_thread(self.db, 'keeper')
+        sid = 'provider-session:provider-instance:codex:shared'
+        payload = json.dumps({'id': sid, 'providerInstanceId': 'codex', 'driver': 'codex', 'status': 'stopped'})
+        insert(self.db, V2+'provider_sessions', provider_session_id=sid, thread_id='keeper',
+               provider='codex', provider_instance_id='codex', status='stopped', payload_json=payload)
+        for tid in ('selected', 'keeper'):
+            insert(self.db, V2+'provider_session_bindings', provider_session_id=sid, thread_id=tid)
+        self.db.commit()
+        before = tuple(self.db.execute(f'SELECT * FROM {V2}provider_sessions WHERE provider_session_id=?', (sid,)).fetchone())
+        evidence = database.freeze(self.home, ['selected'])
+        self.assertEqual(evidence['provider_session_ids'], [])
+        self.assertEqual(evidence['preserved_provider_session_ids'], [sid])
+        database.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(database.remaining(evidence), 0)
+        self.assertEqual(tuple(self.db.execute(f'SELECT * FROM {V2}provider_sessions WHERE provider_session_id=?', (sid,)).fetchone()), before)
+        self.assertEqual(self.db.execute(f'SELECT thread_id FROM {V2}provider_session_bindings').fetchall(), [('keeper',)])
+
+    def test_shared_session_owning_selected_thread_or_restoring_its_native_id_still_blocks(self):
+        add_thread(self.db, 'selected', native='native-selected')
+        add_thread(self.db, 'keeper')
+        sid = 'provider-session:provider-instance:codex:shared'
+        payload = {'id': sid, 'providerInstanceId': 'codex', 'driver': 'codex', 'status': 'stopped'}
+        insert(self.db, V2+'provider_sessions', provider_session_id=sid, thread_id='selected',
+               provider='codex', provider_instance_id='codex', status='stopped', payload_json=json.dumps(payload))
+        for tid in ('selected', 'keeper'):
+            insert(self.db, V2+'provider_session_bindings', provider_session_id=sid, thread_id=tid)
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, 'shared_provider_session'):
+            database.freeze(self.home, ['selected'])
+        payload['unexpectedRestore'] = 'native-selected'
+        self.db.execute(f'UPDATE {V2}provider_sessions SET thread_id=?,payload_json=?', ('keeper', json.dumps(payload)))
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, 'shared_provider_session_restore_reference'):
+            database.freeze(self.home, ['selected'])
+
+    def test_unrelated_retained_session_cannot_hide_a_selected_restore_reference(self):
+        add_thread(self.db, 'selected', native='native-selected')
+        add_thread(self.db, 'keeper')
+        insert(self.db, V2+'provider_sessions', provider_session_id='unrelated', thread_id='keeper',
+               provider='codex', status='stopped', payload_json='{}')
+        for reference in ('selected', 'native-selected'):
+            self.db.execute(f'UPDATE {V2}provider_sessions SET payload_json=?',
+                            (json.dumps({'restore': reference}),))
+            self.db.commit()
+            with self.assertRaisesRegex(ValueError, 'shared_provider_session_restore_reference'):
+                database.freeze(self.home, ['selected'])
+
+    def test_read_tool_output_does_not_expand_selected_native_closure(self):
+        add_thread(self.db, 'selected', native='native-selected')
+        item = {'type': 'dynamic_tool', 'toolName': 't3-code.t3_thread_read',
+                'output': {'nativeThreadRef': {'driver': 'codex', 'nativeId': 'unrelated', 'strength': 'strong'}}}
+        for table in (V2+'turn_items', 'orchestration_v2_events', 'orchestration_events'):
+            if table == V2+'turn_items':
+                insert(self.db, table, turn_item_id='audit', thread_id='selected', payload_json=json.dumps(item))
+            elif table == 'orchestration_v2_events':
+                insert(self.db, table, event_id='audit-v2', thread_id='selected', event_type='turn-item.updated',
+                       payload_json=json.dumps(item))
+            else:
+                insert(self.db, table, event_id='audit-old', stream_id='selected', aggregate_kind='thread',
+                       event_type='turn-item.updated', payload_json=json.dumps(item), metadata_json='{}')
+        self.db.commit()
+        evidence = database.freeze(self.home, ['selected'])
+        self.assertEqual(evidence['native_references'], [{'driver': 'codex', 'native_id': 'native-selected'}])
+
+    def test_retained_event_with_bare_native_restore_id_blocks(self):
+        add_thread(self.db, 'selected', native='native-selected')
+        add_thread(self.db, 'keeper')
+        insert(self.db, 'orchestration_events', event_id='bare-restore', stream_id='keeper', aggregate_kind='thread',
+               event_type='provider-thread.updated', payload_json=json.dumps({'nativeMetadata': {'restore': 'native-selected'}}),
+               metadata_json='{}')
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, 'unselected_restore_reference'):
+            database.freeze(self.home, ['selected'])
 
 
 if __name__ == "__main__":

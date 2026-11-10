@@ -5,14 +5,15 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
 from local_agent_manager.cli import main
-from local_agent_manager.t3code_bound_adapter import T3CodeBoundAdapter
+from local_agent_manager.t3code_bound_adapter import T3CodeBoundAdapter, history_references
 from local_agent_manager.t3code_discovery import BindingDiscoveryError, discover_bindings
 from tests.orca_native_support import create_native_schema, add_native_record
-from tests.t3code_support import create_store, add_thread, V2
+from tests.t3code_support import create_store, add_thread, insert, V2
 
 THREAD = "11111111-1111-4111-8111-111111111111"
 NATIVE = "33333333-3333-4333-8333-333333333333"
@@ -76,6 +77,119 @@ class T3DiscoveryTests(unittest.TestCase):
         self.assertEqual(before, (self.home / "state_5.sqlite").read_bytes())
         self.assertNotIn("PRIVATE_SECRET", out.getvalue())
 
+    def test_installer_directory_alias_resolves_to_the_physical_runtime(self):
+        alias = self.base / 'installer-current'
+        if os.name == 'nt':
+            subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(alias), str(self.install)],
+                           check=True, capture_output=True)
+            self.addCleanup(alias.rmdir)
+        else:
+            alias.symlink_to(self.install, target_is_directory=True)
+        self.settings['providerInstances']['codex']['config']['binaryPath'] = str(alias / self.binary.name)
+        self.write_settings()
+        manifest = discover_bindings(self.root)
+        self.assertEqual(manifest['native_stores'][0]['codex_binary'], str(self.binary))
+
+    def test_custom_instance_names_in_run_history_use_the_persisted_driver(self):
+        self.settings['providerInstances']['custom-codex'] = self.settings['providerInstances'].pop('codex')
+        self.write_settings()
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            for table in (V2+'threads', V2+'provider_threads'):
+                db.execute(f'UPDATE {table} SET provider_instance_id=? WHERE thread_id=?', ('custom-codex', THREAD))
+            db.execute(f'UPDATE {V2}threads SET default_provider=? WHERE thread_id=?', ('custom-codex', THREAD))
+            insert(db, V2+'runs', run_id='run-custom', thread_id=THREAD, provider='custom-codex',
+                   provider_instance_id='custom-codex', status='completed', payload_json='{}')
+            insert(db, V2+'run_attempts', attempt_id='attempt-custom', run_id='run-custom', thread_id=THREAD,
+                   provider='custom-codex', provider_instance_id='custom-codex', status='completed', payload_json='{}')
+            db.commit()
+        manifest = discover_bindings(self.root)
+        self.assertFalse(T3CodeBoundAdapter(manifest).snapshot_references().errors)
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f'UPDATE {V2}runs SET provider_instance_id=?', ('unproven-other-instance',))
+            db.commit()
+        with self.assertRaisesRegex(ValueError, 'provider_cleanup_unsupported'):
+            T3CodeBoundAdapter(manifest).snapshot_references()
+
+    def test_subagent_provider_is_attributed_to_the_child_thread(self):
+        child = 'child-claude'
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db, child, native='native-claude', driver='claudeAgent')
+            insert(db, V2+'subagents', subagent_id='task-claude', thread_id=THREAD, child_thread_id=child,
+                   provider='claudeAgent', provider_instance_id='claudeAgent', status='completed',
+                   payload_json=json.dumps({'childThreadId': child}))
+            insert(db, 'orchestration_events', event_id='provider-mirror', aggregate_kind='thread',
+                   stream_id=child, event_type='provider-thread.updated', metadata_json='{}',
+                   payload_json=json.dumps({'providerInstanceId': 'claudeAgent',
+                       'nativeThreadRef': {'driver': 'claudeAgent', 'nativeId': 'native-claude', 'strength': 'strong'}}))
+            db.commit()
+        refs = history_references(self.root, {THREAD: {'engine': 'codex'}, child: {'engine': 'claude'}})
+        self.assertTrue(any(row['thread_id'] == child and row['native_id'] == 'native-claude' for row in refs))
+
+    def test_known_import_cursors_are_read_only_protection_sources(self):
+        entry = {'birthtimeMs': 1, 'device': 1, 'filePath': str(self.home/'sessions/source.jsonl'),
+                 'inode': '12345678901234567890', 'mtimeMs': 1, 'provider': 'codex',
+                 'providerInstanceId': 'codex', 'providerSessionId': NATIVE, 'size': 1}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db, 'provider_session_runtime', thread_id=THREAD, provider_name='codex',
+                   provider_instance_id='codex', adapter_key='import', status='stopped',
+                   resume_cursor_json=json.dumps({'threadId': NATIVE}),
+                   runtime_payload_json=json.dumps({'cwd': str(self.base), 'importedTranscripts': [entry]}))
+            db.commit()
+        manifest = discover_bindings(self.root)
+        adapter = T3CodeBoundAdapter(manifest)
+        self.assertFalse(adapter.snapshot_references().errors)
+        self.assertEqual(adapter.legacy_import_ids, {THREAD})
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute('UPDATE provider_session_runtime SET resume_cursor_json=?', ('{}',))
+            db.commit()
+        with self.assertRaisesRegex(ValueError, 'legacy_restore_closure_unqualified'):
+            T3CodeBoundAdapter(manifest).snapshot_references()
+
+    def test_read_tool_native_handles_and_invalid_shapes_stay_audit_content_in_both_mirrors(self):
+        for native_ref in ({'driver': 'codex', 'nativeId': 'unrelated', 'strength': 'strong'}, ['invalid-shape']):
+            with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+                item = {'type': 'dynamic_tool', 'toolName': 't3-code.t3_thread_read',
+                        'output': {'nativeThreadRef': native_ref, 'nativeThreadId': ['also-audit']}}
+                insert(db, V2+'turn_items', turn_item_id='audit', thread_id=THREAD, payload_json=json.dumps(item))
+                insert(db, 'orchestration_v2_events', event_id='audit-v2', thread_id=THREAD,
+                       event_type='turn-item.updated', payload_json=json.dumps(item))
+                insert(db, 'orchestration_events', event_id='audit-old', stream_id=THREAD, aggregate_kind='thread',
+                       event_type='turn-item.updated', payload_json=json.dumps(item), metadata_json='{}')
+                db.commit()
+                refs = history_references(self.root, {THREAD: {'engine': 'codex'}})
+                self.assertEqual({row['native_id'] for row in refs}, {NATIVE})
+                for table in (V2+'turn_items', 'orchestration_v2_events', 'orchestration_events'):
+                    db.execute(f'DELETE FROM {table} WHERE payload_json=?', (json.dumps(item),))
+                db.commit()
+
+    def test_unknown_legacy_restore_event_and_nested_cursor_block_full_cleanup(self):
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            for event_type, payload in (
+                ('unknown.restore', {'resumeCursor': {'threadId': NATIVE}}),
+                ('provider-thread.updated', {'nativeMetadata': {'resumeCursor': {'threadId': NATIVE}}}),
+                ('provider-thread.updated', {'unexpected': {'threadId': NATIVE}}),
+            ):
+                insert(db, 'orchestration_events', event_id='unknown', stream_id=THREAD, aggregate_kind='thread',
+                       event_type=event_type, payload_json=json.dumps(payload), metadata_json='{}')
+                db.commit()
+                with self.assertRaisesRegex(ValueError, 'legacy_restore_closure_unqualified'):
+                    history_references(self.root, {THREAD: {'engine': 'codex'}})
+                db.execute("DELETE FROM orchestration_events WHERE event_id='unknown'")
+                db.commit()
+
+    def test_v2_subagent_event_native_handle_belongs_to_child(self):
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            child = 'child-claude'
+            add_thread(db, child, native='native-claude', driver='claudeAgent')
+            payload = {'childThreadId': child, 'providerInstanceId': 'claudeAgent',
+                       'nativeThreadRef': {'driver': 'claudeAgent', 'nativeId': 'native-claude', 'strength': 'strong'}}
+            insert(db, 'orchestration_v2_events', event_id='child-event', thread_id=THREAD,
+                   event_type='subagent.updated', payload_json=json.dumps(payload))
+            db.commit()
+        refs = history_references(self.root, {THREAD: {'engine': 'codex'}, child: {'engine': 'claude'}})
+        self.assertFalse(any(row['thread_id'] == THREAD and row['native_id'] == 'native-claude' for row in refs))
+        self.assertTrue(any(row['thread_id'] == child and row['native_id'] == 'native-claude' for row in refs))
+
     def test_unknown_native_home_is_a_blocker_instead_of_assuming_default(self):
         other = self.base / "wrong-home"
         other.mkdir()
@@ -135,6 +249,27 @@ class T3DiscoveryTests(unittest.TestCase):
         self.assertEqual(plan["goal_status"], "ready", plan)
         self.assertIn(child, json.dumps(plan))
         self.assertNotIn("PRIVATE_SECRET", json.dumps(plan))
+
+    @unittest.skipUnless(os.name == 'nt', 'Full T3 writer qualification uses the Windows lifecycle')
+    def test_parent_selection_expands_the_registered_subagent_child(self):
+        child_thread = 'child-thread'
+        child_native = '44444444-4444-4444-8444-444444444444'
+        add_native_record(self.home, child_native)
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db, child_thread, native=child_native)
+            insert(db, V2+'subagents', subagent_id='child-task', thread_id=THREAD, child_thread_id=child_thread,
+                   provider='codex', provider_instance_id='codex', status='completed',
+                   payload_json=json.dumps({'childThreadId': child_thread}))
+            db.commit()
+        (self.root/'userdata/server-owner.sqlite').touch()
+        output, error = StringIO(), StringIO()
+        code = main(['delete', 'plan', '--client', 't3code', '--record-id', THREAD,
+                     '--out', str(self.base/'child.plan.json'), '--json'], stdout=output, stderr=error)
+        plan = json.loads(output.getvalue())
+        self.assertEqual(code, 0, plan)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertIn(child_thread, json.dumps(plan))
+        self.assertIn(child_native, json.dumps(plan))
 
     def test_unproven_antigravity_cli_runtime_is_reported_without_claiming_binding(self):
         with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:

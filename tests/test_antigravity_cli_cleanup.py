@@ -98,6 +98,56 @@ class CliFormatTests(unittest.TestCase):
             db.execute('CREATE TABLE extra (id text)'); db.commit()
         with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'): self.freeze()
 
+    def search_index(self):
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute(agy.SEARCH_VERSION_SQL)
+            db.execute('INSERT INTO search_schema_version VALUES(3)')
+            db.execute(agy.SEARCH_SQL)
+            for sid, body in ((TARGET, 'zzzzuniquedeletedsearchterm'), (KEEP, 'aaaapreservedsearchterm secondkeptterm')):
+                for chunk in (0, 1):
+                    db.execute('INSERT INTO conversations_fts(conversation_id,chunk_index,title,user_body,agent_body) VALUES(?,?,?,?,?)',
+                               (sid, chunk, sid, body, SECRET))
+            db.commit()
+
+    def test_search_chunks_are_removed_and_preserved_chunks_remain_searchable(self):
+        self.search_index()
+        evidence = self.freeze()
+        self.assertNotIn('zzzzuniquedeletedsearchterm', json.dumps(evidence))
+        with agy.private_database(self.root, agy.SUMMARY) as (db, _, path):
+            agy._check(db, agy.CONTRACT)
+            preserved = [tuple(row) for row in db.execute('SELECT rowid,* FROM conversations_fts WHERE conversation_id=? ORDER BY rowid', (KEEP,))]
+            agy._summary_transform(db, [TARGET])
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM conversations_fts WHERE conversation_id=?', (TARGET,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH 'zzzzuniquedeletedsearchterm'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH 'aaaapreservedsearchterm'").fetchone()[0], 2)
+            self.assertEqual([tuple(row) for row in db.execute('SELECT rowid,* FROM conversations_fts WHERE conversation_id=? ORDER BY rowid', (KEEP,))], preserved)
+            self.assertEqual(db.execute('SELECT version FROM search_schema_version').fetchone()[0], 3)
+            self.assertNotIn(b'zzzzuniquedeletedsearchterm', path.read_bytes())
+
+    def test_search_schema_changes_and_unknown_objects_still_block(self):
+        self.search_index()
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('CREATE TRIGGER unknown_restore AFTER DELETE ON conversation_summaries BEGIN SELECT 1; END')
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'):
+            self.freeze()
+
+    def test_partial_search_layout_or_invalid_version_is_rejected(self):
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute(agy.SEARCH_VERSION_SQL)
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'):
+            self.freeze()
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('DROP TABLE search_schema_version')
+            db.commit()
+        self.search_index()
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('DELETE FROM search_schema_version')
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'search_schema_version'):
+            self.freeze()
+
     def test_compatible_upgrade_indexes_preserve_the_native_format(self):
         with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
             db.execute('CREATE INDEX newer_summary_title ON conversation_summaries(title)')
@@ -300,6 +350,8 @@ class CliWriterTests(CliFormatTests):
             plan_sha256=plan['plan_sha256'], clients_closed=True, census=lambda: [], **kwargs)
 
     def test_full_cleanup_fresh_coordinator_status_verify_keep(self):
+        self.search_index()
+        (self.root/'last_check.timestamp').touch()
         coordinator = self.coordinator(); plan = self.plan(coordinator)
         self.assertEqual(plan['goal_status'], 'ready', plan)
         self.assertEqual(plan['schema_version'], 'larj.operation-result.v1')
@@ -314,6 +366,9 @@ class CliWriterTests(CliFormatTests):
         self.assertFalse((self.root/'presence'/(TARGET+'.lock')).exists())
         with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
             self.assertEqual([r[0] for r in db.execute('SELECT conversation_id FROM conversation_summaries')], [KEEP])
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM conversations_fts WHERE conversation_id=?', (TARGET,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM conversations_fts WHERE conversations_fts MATCH 'NEAR(aaaapreservedsearchterm secondkeptterm, 5)'").fetchone()[0], 2)
+        self.assertEqual((self.root/'last_check.timestamp').read_bytes(), b'')
         self.assertEqual(json.loads((self.root/agy.CACHE).read_text()), {str(self.base/'keep'): KEEP})
         self.assertEqual({p: p.read_bytes() for p in keep}, keep)
         for method in ('status_operation', 'verify_operation'):
@@ -345,6 +400,7 @@ class CliWriterTests(CliFormatTests):
         self.assertEqual(observed, ['shared_files_written'])
 
     def test_mid_delete_failure_is_unknown_and_not_replayed(self):
+        self.search_index()
         coordinator = self.coordinator(); plan = self.plan(coordinator)
         original = HeldFiles.dispose
         counter = [0]
@@ -361,6 +417,7 @@ class CliWriterTests(CliFormatTests):
         self.assertTrue((OperationStore(self.root, plan['operation_id']).directory/'native-recovery').exists())
 
     def test_shared_write_failure_restores_before_images(self):
+        self.search_index()
         coordinator = self.coordinator(); plan = self.plan(coordinator)
         before = (self.root/agy.SUMMARY).read_bytes()
         original = HeldFiles.replace

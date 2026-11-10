@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import time
+import math
 
 from . import frozen_files
 from .herdr_bound_adapter import native_catalog, _FrozenPathRecord
@@ -12,6 +13,7 @@ from .paseo_cleanup_files import decode
 from .client_contracts import ClientDescriptor, ClientReference, ReferenceKind, ReferenceLifecycle, ReferenceSnapshot
 from .record_identity import RecordKey, StoreKey, EngineCapability, canonical_path
 from .sqlite_utils import connect_readonly
+from .providers.t3 import strict_json
 from contextlib import closing
 
 SCHEMA = "larj.t3code-bindings.v1"
@@ -114,6 +116,141 @@ def load_manifest(path):
     return validate_manifest(decode(raw))
 
 
+def _history_backend(db, item, bindings):
+    backend = engine(item['provider'])
+    if backend in _NATIVE_ENGINES:
+        return backend
+    binding = bindings.get(item['thread_id'])
+    current = rows(db, f'SELECT default_provider,provider_instance_id FROM {V2}threads WHERE thread_id=?',
+                   (item['thread_id'],))
+    if (binding is None or len(current) != 1 or current[0]['provider_instance_id'] != item['provider']
+            or item['provider_instance_id'] not in (None, item['provider'])
+            or current[0]['default_provider'] != item['provider']
+            and engine(current[0]['default_provider']) != binding['engine']):
+        fail('provider_cleanup_unsupported')
+    drivers = rows(db, f'''SELECT DISTINCT COALESCE(NULLIF(driver,''),provider) AS driver
+        FROM {V2}provider_threads WHERE thread_id=? AND provider_instance_id=?''',
+        (item['thread_id'], item['provider']))
+    if not drivers or any(engine(row['driver']) != binding['engine'] for row in drivers):
+        fail('provider_cleanup_unsupported')
+    return binding['engine']
+
+
+def _import_references(db, bindings):
+    result = []
+    imports = rows(db, '''SELECT thread_id,provider_name,provider_instance_id,resume_cursor_json,runtime_payload_json
+        FROM provider_session_runtime''')
+    fields = {'birthtimeMs', 'device', 'filePath', 'inode', 'mtimeMs', 'provider',
+              'providerInstanceId', 'providerSessionId', 'size'}
+    for item in imports:
+        binding = bindings.get(item['thread_id'])
+        backend = inventory_engine(item['provider_name'])
+        cursor = strict_json(item['resume_cursor_json']) if item['resume_cursor_json'] is not None else None
+        payload = strict_json(item['runtime_payload_json']) if item['runtime_payload_json'] is not None else None
+        if (binding is None or backend not in {'codex', 'claude'} or binding['engine'] != backend
+                or not isinstance(cursor, dict) or not isinstance(payload, dict)
+                or set(payload) != {'cwd', 'importedTranscripts'}):
+            fail('legacy_restore_closure_unqualified')
+        if backend == 'codex' and set(cursor) == {'threadId'}:
+            native = native_handle('codex', cursor['threadId'])
+        elif backend == 'claude' and set(cursor) == {'threadId', 'resume'} and cursor['threadId'] == item['thread_id']:
+            native = native_handle('claudeAgent', cursor['resume'])
+        else:
+            fail('legacy_restore_closure_unqualified')
+        local_root(payload['cwd'])
+        transcripts = payload['importedTranscripts']
+        if not isinstance(transcripts, list) or not transcripts or len(transcripts) > MAX_ROWS:
+            fail('legacy_restore_closure_unqualified')
+        for entry in transcripts:
+            if (not isinstance(entry, dict) or set(entry) != fields
+                    or entry['provider'] != item['provider_name']
+                    or entry['providerInstanceId'] != item['provider_instance_id']
+                    or entry['providerSessionId'] != native):
+                fail('legacy_restore_closure_unqualified')
+            local_root(entry['filePath'])
+            for key in ('birthtimeMs', 'device', 'inode', 'mtimeMs', 'size'):
+                value = entry[key]
+                if key in {'device', 'inode'} and isinstance(value, str) and value.isascii() and value.isdigit():
+                    continue
+                if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                    fail('legacy_restore_closure_unqualified')
+        result.append({'thread_id': item['thread_id'], 'provider_instance_id': item['provider_instance_id'],
+                       'driver': item['provider_name'], 'native_id': native, 'strength': 'strong', 'legacy_import': True})
+    return result
+
+
+_THREAD_EVENT_FIELDS = '''createdBy creationSource id projectId title providerInstanceId modelSelection
+    runtimeMode interactionMode branch worktreePath pullRequests activeProviderThreadId lineage forkedFrom
+    createdAt updatedAt archivedAt settledOverride settledAt snoozedUntil snoozedAt lastVisitedAt deletedAt
+    linkedPullRequest branchPullRequest historyOrigin unsettledAt pinnedAt pinOrderKey activeOrderKey
+    guestShare autoSettleDisabledAt opens titleRegeneration'''
+_SESSION_EVENT_FIELDS = '''id driver providerInstanceId status cwd model capabilities createdAt updatedAt
+    lastError extensionStatuses'''
+_RUN_EVENT_FIELDS = '''id threadId ordinal providerInstanceId modelSelection providerThreadId userMessageId
+    rootNodeId activeAttemptId status queuePosition requestedAt startedAt completedAt checkpointId contextHandoffId
+    workspacePreparation restartContinuationOfRunId workStartedAt delegatedCompletion delegatedTaskId'''
+_ATTEMPT_EVENT_FIELDS = '''id nativeThreadId runId attemptOrdinal rootNodeId providerInstanceId providerThreadId
+    providerTurnId reason status startedAt completedAt'''
+_LEGACY_EVENT_FIELDS = {
+    **{name: _THREAD_EVENT_FIELDS for name in ('thread.created', 'thread.deleted', 'thread.metadata-updated',
+        'thread.model-selection-updated', 'thread.visited')},
+    **{name: _SESSION_EVENT_FIELDS for name in ('provider-session.attached', 'provider-session.updated')},
+    **{name: _RUN_EVENT_FIELDS for name in ('run.created', 'run.updated')},
+    **{name: _ATTEMPT_EVENT_FIELDS for name in ('run-attempt.created', 'run-attempt.updated')},
+    'checkpoint-scope.created': '''id threadId runId nodeId parentScopeId providerThreadId kind ordinalWithinParent
+        advancesAppRunCount cwd createdAt''',
+    'checkpoint.captured': '''id threadId scopeId runId nodeId parentCheckpointId ordinalWithinScope appRunOrdinal
+        ref status files capturedAt''',
+    'context-transfer.created': '''id type sourceThreadId targetThreadId sourcePoint basePoint sourceProviderInstanceId
+        targetProviderInstanceId targetRunId status resolution createdBy error createdAt updatedAt consumedAt''',
+    'message.updated': '''createdBy creationSource id threadId runId nodeId role text context attachments streaming
+        createdAt updatedAt delegatedCompletion notification senderThreadId workflowScript''',
+    'node.updated': '''id threadId runId parentNodeId rootNodeId kind status countsForRun providerThreadId providerTurnId
+        nativeItemRef runtimeRequestId checkpointScopeId startedAt completedAt''',
+    'plan.updated': 'id threadId runId nodeId status kind steps explanation',
+    'provider-thread.updated': '''id driver providerInstanceId providerSessionId appThreadId ownerNodeId nativeThreadRef
+        nativeConversationHeadRef status firstRunOrdinal lastRunOrdinal handoffIds forkedFrom createdAt updatedAt
+        contextUsage pendingBackgroundTasks nativeMetadata goal''',
+    'provider-turn.updated': '''id providerThreadId nodeId runAttemptId nativeTurnRef ordinal status startedAt completedAt
+        tokenUsage model turnTokenUsage''',
+    'runtime-request.updated': '''id nodeId providerTurnId nativeRequestRef kind status responseCapability createdAt
+        resolvedAt answers''',
+    'subagent.updated': '''id threadId runId parentNodeId origin createdBy driver providerInstanceId providerThreadId
+        childThreadId nativeTaskRef prompt title model modelSelection status result startedAt completedAt updatedAt
+        progress promptSequence completionWake completionDelivery''',
+    'turn-item.updated': '''id threadId runId nodeId providerThreadId providerTurnId nativeItemRef parentItemId ordinal
+        status title startedAt completedAt updatedAt createdBy creationSource type messageId inputIntent text context
+        attachments input output exitCode streaming toolName subagentId origin driver providerInstanceId childThreadId
+        prompt result progress promptSequence viewedImagePath checkpointId scopeId files patterns results fileName
+        diffStr toolSurface toolSource changes planId steps explanation requestId questions responseMode questionAnswer
+        failure retry source outcome summary detail senderThreadId workflowScript''',
+}
+
+
+def _qualify_legacy_events(db):
+    """Admit known V2 mirror payloads, never arbitrary legacy restore events."""
+    types = rows(db, "SELECT DISTINCT event_type FROM orchestration_events WHERE aggregate_kind='thread'")
+    if any(row['event_type'] not in _LEGACY_EVENT_FIELDS for row in types):
+        fail('legacy_restore_closure_unqualified')
+    if db.execute("SELECT 1 FROM orchestration_events WHERE aggregate_kind='thread' AND json_type(payload_json)!='object' LIMIT 1").fetchone():
+        fail('legacy_restore_closure_unqualified')
+    # Qualify field names in SQLite. Private historical bodies are neither
+    # exported nor materialized as a Python list of every event.
+    fields = rows(db, '''SELECT DISTINCT event_type,j.key FROM orchestration_events AS t,
+        json_each(t.payload_json) AS j WHERE aggregate_kind='thread' ''')
+    for row in fields:
+        if row['key'] not in _LEGACY_EVENT_FIELDS[row['event_type']].split():
+            fail('legacy_restore_closure_unqualified')
+    # A new restore cursor nested inside an otherwise known event is still an
+    # unqualified recovery mechanism. Read-tool bodies remain audit content.
+    if db.execute('''SELECT 1 FROM orchestration_events AS t,json_tree(t.payload_json) AS j
+            WHERE aggregate_kind='thread' AND j.type!='null'
+            AND (lower(j.key) LIKE '%resume%' OR lower(j.key) LIKE '%restore%')
+            AND NOT lam_content_reference('orchestration_events','payload_json',t.payload_json,j.fullkey,t.event_type)
+            LIMIT 1''').fetchone():
+        fail('legacy_restore_closure_unqualified')
+
+
 def history_references(root, bindings):
     """Project all persisted native thread handles without exporting payloads."""
     with closing(connect_readonly(database_path(root))) as db:
@@ -123,19 +260,31 @@ def history_references(root, bindings):
         from .t3code_store import qualify
         qualify(db)
         result = []
-        from .t3code_database import THREAD_TABLES
+        from .t3code_database import THREAD_TABLES, _content_reference
+        db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
+        _qualify_legacy_events(db)
         # A replayable native handle can also occur in a run, handoff or
         # command payload. Inspect every qualified per-thread JSON payload.
-        for table in THREAD_TABLES:
+        for table in (*THREAD_TABLES, 'orchestration_events'):
             columns = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
+            # A subagent row describes the child's provider, while thread_id
+            # owns the parent's task metadata. Native handles belong to child.
+            owner = 'child_thread_id' if table == V2 + 'subagents' else 'thread_id'
+            predicate = '1'
+            event_table = table in {'orchestration_events', 'orchestration_v2_events'}
+            if event_table:
+                physical_owner = 'stream_id' if table == 'orchestration_events' else 'thread_id'
+                owner = f"CASE WHEN t.event_type='subagent.updated' THEN json_extract(t.payload_json,'$.childThreadId') ELSE t.{physical_owner} END"
+            if table == 'orchestration_events':
+                predicate = "aggregate_kind='thread'"
             if "provider" in columns:
                 # Provider rows can exist without any projected native handle.
                 provider = "COALESCE(NULLIF(driver, ''), provider)" if "driver" in columns else "provider"
-                observed = rows(db, f"SELECT DISTINCT {provider} AS provider FROM {table} WHERE {provider} IS NOT NULL")
-                if any(engine(row["provider"]) not in _NATIVE_ENGINES for row in observed):
-                    fail("provider_cleanup_unsupported")
-                if 'provider_instance_id' in columns:
-                    for item in rows(db, f"SELECT DISTINCT thread_id,provider_instance_id FROM {table} WHERE {provider}='antigravity'"):
+                instance = 'provider_instance_id' if 'provider_instance_id' in columns else 'NULL'
+                observed = rows(db, f"SELECT DISTINCT {owner} AS thread_id,{instance} AS provider_instance_id,{provider} AS provider FROM {table} AS t WHERE {provider} IS NOT NULL AND {owner} IS NOT NULL")
+                for item in observed:
+                    backend = _history_backend(db, item, bindings)
+                    if backend == 'antigravity' and 'provider_instance_id' in columns:
                         bound = bindings.get(item['thread_id'])
                         if bound is None or bound['engine'] != 'antigravity':
                             fail('provider_binding_conflict')
@@ -143,26 +292,34 @@ def history_references(root, bindings):
                             fail('antigravity_historical_instance_unbound')
             if "payload_json" not in columns:
                 continue
-            if db.execute(f'''SELECT 1 FROM {table} AS t,json_tree(t.payload_json) AS j WHERE
+            event_type = 't.event_type' if 'event_type' in columns else 'NULL'
+            content_filter = f"NOT lam_content_reference(?, 'payload_json', t.payload_json, j.fullkey, {event_type})"
+            if db.execute(f'''SELECT 1 FROM {table} AS t,json_tree(t.payload_json) AS j WHERE ({predicate}) AND (
                     (j.key='nativeThreadRef' AND j.type NOT IN ('object','null')) OR
-                    (j.key='nativeThreadId' AND j.type NOT IN ('text','null')) LIMIT 1''').fetchone():
+                    (j.key='nativeThreadId' AND j.type NOT IN ('text','null')))
+                    AND {content_filter} LIMIT 1''', (table,)).fetchone():
                 fail("native_reference_shape_unqualified")
             instance = 't.provider_instance_id' if 'provider_instance_id' in columns else 'NULL'
-            result.extend(rows(db, f'''SELECT DISTINCT t.thread_id, {instance} AS provider_instance_id,
+            if event_table:
+                instance = "json_extract(t.payload_json,'$.providerInstanceId')"
+            owner_expr = owner if event_table else 't.' + owner
+            result.extend(rows(db, f'''SELECT DISTINCT {owner_expr} AS thread_id, {instance} AS provider_instance_id,
                 json_extract(j.value,'$.driver') AS driver, json_extract(j.value,'$.nativeId') AS native_id,
                 json_extract(j.value,'$.strength') AS strength
                 FROM {table} AS t,json_tree(t.payload_json) AS j
-                WHERE j.key='nativeThreadRef' AND j.type='object' '''))
-            result.extend(rows(db, f'''SELECT DISTINCT t.thread_id, NULL AS driver,
+                WHERE ({predicate}) AND j.key='nativeThreadRef' AND j.type='object'
+                AND {content_filter} ''', (table,)))
+            result.extend(rows(db, f'''SELECT DISTINCT {owner_expr} AS thread_id, NULL AS driver,
                 j.value AS native_id, 'bare' AS strength FROM {table} AS t,json_tree(t.payload_json) AS j
-                WHERE j.key='nativeThreadId' AND j.type='text' '''))
+                WHERE ({predicate}) AND j.key='nativeThreadId' AND j.type='text'
+                AND {content_filter} ''', (table,)))
             if len(result) > MAX_ROWS:
                 fail("inventory_budget_exceeded")
-        # V1 runtime resume payloads and imported transcripts require separate
-        # qualification before they can participate in a full deletion.
-        if (any(db.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() for table in
-               ("projection_threads", "provider_session_runtime")) or
-                db.execute("SELECT 1 FROM orchestration_events WHERE aggregate_kind='thread' LIMIT 1").fetchone()):
+        # Legacy imports remain read-only protection sources. Their exact
+        # cursors and transcript metadata supply native IDs independently of
+        # the provider root selected for new turns in today's configuration.
+        result.extend(_import_references(db, bindings))
+        if db.execute('SELECT 1 FROM projection_threads LIMIT 1').fetchone():
             fail("legacy_restore_closure_unqualified")
     return result
 
@@ -174,6 +331,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         self.bindings = {item["thread_id"]: item for item in manifest["native_stores"]}
         self.frozen_references = ()
         self.observations = ()
+        self.legacy_import_ids = set()
 
     def snapshot_references(self, *, refresh=False):
         _, raw = frozen_files.read_file(self.profile_root, "userdata/environment-id", content=True, limit=256)
@@ -212,6 +370,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                 kind="session_root" if backend == "pi" else "config_dir" if backend == "claude" else "directory")
         seen = set()
         history = history_references(self.profile_root, self.bindings)
+        self.legacy_import_ids = {row['thread_id'] for row in history if row.get('legacy_import')}
         strong = {(r["thread_id"], r["native_id"]) for r in history if r["strength"] == "strong"}
         for row in history:
             if row["driver"] is not None and engine(row["driver"]) not in _NATIVE_ENGINES:

@@ -192,6 +192,82 @@ class T3CodeFullflowTests(unittest.TestCase):
                 files.freeze(self.root, [THREAD])
             path.unlink()
 
+    def test_unselected_upload_and_extracted_sidecar_are_preserved(self):
+        attachment_id = 'keeper-11111111-1111-4111-8111-111111111111-pptx'
+        payload = {'role': 'user', 'attachments': [{'type': 'file', 'id': attachment_id}]}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db, 'keeper')
+            db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?', (json.dumps(payload), 'keeper'))
+            db.commit()
+        directory = self.root/'userdata/attachments'
+        directory.mkdir(parents=True)
+        for name in (attachment_id+'.pptx', attachment_id+'.pptx.txt'):
+            (directory/name).write_bytes(b'unselected upload')
+        evidence = files.freeze(self.root, [THREAD])
+        files.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(files.remaining(evidence), 0)
+        self.assertEqual(len(list(directory.iterdir())), 2)
+        (directory/(attachment_id+'.pptx')).write_bytes(b'drift')
+        with self.assertRaisesRegex(ValueError, 'unselected_file_changed'):
+            files.remaining(evidence)
+
+    def test_selected_or_unproven_attachment_files_still_block(self):
+        attachment_id = 'keeper-11111111-1111-4111-8111-111111111111-pptx'
+        payload = {'attachments': [{'type': 'file', 'id': attachment_id}]}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db, 'keeper')
+            db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id IN (?,?)',
+                       (json.dumps(payload), 'keeper', THREAD))
+            db.commit()
+        directory = self.root/'userdata/attachments'
+        directory.mkdir(parents=True)
+        path = directory/(attachment_id+'.pptx')
+        path.write_bytes(b'shared with selected')
+        with self.assertRaisesRegex(ValueError, 'attachment_closure_unqualified'):
+            files.freeze(self.root, [THREAD])
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?', ('{}', THREAD))
+            db.commit()
+        path.rename(path.with_suffix('.unqualified'))
+        with self.assertRaisesRegex(ValueError, 'attachment_closure_unqualified'):
+            files.freeze(self.root, [THREAD])
+
+    def test_image_attachment_preservation_rejects_unknown_siblings_and_text_sidecars(self):
+        directory = self.root/'userdata/attachments'
+        directory.mkdir(parents=True)
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db, 'keeper')
+        for extension in ('', '-png'):
+            attachment_id = 'keeper-11111111-1111-4111-8111-111111111111' + extension
+            payload = {'attachments': [{'type': 'image', 'id': attachment_id, 'name': 'photo.png'}]}
+            with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+                db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?', (json.dumps(payload), 'keeper'))
+                db.commit()
+            primary = directory/(attachment_id+'.png')
+            primary.write_bytes(b'image')
+            files.freeze(self.root, [THREAD])
+            for suffix in ('.sql', '.png.txt'):
+                unknown = directory/(attachment_id+suffix)
+                unknown.write_bytes(b'unknown')
+                with self.assertRaisesRegex(ValueError, 'attachment_closure_unqualified'):
+                    files.freeze(self.root, [THREAD])
+                unknown.unlink()
+            primary.unlink()
+
+    def test_retained_session_referencing_native_descendant_blocks_complete_plan(self):
+        child = '55555555-5555-4555-8555-555555555555'
+        add_native_record(self.home, NATIVE)
+        add_native_record(self.home, child, parent=NATIVE)
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db, V2+'provider_sessions', provider_session_id='keeper-session', thread_id=KEEP,
+                   provider='codex', status='stopped', payload_json=json.dumps({'unexpectedRestore': child}))
+            db.commit()
+        result = self.coordinator().plan_operation(client='t3code', record_ids=(THREAD,),
+            adapters=(self.adapter,), plan_path=self.plan_path, operation_id='native-descendant-protection')
+        self.assertEqual(result['goal_status'], 'blocked', result)
+        self.assertIn('t3code_shared_provider_session_restore_reference',
+                      {item['message'] for item in result['blockers']})
+
     def test_database_and_bound_desktop_apply_as_one_operation(self):
         from local_agent_record_janitor import office_leveldb as level
         from tests.test_t3code_localstorage import local_storage

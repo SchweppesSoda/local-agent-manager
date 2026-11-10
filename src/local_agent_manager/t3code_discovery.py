@@ -8,6 +8,7 @@ from . import frozen_files
 from .herdr_bound_adapter import native_catalog
 from .providers.t3 import strict_json
 from .record_identity import canonical_path
+from .path_identity import canonical_existing_path_key
 from .t3code_bound_adapter import SCHEMA, engine, history_references, thread_engine, validate_manifest
 from .t3code_store import default_root, identifier, local_root, read_database
 
@@ -81,6 +82,12 @@ def _native_binding(row, providers, instance, cache):
             if not isinstance(config["binaryPath"], str):
                 raise ValueError("provider_binary_unverified")
             binary = local_root(config["binaryPath"])
+            # Installer shims can traverse current/version directory links.
+            # Bind the verified physical executable used for this operation.
+            physical = local_root(canonical_existing_path_key(binary.resolve(strict=True)))
+            if not os.path.samefile(binary, physical):
+                raise ValueError('provider_binary_unverified')
+            binary = physical
             _plain_directory(binary.parent)
             frozen_files._plain(binary.lstat())
             binding["codex_binary"] = str(binary)

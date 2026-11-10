@@ -124,6 +124,12 @@ def validate(evidence):
                 files.fail("reference_path_changed")
         elif ref["opaque_native_locator"] != ref["native_id"]:
             files.fail("reference_identity_changed")
+    native_ids = {native_id for target in targets for native_id in target['ids']}
+    protected_ids = evidence['files']['database'].get('protected_native_ids')
+    if protected_ids is None:
+        protected_ids = [ref['native_id'] for ref in evidence['files']['database']['native_references']]
+    if not native_ids <= set(protected_ids):
+        files.fail('native_dependency_scope_unproven')
     from .t3code_bound_adapter import engine
     for ref in evidence["files"]["database"]["native_references"]:
         if not any(r["engine"] == engine(ref["driver"]) and r["opaque_native_locator"] == ref["native_id"] for r in evidence["references"]):
@@ -301,11 +307,17 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
         # The complete descendant set is made visible in the immutable plan.
         while True:
             expanded = thread_ids | {r["id"] for r in adapter.observations if r["parent_thread_id"] in thread_ids}
+            expanded.update(child['child_thread_id'] for child in adapter.observation['children']
+                            if child['thread_id'] in thread_ids)
+            if not expanded <= available:
+                files.fail('selected_subagent_thread_unbound')
             if expanded == thread_ids:
                 break
             thread_ids = expanded
         if any(engines and adapter.bindings[i]["engine"] not in engines for i in thread_ids):
             files.fail("selector_engine_mismatch")
+        if set(thread_ids) & adapter.legacy_import_ids:
+            files.fail('legacy_import_selected_cleanup_unqualified')
         grouped = {}
         for ref in references:
             if ref.frontend_id not in thread_ids:
@@ -380,13 +392,15 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
                 native_remaining(target)
     else:
         def matches(ref):
-            return any(t["engine"] == ref.engine and t["root"] == ref.native_record.store.canonical_path
+            return any(t["engine"] == ref.engine
+                and (t["root"] == ref.native_record.store.canonical_path or ref.frontend_id in adapter.legacy_import_ids)
                 and ref.native_id in t["ids"] for t in targets)
         if any(matches(ref) and ref.frontend_id not in thread_ids for ref in references):
             files.fail("unselected_thread_shares_native_record")
         approved_refs = [ref for ref in references if ref.frontend_id in thread_ids]
         evidence = {"schema_version": SCHEMA, "root": str(adapter.profile_root), "binding_manifest": adapter.manifest,
-            "selected_thread_ids": thread_ids, "files": files.freeze(adapter.profile_root, thread_ids), "native_targets": targets,
+            "selected_thread_ids": thread_ids, "files": files.freeze(adapter.profile_root, thread_ids,
+                native_ids=sorted({native_id for target in targets for native_id in target['ids']})), "native_targets": targets,
             "references": [ref.to_dict() for ref in approved_refs], "selectors": list(selectors),
             "frontend_id": "t3code:" + digest(thread_ids)[:24], "desktop": []}
         for profile in adapter.manifest["desktop_profiles"]:

@@ -7,6 +7,7 @@ advisory sidecar lock or a closed-client acknowledgement, exclude writers.
 from contextlib import closing, contextmanager, ExitStack
 from contextvars import ContextVar
 from importlib.resources import files
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -30,10 +31,30 @@ SCHEMA = 'lam.antigravity-cli-files.v1'
 SUMMARY = 'conversation_summaries.db'
 CACHE = 'cache/last_conversations.json'
 CONTRACT = json.loads(files(__package__).joinpath('antigravity_cli_schema.json').read_text(encoding='utf-8'))
+SEARCH_VERSION_SQL = 'CREATE TABLE search_schema_version (version INTEGER PRIMARY KEY)'
+SEARCH_SQL = '''CREATE VIRTUAL TABLE conversations_fts USING fts5(
+    conversation_id UNINDEXED,
+    chunk_index UNINDEXED,
+    chunk_first_step UNINDEXED,
+    chunk_last_step UNINDEXED,
+    last_modified_time UNINDEXED,
+    step_count UNINDEXED,
+    last_step_created_at UNINDEXED,
+    archived UNINDEXED,
+    user_step_byte_offsets UNINDEXED,
+    agent_step_byte_offsets UNINDEXED,
+    title,
+    workspace,
+    project,
+    user_body,
+    agent_body,
+    tokenize = 'unicode61 remove_diacritics 2',
+    prefix = '1 2 3'
+)'''
 SIDECARS = ('', '-wal', '-shm', '-journal')
 # These are preserved, never authorized by a conversation ID. Unknown top-level
 # storage (including legacy .pb histories) requires a new format qualification.
-PRESERVED = {'installation_id', 'jetski_state.pbtxt', 'settings.json', 'config.json',
+PRESERVED = {'installation_id', 'jetski_state.pbtxt', 'settings.json', 'config.json', 'last_check.timestamp',
              'builtin', 'skills', 'implicit', 'log', 'crashes', 'cache', 'bin', 'mcp', 'updater'}
 CONTROL = {'.local-agent-record-janitor', '.local-agent-manager'}
 _ticket = ContextVar('antigravity_cli_writer_ticket', default=None)
@@ -110,13 +131,39 @@ def _schema_hash(objects):
     return hashlib.sha256(json.dumps(objects, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def _search_contract():
+    # Generate SQLite-owned shadow table definitions with this SQLite engine.
+    # Qualify the public FTS declaration and every shadow object together.
+    with closing(sqlite3.connect(':memory:')) as db:
+        db.execute(SEARCH_VERSION_SQL)
+        db.execute(SEARCH_SQL)
+        return {'objects': CONTRACT['objects'] + _objects(db)}
+
+
 def _check(db, contract):
     deadline = time.monotonic() + 20
     db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
-    if not schema_compatible(_objects(db), contract):
+    objects = _objects(db)
+    search = contract is CONTRACT and any(row[1] in {'search_schema_version', 'conversations_fts'} for row in objects)
+    expected = _search_contract() if search else contract
+    if not schema_compatible(objects, expected):
         fail('database_schema_unqualified')
     if [tuple(r) for r in db.execute('PRAGMA quick_check')] != [('ok',)]:
         fail('database_corrupt')
+    if search:
+        versions = [tuple(row) for row in db.execute('SELECT version FROM search_schema_version LIMIT 2')]
+        if len(versions) != 1 or type(versions[0][0]) is not int or versions[0][0] < 0:
+            fail('search_schema_version_unqualified')
+        ids = db.execute('SELECT DISTINCT conversation_id FROM conversations_fts').fetchmany(ff.MAX_ENTRIES + 1)
+        if len(ids) > ff.MAX_ENTRIES:
+            fail('search_index_budget_exceeded')
+        for row in ids:
+            native_id(row[0])
+        try:
+            db.execute("INSERT INTO conversations_fts(conversations_fts) VALUES('integrity-check')")
+        except sqlite3.DatabaseError:
+            fail('search_index_corrupt')
 
 
 @contextmanager
@@ -195,6 +242,11 @@ def _closure(rows, requested):
 
 def _summary_transform(db, ids):
     db.execute('PRAGMA secure_delete=ON')
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='conversations_fts' AND type='table'").fetchone():
+        db.executemany('DELETE FROM conversations_fts WHERE conversation_id=?', [(sid,) for sid in ids])
+        # Regenerate postings from the preserved content to remove stale terms.
+        # VACUUM below clears the old pages after the secure-delete rewrite.
+        db.execute("INSERT INTO conversations_fts(conversations_fts) VALUES('rebuild')")
     db.executemany('DELETE FROM conversation_summaries WHERE conversation_id=?', [(sid,) for sid in ids])
     db.commit()
     db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
