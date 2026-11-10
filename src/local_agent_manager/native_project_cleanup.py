@@ -98,6 +98,55 @@ def _remove(value: dict[str, Any], project_id: str, home: Path) -> tuple[dict[st
                 raise NativeProjectError("Unsupported sidebar reference value")
             del atoms[key]
             count += 1
+    if "unified-sidebar-project-order-v1" in atoms:
+        sidebar_order = atoms["unified-sidebar-project-order-v1"]
+        if not isinstance(sidebar_order, list) or not all(isinstance(x, str) for x in sidebar_order):
+            raise NativeProjectError("Unsupported unified sidebar project order schema")
+        sidebar_tokens = {"codex:project:" + project_id, "chatgpt:project:" + project_id}
+        filtered_sidebar = [x for x in sidebar_order if x not in sidebar_tokens]
+        removed_sidebar = len(sidebar_order) - len(filtered_sidebar)
+        if removed_sidebar:
+            atoms["unified-sidebar-project-order-v1"] = filtered_sidebar
+            count += removed_sidebar
+    if "new-task-project-by-computer" in atoms:
+        by_computer = atoms["new-task-project-by-computer"]
+        if not isinstance(by_computer, dict):
+            raise NativeProjectError("Unsupported new-task-project-by-computer schema")
+        for comp_key, comp_val in list(by_computer.items()):
+            if comp_val != project_id:
+                continue
+            try:
+                parsed_key = json.loads(comp_key)
+            except (TypeError, ValueError) as exc:
+                raise NativeProjectError("Unsupported new-task-project-by-computer key") from exc
+            if (
+                not isinstance(parsed_key, list)
+                or len(parsed_key) != 3
+                or not all(isinstance(x, str) and x for x in parsed_key)
+                or parsed_key[2] != "local"
+            ):
+                raise NativeProjectError("Unsupported new-task-project-by-computer key")
+            del by_computer[comp_key]
+            count += 1
+    if "project-order" in result:
+        project_order = result["project-order"]
+        if not isinstance(project_order, list) or not all(isinstance(x, str) for x in project_order):
+            raise NativeProjectError("Unsupported project-order schema")
+        filtered_order = [x for x in project_order if x != project_id]
+        removed_order = len(project_order) - len(filtered_order)
+        if removed_order:
+            result["project-order"] = filtered_order
+            count += removed_order
+    if "selected-project" in result:
+        selected = result["selected-project"]
+        if selected is not None:
+            if not isinstance(selected, dict):
+                raise NativeProjectError("Unsupported selected-project schema")
+            if selected.get("projectId") == project_id:
+                if set(selected) != {"type", "projectId"} or selected.get("type") != "local":
+                    raise NativeProjectError("Unsupported selected-project value")
+                del result["selected-project"]
+                count += 1
     mappings = result.get("app-server-project-id-by-legacy-project-id-by-host", {})
     if not isinstance(mappings, dict):
         raise NativeProjectError("Unsupported project mapping schema")
