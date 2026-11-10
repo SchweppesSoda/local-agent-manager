@@ -244,7 +244,7 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
 
 T3 Nightly `20261108.4353` 起可以用现有 CLI 1.5.0+ 的 `agy acp` 替代受管运行时。
-该模式的原生清理尚未支持，不能复用下述 ACP 1.4.5 绑定；`--t3code-only` 仍保留原生历史。
+该模式的 T3 与原生联合清理待适配，独立 CLI 原生清理使用其专用入口和存储资格。
 切换与卸载方法见 [Antigravity 技能说明](skills/agent-management/references/antigravity.md#switch-t3-to-the-cli-and-remove-the-managed-runtime)。
 
 Windows 完整清理可自动从 provider 配置和原生 ID 准备绑定，已有显式绑定也可使用。
@@ -257,19 +257,19 @@ server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境�
 
 ### 引擎与客户端覆盖
 
-T3、Paseo 的写入使用下表所列的已验证 Windows 路径。
+T3、Paseo 和独立 Antigravity CLI 的写入使用已验证的 Windows 路径。
 
 | 客户端 | Codex | Claude | Pi | Antigravity |
 |---|---|---|---|---|
 | T3 Code | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除，完整清理限已验证托管 ACP |
 | Cindy | 完整本地清理 | 完整本地清理 | 完整本地清理 | 原生清理待适配 |
-| 原生客户端／CLI | Codex 本地历史清理 | Claude 本地历史清理 | Pi JSONL 清理 | 独立 CLI 原生清理待适配 |
+| 原生客户端／CLI | Codex 本地历史清理 | Claude 本地历史清理 | Pi JSONL 清理 | Windows 原生会话清理 |
 | Paseo | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除，原生清理待适配 |
 | WorkBuddy | — | — | — | — |
 
 完整本地清理需验证实际存储、引用和写入进程。原生 Codex 范围包括可定位的 ChatGPT／Codex
 桌面本地历史，ChatGPT 云端聊天需要服务自身的管理入口。WorkBuddy 的会话清理使用独立适配器，
-具体范围见下方能力表。独立 Antigravity CLI 与各客户端的原生联动尚有缺口，
+具体范围见下方能力表。Antigravity CLI 与 T3/Paseo 的联合清理待适配，
 在线会话删除的回执单独报告前端范围。
 
 ### 术语与身份边界

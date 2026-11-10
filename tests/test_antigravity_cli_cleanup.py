@@ -164,6 +164,8 @@ class CliFormatTests(unittest.TestCase):
     def test_scope_requires_exact_ids_and_explicit_runtime(self):
         result = self.coordinator().plan_operation(client='antigravity', all_projects=True)
         self.assertEqual(result['goal_status'], 'blocked')
+        self.assertEqual(result['schema_version'], 'larj.operation-result.v1')
+        self.assertEqual(result['document_type'], 'operation_result')
         result = self.coordinator().plan_operation(client='antigravity', record_ids=[TARGET], antigravity_root=self.root)
         self.assertEqual(result['blockers'][0]['blocker_code'], 'antigravity_cli_explicit_runtime_required')
 
@@ -251,10 +253,12 @@ class CliWriterTests(CliFormatTests):
     def test_full_cleanup_fresh_coordinator_status_verify_keep(self):
         coordinator = self.coordinator(); plan = self.plan(coordinator)
         self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertEqual(plan['schema_version'], 'larj.operation-result.v1')
         keep = {p: p.read_bytes() for p in (self.root/'conversations'/(KEEP+'.db'), self.root/'brain'/KEEP/'artifact.md',
                 self.root/'settings.json', self.root/'annotations'/(KEEP+'.pbtxt'), self.root/'presence'/(KEEP+'.lock'))}
         result = self.apply(coordinator, plan)
         self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertEqual(result['schema_version'], 'larj.operation-result.v1')
         self.assertFalse((self.root/'conversations'/(TARGET+'.db')).exists())
         self.assertFalse((self.root/'brain'/TARGET).exists())
         self.assertFalse((self.root/'annotations'/(TARGET+'.pbtxt')).exists())
@@ -266,6 +270,7 @@ class CliWriterTests(CliFormatTests):
         for method in ('status_operation', 'verify_operation'):
             result = getattr(self.coordinator(), method)(operation_id=plan['operation_id'], plan_path=self.base/'plan.json')
             self.assertEqual(result['goal_status'], 'complete', result)
+            self.assertEqual(result['schema_version'], 'larj.operation-result.v1')
         self.assertNotIn(SECRET, (self.base/'plan.json').read_text())
         self.assertFalse((OperationStore(self.root, plan['operation_id']).directory/'native-recovery').exists())
 
@@ -341,6 +346,7 @@ class CliWriterTests(CliFormatTests):
         for location in ({'plan_path': self.base/'plan.json'}, {'operation_home': self.root}):
             result = self.coordinator().status_operation(operation_id=plan['operation_id'], **location)
             self.assertEqual(result['goal_status'], 'complete', result)
+            self.assertEqual(result['schema_version'], 'larj.operation-result.v1')
             self.assertEqual(result['verification_basis'], 'retained_completion_receipt')
 
     def test_direct_writer_needs_ticket(self):
@@ -378,7 +384,11 @@ class CliWriterTests(CliFormatTests):
                          '--out', str(self.base/'cli.json'), '--clients-closed', '--yes', '--json'],
                         stdout=out, stderr=io.StringIO())
         self.assertEqual(code, 0, out.getvalue())
-        self.assertEqual(json.loads(out.getvalue())['goal_status'], 'complete')
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload['goal_status'], 'complete')
+        self.assertEqual(payload['schema_version'], 'larj.operation-result.v1')
+        self.assertEqual(payload['command'], 'delete')
+        self.assertEqual(payload['subcommand'], 'run')
 
 
 if __name__ == '__main__': unittest.main()

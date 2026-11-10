@@ -31,6 +31,7 @@
 | Cindy / Pi | 精确 JSONL、精确引用、软删除 session 行 | 每个 profile 单独定位；`parentSession` 不级联 |
 | Cindy / Claude | session manifest、精确引用、软删除 session 行 | 共享 root 聚合所有 profile 引用；无 Cindy 归属的独立 session 不纳入 Cindy 删除范围 |
 | native / Codex、Pi、Claude | 对应引擎专用 writer | 无前端行的独立记录正常；每个物理 root 分别批准 |
+| antigravity / 独立 CLI | 精确会话数据库、共享摘要、恢复镜像、resume cache 和产物 | Windows 排他句柄及冻结格式；已知前端引用和未知关系阻挡 |
 | Orca / Codex | journal 引用与已证明 homes 的原生清单；限定 Windows 原生删除 | 静态能力关闭，精确 v3 operation 逐目标资格见下文；未知来源保持 incomplete |
 | Orca / Claude、其他引擎 | 只读引用与来源错误 | 本机 Claude account root 仅用于精确保护，不提供 Orca native catalog/writer |
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
@@ -38,7 +39,7 @@
 | 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
 | Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 在线批量删除支持四种引擎；Codex/Pi/Claude 可自动绑定完成完整清理 |
 | T3 Code / Codex、Claude、Pi | v1/v2 thread 元数据及 provider 恢复句柄 | Windows 在线批量删除支持四种引擎；自动或显式绑定的 v2 记录支持完整本地清理，未知 schema 关闭 |
-| T3 Code / Antigravity | 在线会话删除、已验证托管 ACP 完整清理 | 独立 `agy` CLI 原生清理待适配 |
+| T3 Code / Antigravity | 在线会话删除、已验证托管 ACP 完整清理 | CLI 原生与 T3 联合清理待适配 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
 
 兼容回归使用[固定 v1 样本](../tests/fixtures/operation_v1.json)及

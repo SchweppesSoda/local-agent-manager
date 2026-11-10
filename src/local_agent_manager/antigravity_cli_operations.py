@@ -29,6 +29,14 @@ def _error(code, operation_id=None):
             'blockers': [{'blocker_code': code}], 'counts': {}}
 
 
+def _public_result(result):
+    # The journal retains its established child-result encoding. Callers of
+    # the coordinator receive the same public protocol as the other clients.
+    payload = {key: value for key, value in result.items() if key not in {'command', 'mode'}}
+    payload.update(schema_version='larj.operation-result.v1', document_type='operation_result')
+    return payload
+
+
 def _receipt(store, expected_hash=None):
     if not store.receipt_path.exists():
         return None
@@ -257,7 +265,7 @@ def route(verb):
                         try:
                             receipt = _receipt(OperationStore(Path(root), options['operation_id']))
                             if receipt is not None:
-                                return receipt
+                                return _public_result(receipt)
                         except (ValueError, RuntimeError, OSError):
                             pass
                 if path and Path(path).is_file():
@@ -276,21 +284,22 @@ def route(verb):
                         native.fail('clients_closed_ack_required')
                     result = plan(options)
                     if verb == 'plan':
-                        return result
+                        return _public_result(result)
                     options.update(operation_id=result['operation_id'], plan_sha256=result['plan_sha256'])
                     path = result['plan_path']
                 document, store = _load(path, options)
                 if verb in {'apply', 'run'}:
-                    return execute(document, store, options)
-                return query(document, store, verify=verb == 'verify')
+                    return _public_result(execute(document, store, options))
+                return _public_result(query(document, store, verify=verb == 'verify'))
             except Exception as exc:
                 if store is not None:
                     try:
                         state = store.read_state()
                         if state and state['mutation_started']:
-                            return _result(document, state, 'unknown', getattr(exc, 'kind', 'antigravity_cli_'+type(exc).__name__))
+                            return _public_result(_result(document, state, 'unknown',
+                                getattr(exc, 'kind', 'antigravity_cli_'+type(exc).__name__)))
                     except (ValueError, RuntimeError, OSError):
                         pass
-                return _error(getattr(exc, 'kind', 'antigravity_cli_'+type(exc).__name__), options.get('operation_id'))
+                return _public_result(_error(getattr(exc, 'kind', 'antigravity_cli_'+type(exc).__name__), options.get('operation_id')))
         return routed
     return decorate
