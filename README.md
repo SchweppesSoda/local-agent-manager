@@ -261,12 +261,13 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
 
 T3 Nightly `20261108.4353` 起可以用现有 CLI 1.5.0+ 的 `agy acp` 替代受管运行时。
-该模式的 T3 与原生联合清理支持已验证的 Windows CLI 1.5.3 构建，使用独立 CLI 布局绑定。
+该模式的 T3 与原生联合清理按实际 Windows CLI 存储格式、会话身份和启动绑定核验。
+兼容升级可直接生成新计划，程序版本和预设编译摘要不参与准入。
 切换与卸载方法见 [Antigravity 技能说明](skills/agent-management/references/antigravity.md#switch-t3-to-the-cli-and-remove-the-managed-runtime)。
 
 Windows 完整清理可自动从 provider 配置和原生 ID 准备绑定，已有显式绑定也可使用。
 计划、apply 和冷验证清理实际 Codex/Claude/Pi 存储，或已验证
-T3 ACP 1.4.5 实例的 Antigravity 原生数据库、元数据与会话产物，再清理
+T3 ACP 实例的 Antigravity 原生数据库、元数据与会话产物，再清理
 T3 的事件、投影、搜索索引、终端历史和绑定桌面的草稿/布局。执行持有 T3 自身的
 server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境会阻挡。标题、正文与凭据
 不进入报告。绑定格式及支持范围见 [T3 Code 操作说明](docs/operation-cli.md#t3-code-完整本地操作)

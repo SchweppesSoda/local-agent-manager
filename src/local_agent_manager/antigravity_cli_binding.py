@@ -4,9 +4,9 @@ from pathlib import Path
 from . import antigravity_cli_cleanup as native, frozen_files as ff
 from .record_identity import canonical_path
 
-# Windows 1.5.3: isolated ACP acceptance established USERPROFILE storage,
-# including when T3 supplies GEMINI_HOME and AGY_ACP_FORCE_FILE_STORAGE.
-RUNTIME_SHA256 = '47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6'
+# Native format qualification runs against the actual bound store. Runtime
+# fingerprints bind one operation to its selected executable across preflight
+# and execution. Compatible upgrades receive a fresh fingerprint during planning.
 FIELDS = {'native_layout', 'cli_binary', 'cli_user_home'}
 
 
@@ -43,8 +43,8 @@ def runtime(binary, manifest=None):
             proof = {'root': str(binary.parent), 'file': ff.read_file(binary.parent, binary.name)[0]}
     else:
         proof = {'root': str(binary.parent), 'file': ff.read_file(binary.parent, binary.name)[0]}
-    if binary.name.lower() != 'agy.exe' or proof['file']['sha256'] != RUNTIME_SHA256:
-        native.fail('runtime_build_unqualified')
+    if binary.name.lower() != 'agy.exe' or not proof['file']['size']:
+        native.fail('runtime_file_unqualified')
     return proof
 
 

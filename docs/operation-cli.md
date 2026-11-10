@@ -534,7 +534,7 @@ WAL。范围限于选中的数据库记录，原生存储和桌面缓存属于�
 
 ### Antigravity ACP 完整删除绑定
 
-此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**。CLI 使用下一节的独立布局绑定；
+此路径支持格式与启动绑定校验通过的 Windows T3 托管 ACP。CLI 使用下一节的独立布局绑定；
 需要保留原生历史时使用 `--t3code-only`，不得把旧 ACP 目录当作新 CLI 会话目录。
 每条 Antigravity 绑定使用 `engine: "antigravity"`，增加
 `provider_instance_id` 和 `acp_runtime_binaries`（`agy_acp_server.exe`、配套
@@ -564,15 +564,16 @@ WAL。范围限于选中的数据库记录，原生存储和桌面缓存属于�
 排他边界后，删除精确 UUID 对应的数据库、SQLite 侧文件、`.meta` 和 `brain/<UUID>`，
 然后清理 T3 本地历史。未选会话、设置、凭据、skills、runtime 和工作区保留并核验。
 原生数据库 schema/ID 不符、未知恢复文件、`parent_references` 或子轨迹关系都阻挡；
-这些关系尚无完整解析器，不会猜测级联删除。不同版本、独立 CLI、远程数据仍不受支持。
+这些关系尚无完整解析器。未知存储格式和远程数据保持阻挡，CLI 使用下节的布局绑定。
 中断后只允许原计划冷验证；残留需要新计划。
 
 开发验收可设置 `LARJ_T3_BUNDLE_ACCEPTANCE=1` 后运行
 `python -m unittest tests.test_t3code_runtime_acceptance`。它仅使用临时 profile、无效测试
 key 和合成会话，不发送模型提示；Windows 的 SQLite 测试临时目录应使用较短的绝对路径。
 旧受管运行时已卸载时，其验收自动跳过，不为测试重新安装。CLI 模式的隔离存储验收使用
-`LARJ_AGY_CLI_ACCEPTANCE=1` 和绝对路径 `LARJ_AGY_CLI_BINARY`；测试固定 Windows CLI 1.5.3
-构建摘要，只进行 ACP 握手及无真实凭据的请求，验证它没有沿用 T3 的旧实例目录。
+`LARJ_AGY_CLI_ACCEPTANCE=1` 和绝对路径 `LARJ_AGY_CLI_BINARY`。测试使用当前指定的程序，
+通过 ACP 握手、无真实凭据的空会话及原生数据格式核验实际存储行为。
+产品版本与编译摘要不作为测试通过条件。
 旧存储探测本身不授予删除能力。独立 CLI writer 的新验收见下节；两者均不证明实际账号生成成功。
 
 ### T3/Paseo 与 Antigravity CLI 联合清理
@@ -597,17 +598,24 @@ CLI 绑定在各自 `native_stores` 项增加以下字段；T3 使用 `thread_id
 }
 ```
 
-`cli_binary` 也必须列入顶层 `runtime_binaries`。当前资格限 CLI 1.5.3 的已验证 Windows
-构建（SHA-256 `47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6`）。
+`cli_binary` 也必须列入顶层 `runtime_binaries`。准入核验实际存储格式、native ID、
+前端强引用与启动绑定。兼容的 CLI 和托管 ACP 升级可直接使用，产品版本和预设二进制
+摘要不参与准入。新增索引和等价 SQL 排版可继续使用，已有表、约束、关系字段及未知恢复对象仍按格式校验。
+计划另外冻结共享数据库的完整 schema 摘要，涵盖本次接受的索引。执行和冷验证会核对该摘要，
+索引定义在计划后变化时保留恢复材料。旧证据按其原有基线 schema 核验。
+原生清理通过管理器自身的离线 writer 和私有副本转换执行。
+每次计划冻结当前程序的文件身份和摘要，执行前后继续核对。计划生成后发生升级时，
+旧计划会在写入前阻挡；重新运行 `delete run` 会按当前程序自动生成新计划。
 T3 的绝对 `config.binaryPath`、Paseo 的单项绝对 `agents.providers.antigravity.command`
 必须选择该实际文件；裸 `agy` 的 daemon PATH 尚无精确证明格式，当前拒绝自动猜测。CLI 根必须对应实际 OS 用户 home 下的
 `.gemini/antigravity-cli`；provider/逐 agent 的 home 覆盖须一致，T3 的 `GEMINI_HOME`
-不能替代该证明。包装脚本、额外命令参数、其他构建和冲突 home 需要另行资格，不能手填目录绕过。
+不能替代该证明。包装脚本、额外命令参数和冲突 home 需要相应启动契约，不能手填目录绕过。
 
-Paseo 0.15.3 内置插件把 `{version:1,data:{conversationId:"<UUID>"}}` 序列化成
+Paseo 的已知插件格式把 `{version:1,data:{conversationId:"<UUID>"}}` 序列化成
 `persistence.sessionId = "plugin:" + JSON`，并在
 `persistence.metadata.pluginProviderPersistence` 保存恢复对象；`runtimeInfo.sessionId`
-若存在也必须解出同一 UUID。只接受这一精确版本和字段形状；裸 UUID、旧 ACP 自定义序列化、
+若存在也必须解出同一 UUID。这里的 `version:1` 标识持久化格式；Paseo 产品版本不参与准入。
+字段形状及恢复关系按契约校验，裸 UUID、旧 ACP 自定义序列化、
 `nativeHandle` 变体、额外 metadata 和相互冲突的恢复句柄明确阻挡。
 依据：[provider 持久对象](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/plugins/antigravity-provider/server/internal/session.ts)
 与 [核心序列化及恢复](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/packages/server/src/server/agent/plugin-provider.ts)。

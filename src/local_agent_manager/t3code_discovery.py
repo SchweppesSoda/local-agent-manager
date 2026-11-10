@@ -149,11 +149,11 @@ def _acp_binding(root, row, instance, runtime_binaries):
         release = t3_acp_managed_release(root / "tools/antigravity-acp/win32-x64", BoundedPathProbe())
         if release is None:
             raise ValueError("antigravity_managed_runtime_unproven")
-        directory = release[0]
+        directory = release[0].parent
     binaries = []
-    for name, expected_hash in RUNTIMES.items():
+    for name in RUNTIMES:
         proof, _ = frozen_files.read_file(directory, name)
-        if proof["sha256"] != expected_hash:
+        if not proof['size']:
             raise ValueError("antigravity_managed_runtime_unqualified")
         binaries.append(str(directory / name))
     runtime_binaries.update(binaries)

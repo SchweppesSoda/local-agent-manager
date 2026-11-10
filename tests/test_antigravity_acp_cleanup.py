@@ -38,11 +38,10 @@ class AntigravityCleanupTests(unittest.TestCase):
         fullflow.T3CodeFullflowTests.setUp(self)
         instance='antigravity'
         self.acp_root=self.root/'userdata/providers/antigravity'/hashlib.sha256(instance.encode()).hexdigest()/'antigravity-acp'
-        binaries=[];hashes={}
+        binaries=[]
         for name in acp.RUNTIMES:
             p=self.base/'runtime'/name;p.parent.mkdir(exist_ok=True);p.write_bytes(('fixture '+name).encode())
-            binaries.append(str(p));hashes[name]=hashlib.sha256(p.read_bytes()).hexdigest()
-        patcher=patch.object(acp,'RUNTIMES',hashes);patcher.start();self.addCleanup(patcher.stop)
+            binaries.append(str(p))
         self.manifest['runtime_binaries'].extend(binaries)
         self.manifest['native_stores'][0]={'thread_id':THREAD,'engine':'antigravity','root':str(self.acp_root),
             'provider_instance_id':instance,'acp_runtime_binaries':binaries}
@@ -84,6 +83,39 @@ class AntigravityCleanupTests(unittest.TestCase):
             self.assertEqual(db.execute(f'SELECT thread_id FROM {V2}threads').fetchall(),[(KEEP,)])
         self.assertEqual(self.coordinator().verify_operation(operation_id=plan['operation_id'],plan_path=self.plan_path)['goal_status'],'complete')
 
+    def test_managed_upgrade_uses_current_installer_pair_and_compatible_indexes(self):
+        from local_agent_manager.t3code_discovery import _acp_binding
+        release = 'b' * 64
+        platform = self.root/'tools/antigravity-acp/win32-x64'
+        directory = platform/'versions'/release
+        directory.mkdir(parents=True)
+        binaries = []
+        for name in acp.RUNTIMES:
+            path = directory/name
+            path.write_bytes(('compatible upgraded runtime '+name).encode())
+            binaries.append(str(path))
+        (platform/'active.json').write_text(json.dumps({'releaseId': release}))
+        (directory/'.install-complete.json').write_text(json.dumps({
+            'releaseId': release, 'version': '99.3.1',
+            'executable': {'name': 'agy_acp_server.exe', 'bytes': (directory/'agy_acp_server.exe').stat().st_size},
+            'harness': {'name': 'localharness_external.exe', 'bytes': (directory/'localharness_external.exe').stat().st_size}}))
+        self.settings['providerInstances']['antigravity']['config']['binaryPath'] = ''
+        self.settings_path.write_text(json.dumps(self.settings))
+        observed = set()
+        bound = _acp_binding(self.root, {'thread_id': THREAD, 'provider_instance_id': 'antigravity'},
+            self.settings['providerInstances']['antigravity'], observed)
+        self.assertEqual(observed, set(binaries))
+        self.manifest['native_stores'][0] = bound
+        self.manifest['runtime_binaries'] = [p for p in self.manifest['runtime_binaries']
+            if Path(p).name not in acp.RUNTIMES] + binaries
+        self.adapter = T3CodeBoundAdapter(self.manifest)
+        with closing(sqlite3.connect(self.acp_root/'conversations'/(NATIVE+'.db'))) as db:
+            db.execute('CREATE INDEX newer_source_index ON trajectory_meta(source)')
+            db.commit()
+        plan = self.plan()
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertEqual(self.apply(plan)['goal_status'], 'complete')
+
     def test_schema_parent_reference_and_unknown_files_block(self):
         with closing(sqlite3.connect(self.acp_root/'conversations'/(OTHER+'.db'))) as db:
             db.execute("INSERT INTO parent_references VALUES(1,x'00')");db.commit()
@@ -113,13 +145,27 @@ class AntigravityCleanupTests(unittest.TestCase):
             db.commit()
         self.assertEqual(self.plan()['goal_status'],'blocked')
 
-    def test_instance_and_runtime_mismatch_block(self):
+    def test_invalid_instance_and_empty_runtime_block(self):
         bad=copy.deepcopy(self.manifest)
         bad['native_stores'][0]['provider_instance_id']='other-instance'
         with self.assertRaisesRegex(ValueError,'instance_root_mismatch'):
             T3CodeBoundAdapter(bad)
-        Path(self.manifest['native_stores'][0]['acp_runtime_binaries'][0]).write_bytes(b'changed')
+        Path(self.manifest['native_stores'][0]['acp_runtime_binaries'][0]).write_bytes(b'')
         self.assertEqual(self.plan()['goal_status'],'blocked')
+
+    def test_managed_program_upgrade_blocks_old_approval_and_accepts_fresh_plan(self):
+        plan = self.plan()
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        executable = Path(self.manifest['native_stores'][0]['acp_runtime_binaries'][0])
+        executable.write_bytes(b'compatible next managed build')
+        blocked = self.apply(plan)
+        self.assertEqual(blocked['goal_status'], 'blocked', blocked)
+        self.assertFalse(blocked['mutation_started'])
+        self.plan_path = self.base/'after-managed-upgrade.json'
+        fresh = self.coordinator().plan_operation(client='t3code', record_ids=[THREAD], adapters=[self.adapter],
+            plan_path=self.plan_path, operation_id='after-managed-upgrade')
+        self.assertEqual(fresh['goal_status'], 'ready', fresh)
+        self.assertEqual(self.apply(fresh)['goal_status'], 'complete')
 
     def test_warm_apply_deduplicates_identical_bound_profile(self):
         coordinator=self.coordinator()

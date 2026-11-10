@@ -72,8 +72,7 @@ class JointTests(unittest.TestCase):
         self.t3, self.paseo = self.base/'t3', self.base/'paseo'
         self.binary = self.base/'frontend.exe'
         self.binary.write_bytes(b'fixture not executed')
-        for item in (patch.object(binding, 'RUNTIME_SHA256', hashlib.sha256(self.agy.read_bytes()).hexdigest()),
-                     patch('pathlib.Path.home', return_value=self.user),
+        for item in (patch('pathlib.Path.home', return_value=self.user),
                      patch('local_agent_manager.office_runtime.processes', return_value=[]),
                      patch.dict(os.environ, {'USERPROFILE': str(self.user), 'HOME': str(self.user),
                          'APPDATA': str(self.base/'appdata'), 'LOCALAPPDATA': str(self.base/'local'),
@@ -197,14 +196,40 @@ class JointTests(unittest.TestCase):
         self.assertEqual(result['goal_status'], 'blocked', result)
         self.assertFalse(result['mutation_started'])
 
-    def test_wrong_native_root_and_unknown_runtime_refuse_binding(self):
+    def test_wrong_native_root_is_refused_and_compatible_new_build_can_plan(self):
         adapter = self.setup_client('t3code')
         bad = copy.deepcopy(adapter.manifest)
         bad['native_stores'][0]['root'] = str(self.t3/'userdata/providers/antigravity/old')
         with self.assertRaisesRegex(ValueError, 'root_or_runtime_unproven'):
             T3CodeBoundAdapter(bad)
         self.agy.write_bytes(b'different build')
-        self.assertEqual(self.plan('t3code', adapter)['goal_status'], 'blocked')
+        self.assertEqual(self.plan('t3code', adapter)['goal_status'], 'ready')
+
+    def assert_upgrade_after_approval(self, client):
+        adapter = self.setup_client(client)
+        plan = self.coordinator().plan_operation(client=client, record_ids=[FRONT], adapters=[adapter],
+            plan_path=self.base/'before-upgrade.json', operation_id='before-upgrade')
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.agy.write_bytes(b'compatible future CLI build')
+        blocked = self.coordinator().apply_operation(operation_id=plan['operation_id'],
+            plan_path=Path(plan['plan_path']), plan_sha256=plan['plan_sha256'], clients_closed=True)
+        self.assertEqual(blocked['goal_status'], 'blocked', blocked)
+        self.assertFalse(blocked['mutation_started'])
+        fresh = self.coordinator().plan_operation(client=client, record_ids=[FRONT], adapters=[adapter],
+            plan_path=self.base/'after-upgrade.json', operation_id='after-upgrade')
+        self.assertEqual(fresh['goal_status'], 'ready', fresh)
+        evidence = (t3code_cleanup if client == 't3code' else paseo_cleanup).evidence_from_document(fresh)
+        actual = evidence['native_targets'][0]['native_files']['runtime']['file']['sha256']
+        self.assertEqual(actual, hashlib.sha256(self.agy.read_bytes()).hexdigest())
+        applied = self.coordinator().apply_operation(operation_id=fresh['operation_id'],
+            plan_path=Path(fresh['plan_path']), plan_sha256=fresh['plan_sha256'], clients_closed=True)
+        self.assertEqual(applied['goal_status'], 'complete', applied)
+
+    def test_t3_upgrade_after_approval_blocks_old_plan_and_fresh_plan_succeeds(self):
+        self.assert_upgrade_after_approval('t3code')
+
+    def test_paseo_upgrade_after_approval_blocks_old_plan_and_fresh_plan_succeeds(self):
+        self.assert_upgrade_after_approval('paseo')
 
     def test_partial_native_failure_is_unknown_with_before_images_and_no_replay(self):
         from local_agent_manager.windows_held_files import HeldFiles

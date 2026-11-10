@@ -98,6 +98,55 @@ class CliFormatTests(unittest.TestCase):
             db.execute('CREATE TABLE extra (id text)'); db.commit()
         with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'): self.freeze()
 
+    def test_compatible_upgrade_indexes_preserve_the_native_format(self):
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('CREATE INDEX newer_summary_title ON conversation_summaries(title)')
+            db.commit()
+        with closing(sqlite3.connect(self.root/'conversations'/(TARGET+'.db'))) as db:
+            db.execute('CREATE INDEX newer_trajectory_source ON trajectory_meta(source)')
+            db.commit()
+        self.assertEqual(self.freeze()['ids'], [TARGET])
+
+    def test_new_restore_trigger_is_a_real_storage_contract_change(self):
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('CREATE TRIGGER newer_restore AFTER DELETE ON conversation_summaries BEGIN SELECT 1; END')
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'):
+            self.freeze()
+
+    def test_equivalent_sql_whitespace_is_compatible_but_constraint_changes_block(self):
+        # Rewrite only synthetic schema text, retaining SQLite's table data.
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('PRAGMA writable_schema=ON')
+            db.execute("UPDATE sqlite_master SET sql=replace(sql, ',', ',  ') WHERE type='table'")
+            db.commit()
+        self.assertEqual(self.freeze()['ids'], [TARGET])
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('PRAGMA writable_schema=ON')
+            db.execute("UPDATE sqlite_master SET sql=replace(sql, 'DEFAULT 0', 'DEFAULT 1') WHERE type='table'")
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'):
+            self.freeze()
+
+    def test_legacy_evidence_retains_the_original_summary_schema(self):
+        legacy = self.freeze()
+        legacy.pop('summary_schema_sha256')
+        self.assertGreater(agy.remaining(legacy), 0)
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('CREATE INDEX newer_title_index ON conversation_summaries(title)')
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'summary_schema_changed'):
+            agy.remaining(legacy)
+
+    def test_whitespace_inside_a_sql_string_changes_the_storage_contract(self):
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('PRAGMA writable_schema=ON')
+            db.execute("UPDATE sqlite_master SET sql=replace(sql, ?, ?) WHERE type='table'",
+                       ('DEFAULT ""', 'DEFAULT " "'))
+            db.commit()
+        with self.assertRaisesRegex(agy.CleanupError, 'schema_unqualified'):
+            self.freeze()
+
     def test_opaque_parent_blocks(self):
         with closing(sqlite3.connect(self.root/'conversations'/(KEEP+'.db'))) as db:
             db.execute('INSERT INTO parent_references VALUES(1,?)', (b'opaque',)); db.commit()
@@ -362,6 +411,22 @@ class CliWriterTests(CliFormatTests):
         result = self.coordinator().verify_operation(operation_id=plan['operation_id'], plan_path=self.base/'plan.json')
         self.assertEqual(result['goal_status'], 'complete', result)
         self.assertFalse((OperationStore(self.root, plan['operation_id']).directory/'native-recovery').exists())
+
+    def test_cold_verification_preserves_recovery_if_an_accepted_index_changes(self):
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('CREATE UNIQUE INDEX newer_unique_title ON conversation_summaries(conversation_id,title)')
+            db.commit()
+        coordinator = self.coordinator()
+        plan = self.plan(coordinator)
+        with patch.object(agy, 'discard_recovery', side_effect=OSError('interrupted completion')):
+            self.assertEqual(self.apply(coordinator, plan)['goal_status'], 'unknown')
+        with closing(sqlite3.connect(self.root/agy.SUMMARY)) as db:
+            db.execute('DROP INDEX newer_unique_title')
+            db.commit()
+        result = self.coordinator().verify_operation(operation_id=plan['operation_id'], plan_path=self.base/'plan.json')
+        self.assertEqual(result['goal_status'], 'unknown', result)
+        recovery = OperationStore(self.root, plan['operation_id']).directory/'native-recovery'
+        self.assertTrue(list(recovery.glob('*.before')))
 
     def test_unknown_sibling_blocks_other_ids(self):
         coordinator = self.coordinator(); plan = self.plan(coordinator)

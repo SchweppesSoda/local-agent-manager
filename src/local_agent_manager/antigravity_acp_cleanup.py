@@ -1,4 +1,4 @@
-"""Qualified T3-managed ACP 1.4.5 local session files, never CLI profiles.
+"""Qualified T3-managed ACP local session files, never CLI profiles.
 
 The native runtime does not advertise session/delete. Removal is subordinate
 to the T3 full-cleanup ticket and held startup/runtime exclusion. Unknown
@@ -11,6 +11,7 @@ from importlib.resources import files
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 import time
@@ -25,11 +26,29 @@ from .t3code_store import fail, local_root
 
 SCHEMA = 'larj.antigravity-acp-files.v2'
 CONTRACT = json.loads(files(__package__).joinpath('antigravity_acp_schema.json').read_text())
-RUNTIMES = {
-    'agy_acp_server.exe': 'ccca30a4aef1b915b0d8baa17b149de6cda305841fa27717e52c529bb462c51d',
-    'localharness_external.exe': '98f808f7796c0a06d104715dbef65025e57243106fff5935d9bedd5843f03cda',
-}
+RUNTIMES = ('agy_acp_server.exe', 'localharness_external.exe')
 SUFFIXES = ('.db', '.db-wal', '.db-shm', '.db-journal', '.meta')
+
+
+def _sql_tokens(sql):
+    if sql is None:
+        return None
+    # Keep quoted values, identifiers and comments intact. Whitespace between
+    # SQL tokens does not change the stored table/constraint contract.
+    return re.findall(r"--[^\r\n]*|/\*[\s\S]*?\*/|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]|\w+|[^\s]", sql)
+
+
+def schema_compatible(objects, contract):
+    """Keep required tables, constraints and indexes while allowing new indexes.
+
+    Additional tables, views or triggers can carry restore relationships.
+    Their format needs explicit support before native cleanup can include it.
+    """
+    expected = {(row[0], row[1]): row for row in contract['objects']}
+    actual = {(row[0], row[1]): row for row in objects}
+    return (all(key in actual and actual[key][:3] == row[:3]
+                and _sql_tokens(actual[key][3]) == _sql_tokens(row[3]) for key, row in expected.items())
+            and all(row[0] == 'index' or (row[0], row[1]) in expected for row in objects))
 
 
 def _root_entries(root):
@@ -99,7 +118,7 @@ def runtime(binding, profile_root):
     from .t3code_lifecycle import current_boundary
     boundary = current_boundary(profile_root)
     result = []
-    for name, expected in sorted(RUNTIMES.items()):
+    for name in sorted(RUNTIMES):
         binary = Path(next(p for p in binding['acp_runtime_binaries'] if Path(p).name == name))
         if boundary:
             # HeldFiles deliberately prevents reopening an executable. Its
@@ -111,8 +130,8 @@ def runtime(binding, profile_root):
             proof = item['file']
         else:
             proof, _ = frozen_files.read_file(binary.parent, name)
-        if proof['sha256'] != expected:
-            fail('antigravity_runtime_build_unqualified')
+        if not proof['size']:
+            fail('antigravity_runtime_file_unqualified')
         result.append({'root': str(binary.parent), 'file': proof})
     return result
 
@@ -176,7 +195,7 @@ def _database(root, sid):
             db.set_progress_handler(lambda:int(time.monotonic()>deadline),10000)
             db.execute('BEGIN')
             objects = [list(r) for r in db.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")]
-            if objects != CONTRACT['objects'] or [tuple(r) for r in db.execute('PRAGMA quick_check')] != [('ok',)]:
+            if not schema_compatible(objects, CONTRACT) or [tuple(r) for r in db.execute('PRAGMA quick_check')] != [('ok',)]:
                 fail('antigravity_database_unqualified')
             if [tuple(r) for r in db.execute('SELECT trajectory_id,cascade_id,trajectory_type,source FROM trajectory_meta')] != [(sid, sid, 4, 0)]:
                 fail('antigravity_database_identity_mismatch')

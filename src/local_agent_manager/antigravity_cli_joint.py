@@ -105,8 +105,7 @@ def validate_target(target, manifest):
             or evidence['runtime'] != target['cli_selection']['runtime']
             or target['cli_selection']['settings']['path'] != ('userdata/settings.json' if 'environment_id' in manifest else 'config.json')
             or canonical_path(Path(evidence['runtime']['root'])/evidence['runtime']['file']['path'])
-                != canonical_path(target['binding']['cli_binary'])
-            or evidence['runtime']['file']['sha256'] != binding.RUNTIME_SHA256):
+                != canonical_path(target['binding']['cli_binary'])):
         native.fail('joint_target_scope_changed')
     # Child closure must be derivable from the frozen summary relationships.
     rows = {sid: {'parent_conversation_id': parent} for sid, parent in evidence['parents'].items()}

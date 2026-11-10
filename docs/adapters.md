@@ -806,13 +806,12 @@ T3 的临时探测清理会在进程关闭后，以 UUIDv4 和 `.meta` 中的唯
 [T3 临时会话清理](https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/acp/AntigravitySessionFiles.ts#L5-L41)
 · [Google CLI 的 ACP 模式](https://antigravity.google/docs/ide/extensions/acp/)
 
-**CLI 的 ACP 模式。** T3 仍传入实例 `GEMINI_HOME` 与 `AGY_ACP_FORCE_FILE_STORAGE=1`，
-但 Windows CLI 1.5.3 已验证构建（SHA-256 `47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6`）
-在隔离用户测试中仍于 `<USERPROFILE>/.gemini/antigravity-cli` 创建共享摘要数据库，
-未采用指定的旧 ACP 目录。握手成功不证明登录、会话创建或生成成功；该构建也未声明
-`session/delete`。此结论来自 [临时 profile 验收](../tests/test_t3code_runtime_acceptance.py)，
-不推广到其他平台或构建。实际存储可能与独立 CLI 共用，不能按旧实例哈希推导新会话位置，
-也不能承诺旧会话可以直接恢复或登录继续隔离。切换不迁移或删除旧实例数据。
+**CLI 的 ACP 模式。** 隔离验收观察到 Windows CLI 在 T3 提供实例 `GEMINI_HOME` 和
+`AGY_ACP_FORCE_FILE_STORAGE=1` 时仍于 `<USERPROFILE>/.gemini/antigravity-cli` 创建共享摘要数据库。
+清理以实际数据目录、native ID、存储格式和启动绑定核对归属。
+原生数据可能与独立 CLI 共用，旧 ACP 实例按自己的绑定核验。
+当前程序的存储、清理与重开行为通过 [临时 profile 验收](../tests/test_t3code_runtime_acceptance.py)
+检查，产品版本和预设编译摘要不参与准入。
 
 **环境发现。** `environment inventory` 的 `storage_artifacts` 只记录固定布局路径
 和文件状态。T3 按观察到的隔离实例分别输出 `native_profile`，该布局线索不把
@@ -830,7 +829,9 @@ Paseo 的已验证插件句柄显示 `native_cleanup_status=requires_paseo_bindi
 Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Google CLI
 自己的会话历史保留。
 
-T3 的完整清理另支持 Windows 托管 ACP 1.4.5 的固定运行文件摘要与原生数据库 DDL。
+T3 的完整清理另支持按原生格式和实际启动绑定核验的 Windows 托管 ACP。
+CLI 与托管 ACP 均允许兼容的程序升级，版本及预设构建摘要不参与准入。
+新增索引可继续使用，原有表、约束及恢复关系仍按格式契约校验。
 同时冻结 provider 设置及默认受管选择的 `active.json`；旧程序仍在磁盘上不构成当前选择证据。
 切换到 CLI、自定义程序不匹配或计划后的选择漂移均在写入前阻挡。CLI 模式不能使用
 旧双文件适配；独立 CLI 的受限原生 writer 另有入口和资格，见下文。
@@ -838,7 +839,7 @@ T3 的完整清理另支持 Windows 托管 ACP 1.4.5 的固定运行文件摘要
 ID 和精确 UUID 文件名共同证明归属，不能仅凭 cwd 删除。原生清理与 T3 数据清理共享一个
 批准动作和 writer 边界。删除所选 `.db`、SQLite 侧文件、`.meta`、`brain/<UUID>`；保留
 设置、凭据、skills、运行文件、工作树及未选会话。未知顶层文件、备份、schema、父引用或
-子轨迹关系阻挡。ACP 1.4.5 未声明 `session/delete`，这里没有伪造该 RPC。
+子轨迹关系阻挡。原生清理由管理器的离线 writer 执行。
 见 [绑定和验收方法](operation-cli.md#antigravity-acp-完整删除绑定)。
 
 独立 CLI 的 `records/delete --client antigravity` 现支持实际 DDL/格式校验后的
@@ -847,8 +848,8 @@ Windows 本地清理。`antigravity_cli_cleanup`、`antigravity_cli_restore` 冻
 `antigravity_cli_operations` 通过公共 coordinator 复用 OperationStore、根级 mutation
 gate 和 status/verify。计划不含正文，共享数据库的未选 typed cells 以逻辑摘要核验。
 `antigravity_cli_guards` 将已知 T3/Paseo 当前、历史和恢复引用作为独立保护来源；
-T3/Paseo 的完整清理可通过 `native_layout=cli` 组合此原生 writer；只支持明确验证的
-Windows CLI 1.5.3 构建与精确 native home。Paseo 0.15.3 的 `plugin:` JSON 包装和
+T3/Paseo 的完整清理可通过 `native_layout=cli` 组合此原生 writer，并核验实际
+Windows CLI 存储格式与精确 native home。Paseo 的 `plugin:` JSON 包装和
 `pluginProviderPersistence` 恢复对象按上游代码解码并核对一致性，旧自定义 ACP 句柄不参与推断。
 联合计划只允许已冻结前端转换中的引用消失；未选 profile、历史恢复源和共享消费者仍阻挡。
 原生父子闭包、前端启动锁、共享文件 before-image 和持久 root 占用共同覆盖中断恢复；

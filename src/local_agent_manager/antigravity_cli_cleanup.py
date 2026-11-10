@@ -18,7 +18,7 @@ import time
 import uuid
 
 from . import frozen_files as ff
-from .antigravity_acp_cleanup import CONTRACT as SESSION_CONTRACT
+from .antigravity_acp_cleanup import CONTRACT as SESSION_CONTRACT, schema_compatible
 from .environment_config import _unique_object
 from .office_database import logical_hash
 from .path_identity import is_local_absolute_locator
@@ -99,14 +99,21 @@ def cache_after(raw, ids):
 
 
 def _objects(db):
-    return [list(row) for row in db.execute(
-        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")]
+    rows = db.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").fetchmany(ff.MAX_ENTRIES + 1)
+    if len(rows) > ff.MAX_ENTRIES:
+        fail('database_schema_budget_exceeded')
+    return [list(row) for row in rows]
+
+
+def _schema_hash(objects):
+    return hashlib.sha256(json.dumps(objects, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
 def _check(db, contract):
     deadline = time.monotonic() + 20
     db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
-    if _objects(db) != contract['objects']:
+    if not schema_compatible(_objects(db), contract):
         fail('database_schema_unqualified')
     if [tuple(r) for r in db.execute('PRAGMA quick_check')] != [('ok',)]:
         fail('database_corrupt')
@@ -251,6 +258,7 @@ def freeze(root, ids, *, binary):
     log_link = _log_link(root)
     with private_database(root, SUMMARY) as (db, summary_files, _):
         _check(db, CONTRACT)
+        summary_schema_sha256 = _schema_hash(_objects(db))
         rows = _rows(db)
         selected = _closure(rows, requested)
         # Raw protobuf is not used to infer ownership. A known other session
@@ -348,6 +356,7 @@ def freeze(root, ids, *, binary):
                 'root_entries': names, 'requested_ids': requested, 'ids': selected,
                 'parents': parents, 'runtime': runtime, 'summary_files': summary_files,
                 'summary_before': summary_before, 'summary_after': summary_after,
+                'summary_schema_sha256': summary_schema_sha256,
                 'summary_raw_hashes': raw_hashes, 'rewrites': rewrites,
                 'log_link': log_link,
                 'cache': cache, 'directories': directories, 'changes': changes, 'preserved': preserved}
@@ -359,6 +368,9 @@ def validate(evidence):
     from . import antigravity_cli_restore as restore
     if evidence.get('schema_version') != SCHEMA:
         fail('evidence_schema_invalid')
+    schema_hash = evidence.get('summary_schema_sha256', _schema_hash(CONTRACT['objects']))
+    if not isinstance(schema_hash, str) or not re.fullmatch('[0-9a-f]{64}', schema_hash):
+        fail('summary_schema_evidence_invalid')
     root = root_path(evidence['root'])
     ids = sorted({native_id(s) for s in evidence['ids']})
     if ids != evidence['ids'] or not set(evidence['requested_ids']) <= set(ids):
@@ -401,6 +413,9 @@ def remaining(evidence):
             count += 1
     with private_database(root, SUMMARY) as (db, _, _):
         _check(db, CONTRACT)
+        expected_schema = evidence.get('summary_schema_sha256', _schema_hash(CONTRACT['objects']))
+        if _schema_hash(_objects(db)) != expected_schema:
+            fail('summary_schema_changed')
         actual = logical_hash(db)
         if actual not in (evidence['summary_before'], evidence['summary_after']):
             fail('summary_state_unknown')
