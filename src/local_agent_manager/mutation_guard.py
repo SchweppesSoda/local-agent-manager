@@ -287,7 +287,7 @@ def frozen_operation_roots(document: Mapping[str, Any]) -> tuple[Path, ...]:
     if t3code is not None:
         validate_t3code(t3code)
         for target in t3code["native_targets"]:
-            extra.add(Path(target["root"]))
+            extra.add(Path(target["binding"]["agent_dir"] if target["engine"] == "pi" else target["root"]))
         extra.update(Path(item["root"]) for item in t3code["binding_manifest"]["desktop_profiles"])
     from .paseo_cleanup import evidence_from_document as paseo_evidence, validate as validate_paseo
     paseo = paseo_evidence(document)

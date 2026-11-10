@@ -6,8 +6,8 @@ from pathlib import Path
 import time
 
 from . import frozen_files
-from .herdr_bound_adapter import native_catalog
-from .t3code_store import T3CodeAdapter, V2, RELATIVE, MAX_ROWS, fail, identifier, local_root, engine as inventory_engine, rows, database_path
+from .herdr_bound_adapter import native_catalog, _FrozenPathRecord
+from .t3code_store import T3CodeAdapter, V2, RELATIVE, MAX_ROWS, fail, identifier, native_handle, local_root, engine as inventory_engine, rows, database_path
 from .paseo_cleanup_files import decode
 from .client_contracts import ClientDescriptor, ClientReference, ReferenceKind, ReferenceLifecycle, ReferenceSnapshot
 from .record_identity import RecordKey, StoreKey, EngineCapability, canonical_path
@@ -16,7 +16,7 @@ from contextlib import closing
 
 SCHEMA = "larj.t3code-bindings.v1"
 DATABASE_ONLY_SCHEMA = "larj.t3code-antigravity-database.v1"
-_NATIVE_ENGINES = frozenset(("codex", "claude", "antigravity"))
+_NATIVE_ENGINES = frozenset(("codex", "claude", "pi", "antigravity"))
 
 
 def engine(provider):
@@ -64,7 +64,7 @@ def validate_manifest(value):
         fail("binding_native_stores_required")
     seen = set()
     for item in value["native_stores"]:
-        if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "codex_binary", "provider_instance_id", "acp_runtime_binaries"}
+        if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "agent_dir", "codex_binary", "provider_instance_id", "acp_runtime_binaries"}
                 or not {"thread_id", "engine", "root"} <= item.keys() or item["engine"] not in _NATIVE_ENGINES):
             fail("binding_store_invalid")
         identifier(item["thread_id"])
@@ -72,6 +72,12 @@ def validate_manifest(value):
             fail("binding_store_ambiguous")
         seen.add(item["thread_id"])
         local_root(item["root"])
+        if item["engine"] == "pi":
+            if "agent_dir" not in item:
+                fail("binding_pi_agent_dir_required")
+            local_root(item["agent_dir"])
+        elif "agent_dir" in item:
+            fail("binding_provider_fields_invalid")
         if "codex_binary" in item:
             local_root(item["codex_binary"])
         if item['engine'] == 'antigravity':
@@ -192,7 +198,8 @@ class T3CodeBoundAdapter(T3CodeAdapter):
             observations.append({"id": thread_id, "parent_thread_id": row["parent_thread_id"],
                 "source": str(self.profile_root / RELATIVE)})
             backend, root = binding["engine"], canonical_path(binding["root"])
-            stores[(backend, root)] = StoreKey(backend, Path(root), kind="config_dir" if backend == "claude" else "directory")
+            stores[(backend, root)] = StoreKey(backend, Path(root),
+                kind="session_root" if backend == "pi" else "config_dir" if backend == "claude" else "directory")
         seen = set()
         history = history_references(self.profile_root, self.bindings)
         strong = {(r["thread_id"], r["native_id"]) for r in history if r["strength"] == "strong"}
@@ -216,7 +223,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                 if row["strength"] != "none":
                     fail("native_reference_strength_unqualified")
                 continue
-            identifier(row["native_id"])
+            native_handle(row["driver"], row["native_id"])
             binding = self.bindings.get(row["thread_id"])
             if binding is None or binding["engine"] != engine(row["driver"]) or row["thread_id"] not in data["threads"]:
                 fail("historical_provider_binding_unqualified")
@@ -224,10 +231,13 @@ class T3CodeBoundAdapter(T3CodeAdapter):
             if key_ in seen:
                 continue
             seen.add(key_)
-            native = RecordKey(stores[(binding["engine"], canonical_path(binding["root"]))], row["native_id"],
-                               kind="session" if binding["engine"] == "claude" else "record")
+            store = stores[(binding["engine"], canonical_path(binding["root"]))]
+            if binding["engine"] == "pi":
+                native = self._pi_record(binding, row, store)
+            else:
+                native = RecordKey(store, row["native_id"], kind="session" if binding["engine"] == "claude" else "record")
             fingerprint = hashlib.sha256(json.dumps([canonical_path(self.profile_root), key_, native.to_dict()], sort_keys=True).encode()).hexdigest()
-            references.append(ClientReference("t3code", self.profile_root / RELATIVE, row["thread_id"], row["native_id"],
+            references.append(ClientReference("t3code", self.profile_root / RELATIVE, row["thread_id"], native.record_id,
                 row["driver"], binding["engine"], fingerprint, native_record=native, kind=ReferenceKind.RESTORE,
                 lifecycle=ReferenceLifecycle.RESTORABLE, source_locator="provider-native", evidence_complete=True,
                 opaque_native_locator=row["native_id"]))
@@ -238,3 +248,29 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                 reason="T3 Code mutation requires an approved local closure and held server ownership") for e in names))
         self.observations = tuple(observations)
         return ReferenceSnapshot(descriptor, tuple(references))
+
+    def _pi_record(self, binding, row, store):
+        path = local_root(row["native_id"])
+        try:
+            path.relative_to(local_root(binding["root"]))
+        except ValueError:
+            fail("pi_path_outside_bound_root")
+        frozen = [ref["native_record"] for ref in self.frozen_references
+                  if ref["frontend_id"] == row["thread_id"] and ref["engine"] == "pi"
+                  and str(Path(ref["native_record"]["path"])) == str(path)]
+        if frozen:
+            approved = frozen[0]
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if canonical_path(path) != approved["canonical_path"]:
+                    fail("pi_path_binding_changed")
+            return _FrozenPathRecord(store, approved["record_id"], kind="session", path=path,
+                                     approved_path_key=approved["canonical_path"])
+        catalog = native_catalog(binding)
+        records = [record for record in catalog.records if canonical_path(record.path) == canonical_path(path)]
+        if catalog.errors or len(records) != 1 or records[0].cwd is None:
+            fail("pi_header_unverified")
+        return RecordKey(store, records[0].session_id, kind="session", path=path)

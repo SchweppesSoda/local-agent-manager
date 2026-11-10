@@ -310,8 +310,8 @@ snapshots and unreadable sources report incomplete inventory rather than an empt
 `inventory_scope=persisted_agent_registry` does not cover provider transcripts,
 schedules, workspaces, client caches or all writers. Saved status is not a live
 probe: `--inspect-clients` keeps `clients_closed=null`. No daemon is started or
-contacted. Without an explicit binding, mutation and verification capabilities are disabled; plan/run/apply
-and cold status/verify for full local cleanup remain blocked without dispatching a native writer. See
+contacted. Full cleanup plan/run automatically prepares bindings for built-in Codex, Claude and Pi.
+Unproven bindings block planning. Frozen bindings drive apply and cold status/verify. See
 [Paseo boundaries](adapters.md#paseoagent-注册记录只读盘点).
 
 For `antigravity`, inventory retains `unsupported:antigravity` and reports a
@@ -324,18 +324,23 @@ make a serialized provider handle a native record ID. See
 ### 只删 Paseo 会话
 
 Windows 上的 `--paseo-only` 通过正在运行的本机 Paseo 0.15.3 daemon 删除一条
-会话。需要标准用户安装位置的 Paseo 桌面分发包、一个显式的 `--paseo-root` 和
+会话。需要标准用户安装位置的 Paseo 桌面分发包、对应的 `--paseo-root` 和
 一个完整 Paseo 会话 UUID。Paseo 使用自己的删除接口关闭该会话并移除登记和时间线。
 Codex、Antigravity 等 provider 的原生会话保留。该模式覆盖 daemon 的登记与时间线，
 桌面离线副本、调度和其他产品的记录在范围之外。
 
 ```powershell
+local-agent-manager delete run --client paseo --paseo-only --record-id '<完整 Paseo UUID 1>' --record-id '<完整 Paseo UUID 2>' --yes --progress --json
 local-agent-record-janitor delete plan --client paseo --paseo-only --paseo-root 'D:\PaseoHome' --record-id '<完整 Paseo 会话 UUID>' --out plan.json --json
 local-agent-record-janitor delete apply --paseo-only --operation-id '<operation_id>' --plan plan.json --plan-sha256 '<plan_sha256>' --json
 local-agent-record-janitor operation verify --operation-id '<operation_id>' --plan plan.json --json
 ```
 
 apply 使用冻结的 profile 和计划哈希，执行与核验期间保持目标 daemon 运行。
+`run --yes` 可选择多个完整 UUID，省略根目录时使用 `PASEO_HOME` 或 `~/.paseo`。
+全部目标先生成独立计划，然后自动按哈希执行并核验，每条记录保留独立恢复入口。
+Codex、Claude、Pi、Antigravity 共用这一流程。结果未知时执行只读 status/verify，
+后续目标等待核验收口。
 终验复查 daemon 与磁盘登记中的精确 ID。超时、身份不一致或回执后仍有记录时，
 执行 `operation status` 和 `operation verify`。结果为 `unknown` 的计划进入只读恢复。
 协议和版本边界见 [Paseo daemon 删除](adapters.md#paseo-daemon-删除)。
@@ -343,7 +348,19 @@ apply 使用冻结的 profile 和计划哈希，执行与核验期间保持目�
 ### Paseo 完整本地操作
 
 Windows 上显式绑定后，可沿用标准 `delete plan/apply` 与 `operation status/verify`。
-绑定必须来自实际启动配置，不能由项目 cwd 推断。示例：
+`delete plan/run --client paseo` 会自动准备绑定，也可单独准备并检查。
+
+```powershell
+local-agent-manager environment paseo-cleanup prepare --json
+local-agent-manager delete plan --client paseo --record-id '<完整 Paseo agent ID>' --out plan.json --json
+local-agent-manager delete run --client paseo --record-id '<完整 Paseo agent ID>' --clients-closed --progress --json
+```
+
+自动发现核对 provider 环境、逐 agent 的 `launchEnv` 及所有已保存原生句柄。
+逐 agent 环境覆盖 provider 环境，默认目录需由实际原生 ID 或 Pi 文件头证明。
+自定义 provider 实现、额外启动参数、未知原生目录和独立 Antigravity CLI 仍需适配。
+桌面 IndexedDB 存在时使用 `LARJ_PASEO_ELECTRON_RUNTIME` 指向下述已验证依赖。
+绑定文件仍可显式传入，来自实际启动配置和原生证据。示例为
 
 ```json
 {
@@ -466,7 +483,8 @@ Windows 的显式绑定文件使用以下格式；`environment_id` 必须来自�
   "runtime_binaries": ["D:/Apps/T3/T3 Code (Nightly).exe"],
   "native_stores": [
     {"thread_id": "t3-thread-id-1", "engine": "codex", "root": "D:/CodexHome", "codex_binary": "D:/Apps/Codex/codex.exe"},
-    {"thread_id": "t3-thread-id-2", "engine": "claude", "root": "D:/ClaudeConfig"}
+    {"thread_id": "t3-thread-id-2", "engine": "claude", "root": "D:/ClaudeConfig"},
+    {"thread_id": "t3-thread-id-3", "engine": "pi", "root": "D:/PiAgent/sessions", "agent_dir": "D:/PiAgent"}
   ],
   "desktop_profiles": [
     {"root": "D:/T3DesktopProfile", "runtime_binaries": ["D:/Apps/T3/T3 Code (Nightly).exe"]}
@@ -490,7 +508,12 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 `operation status`、`operation verify` 对同一计划做冷验证。命令参数沿用本文
 [Commands](#commands)，不另设直接删表命令。
 
-完整清理支持固定 schema 的本机 v2 Codex/Claude 和下述受限 Antigravity ACP 记录；附件、弱引用、peer、旧恢复
+Pi 的 T3 原生句柄是绝对 JSONL 路径。绑定同时核对 session 根、文件头 UUID 与精确文件身份，
+同 UUID 的其他文件独立处理。自动发现读取 `PI_CODING_AGENT_DIR` 和
+`PI_CODING_AGENT_SESSION_DIR`，配置有额外 Pi 启动参数时要求显式绑定。
+中断后使用冻结文件身份恢复，管理日志写入 agent 根目录。
+
+完整清理支持固定 schema 的本机 v2 Codex/Claude/Pi 和下述受限 Antigravity ACP 记录；附件、弱引用、peer、旧恢复
 记录和未证明的共享关系会明确阻挡。工作区、诊断日志、凭据及外部备份保留。
 具体边界见 [T3 Code 适配说明](adapters.md#t3-code本机数据库与完整清理)。
 

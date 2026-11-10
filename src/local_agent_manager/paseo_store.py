@@ -217,8 +217,9 @@ def _entries(path: Path, budget: list[int]):
 
 
 class PaseoAdapter:
-    def __init__(self, *, profile_root):
+    def __init__(self, *, profile_root, binding_errors=()):
         self.profile_root = local_root(profile_root)
+        self.binding_errors = tuple(binding_errors)
         self.observations = ()
         self._snapshot = None
 
@@ -229,7 +230,7 @@ class PaseoAdapter:
         if self._snapshot is not None and not refresh:
             return self._snapshot
         base = self.profile_root / "agents"
-        sources, errors, rows, references = [base], [], [], []
+        sources, errors, rows, references = [base], list(self.binding_errors), [], []
         budget = [0, 0]
         directories = {}
 

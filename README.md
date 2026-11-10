@@ -197,17 +197,23 @@ local-agent-record-janitor records --client paseo --paseo-root 'D:\profiles\pase
 
 适配覆盖 Paseo `0.11.0-beta.3` 与 `0.15.3` 的已知注册格式；当前清单范围为 `persisted_agent_registry`。
 Windows 上，[`--paseo-only` 操作](docs/operation-cli.md#只删-paseo-会话)通过正在运行的
-本机 Paseo 0.15.3 daemon 删除一条完整 UUID 对应的会话，复查登记结果并保留 provider 原生历史。
+本机 Paseo 0.15.3 daemon 按完整 UUID 删除会话，支持 Codex、Claude、Pi、Antigravity。
+批量入口自动完成逐条计划、哈希传递和结果核验。
 
-需要同时删除原生历史时，Windows 的显式绑定操作支持 Codex、Pi 和 Claude。
+需要同时删除原生历史时，Windows 支持 Codex、Pi 和 Claude 的自动绑定及显式绑定。
 
 ```powershell
+local-agent-manager delete run --client paseo --paseo-only --record-id '<Paseo ID 1>' --record-id '<Paseo ID 2>' --yes --progress --json
+local-agent-manager environment paseo-cleanup prepare --json
+local-agent-manager delete plan --client paseo --record-id '<Paseo agent ID>' --out plan.json --json
 local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
 ```
 
 计划先列出 Codex/Pi/Claude 原生动作，再清理注册副本、已完成的创建/发送回执、调度中的会话内容及绑定桌面的
 IndexedDB、文本草稿和布局引用，沿用审批、apply 与冷验证。绑定格式及缓存依赖见
-[Paseo 操作说明](docs/operation-cli.md#paseo-完整本地操作)。未绑定、远程客户端、
+[Paseo 操作说明](docs/operation-cli.md#paseo-完整本地操作)。自动发现验证原生 ID、Pi 文件头与路径，
+逐会话 `launchEnv` 优先于 provider 环境。桌面 IndexedDB 使用已验证的
+`LARJ_PASEO_ELECTRON_RUNTIME`。无法证明的绑定、远程客户端、
 Blob/外部附件和未知旧格式仍阻挡完整删除。标题、配置、凭据与聊天正文不进入报告。详见
 [Paseo 适配边界](docs/adapters.md#paseoagent-注册记录只读盘点)。
 
@@ -225,7 +231,7 @@ local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-ro
 local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
 ```
 
-`--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除；支持混合 Antigravity，
+`--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除，支持 Codex、Claude、Pi、Antigravity，
 先解除工作树关联，保留 provider 原生会话及工作树，并核验软删除和后台清理结果。
 单条 plan/apply 可审阅原计划；批量 `run --yes` 自动传递哈希并验证，每条保留独立恢复入口。
 该在线模式按实际 locator、所需字段和执行结果检查兼容，普通升级无需新增版本白名单。
@@ -236,12 +242,29 @@ T3 Nightly `20261108.4353` 起可以用现有 CLI 1.5.0+ 的 `agy acp` 替代受
 切换与卸载方法见 [Antigravity 技能说明](skills/agent-management/references/antigravity.md#switch-t3-to-the-cli-and-remove-the-managed-runtime)。
 
 Windows 完整清理可自动从 provider 配置和原生 ID 准备绑定，已有显式绑定也可使用。
-计划、apply 和冷验证清理实际 Codex/Claude 存储，或已验证
+计划、apply 和冷验证清理实际 Codex/Claude/Pi 存储，或已验证
 T3 ACP 1.4.5 实例的 Antigravity 原生数据库、元数据与会话产物，再清理
 T3 的事件、投影、搜索索引、终端历史和绑定桌面的草稿/布局。执行持有 T3 自身的
 server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境会阻挡。标题、正文与凭据
 不进入报告。绑定格式及支持范围见 [T3 Code 操作说明](docs/operation-cli.md#t3-code-完整本地操作)
 和 [适配边界](docs/adapters.md#t3-code本机数据库与完整清理)。
+
+### 引擎与客户端覆盖
+
+T3、Paseo 的写入使用下表所列的已验证 Windows 路径。
+
+| 客户端 | Codex | Claude | Pi | Antigravity |
+|---|---|---|---|---|
+| T3 Code | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除，完整清理限已验证托管 ACP |
+| Cindy | 完整本地清理 | 完整本地清理 | 完整本地清理 | 原生清理待适配 |
+| 原生客户端／CLI | Codex 本地历史清理 | Claude 本地历史清理 | Pi JSONL 清理 | 独立 CLI 原生清理待适配 |
+| Paseo | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除，原生清理待适配 |
+| WorkBuddy | — | — | — | — |
+
+完整本地清理需验证实际存储、引用和写入进程。原生 Codex 范围包括可定位的 ChatGPT／Codex
+桌面本地历史，ChatGPT 云端聊天需要服务自身的管理入口。WorkBuddy 的会话清理使用独立适配器，
+具体范围见下方能力表。独立 Antigravity CLI 与各客户端的原生联动尚有缺口，
+在线会话删除的回执单独报告前端范围。
 
 ### 术语与身份边界
 
@@ -297,8 +320,8 @@ OpenAI 稳定 API。
 | Orca | 本机 journal、profile 界面及恢复副本、已证明的 managed Codex home | 限定 Windows/Codex 组合支持完整操作及冷验证；未知恢复、其他引擎、runtime home 与远端写入关闭 |
 | Herdr | 持久化 current/restore 引用及显式本机 live metadata | Windows 显式绑定支持原生记录、窗格、历史和恢复副本清理；默认无绑定盘点仍只读 |
 | 千问办公 CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
-| Paseo | agent 登记、提供者记录、调度和显式绑定桌面缓存 | Windows `--paseo-only` 经本机 daemon 删除登记；显式绑定支持 Codex/Pi/Claude 原生、服务端及桌面完整清理 |
-| T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 固定 schema；Windows 显式绑定支持 Codex/Claude → T3 清理与冷验证，未绑定只读 |
+| Paseo | agent 登记、提供者记录、调度和绑定桌面缓存 | Windows 在线批量删除支持四种引擎；Codex/Pi/Claude 支持自动绑定后的原生、服务端及桌面清理 |
+| T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 在线批量删除支持四种引擎；完整清理支持 Codex/Claude/Pi 及限定托管 Antigravity ACP |
 | Codex：index-only | thread 列表记录存在，但 rollout 内容文件不存在 | 删除整个 thread，通常为 `low` |
 | Codex：rollout-only | rollout 内容文件存在，但 thread 列表记录不存在 | 删除整个 thread，属于 `high`，必须明确选择 |
 | Codex：重复内容文件 | 同一 thread ID 有多份可验证 rollout 内容文件 | 保留，或把全部已确认副本作为整条 thread 的 `high` 风险删除范围；不提供隔离动作 |

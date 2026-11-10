@@ -147,6 +147,40 @@ class T3DiscoveryTests(unittest.TestCase):
         self.assertEqual(raised.exception.blockers, [{"blocker_code": "antigravity_cli_acp_cleanup_unsupported",
                                                       "thread_id": "antigravity-thread"}])
 
+    def test_pi_environment_session_root_uses_exact_path_and_header_identity(self):
+        agent_dir = self.base / "pi"
+        agent_dir.mkdir()
+        root = self.base / "custom-sessions"
+        root.mkdir()
+        path = root / "session.jsonl"
+        path.write_text(json.dumps({"type": "session", "version": 3, "id": NATIVE,
+            "timestamp": "2026-11-10T00:00:00Z", "cwd": str(self.base)}) + "\n")
+        self.settings["providerInstances"]["pi"] = {"driver": "pi", "config": {}, "environment": {
+            "PI_CODING_AGENT_DIR": str(agent_dir), "PI_CODING_AGENT_SESSION_DIR": str(root)}}
+        self.write_settings()
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            add_thread(db, "pi-thread", driver="pi", native=str(path))
+        manifest = discover_bindings(self.root)
+        refs = T3CodeBoundAdapter(manifest).snapshot_references().references
+        ref = next(ref for ref in refs if ref.frontend_id == "pi-thread")
+        self.assertEqual(ref.native_id, NATIVE)
+        self.assertEqual(ref.opaque_native_locator, str(path))
+        self.assertEqual(ref.native_record.store.canonical_path, str(root))
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            db.execute(f"UPDATE {V2}provider_threads SET payload_json=? WHERE thread_id='pi-thread'",
+                (json.dumps({"nativeThreadRef": {"driver": "pi", "nativeId": None, "strength": "none"}}),))
+            db.commit()
+        empty_refs = T3CodeBoundAdapter(discover_bindings(self.root)).snapshot_references().references
+        self.assertFalse(any(ref.frontend_id == "pi-thread" for ref in empty_refs))
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            db.execute(f"UPDATE {V2}provider_threads SET payload_json=? WHERE thread_id='pi-thread'",
+                (json.dumps({"nativeThreadRef": {"driver": "pi", "nativeId": str(path), "strength": "strong"}}),))
+            db.commit()
+        self.settings["providerInstances"]["pi"]["environment"]["PI_CODING_AGENT_SESSION_DIR"] = str(agent_dir)
+        self.write_settings()
+        with self.assertRaises(BindingDiscoveryError):
+            discover_bindings(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()

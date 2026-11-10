@@ -204,6 +204,13 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
                     'worktreeAfterDays':None,'worktreeSettledAfterDays':None,'worktreeOnDelete':True,'worktreeOnMerge':False,'worktreeUnchanged':False}}}
             (root/'userdata/settings.json').write_text(json.dumps(settings))
             native=root/'codex'/'sessions'/(NATIVE+'.jsonl');native.parent.mkdir(parents=True);native.write_bytes(b'native sentinel')
+            pi_native = root / 'pi/sessions/session.jsonl'
+            native_files = (native, root / 'claude/projects/fixture' / (NATIVE + '.jsonl'),
+                            pi_native, root / 'antigravity/conversations' / (NATIVE + '.pb'))
+            for path in native_files[1:]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'provider native sentinel')
+            native_before = {path: path.read_bytes() for path in native_files}
             env=isolated_env(root);env.update(ELECTRON_RUN_AS_NODE='1',T3CODE_HOME=str(root))
             with socket.socket() as listener:
                 listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
@@ -218,20 +225,26 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
                     db.execute("INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES('fixture','fixture',?,'[]',?,?)",
                         (str(repo),'2026-11-08T00:00:00Z','2026-11-08T00:00:00Z'));db.commit()
                 unselected = '44444444-4444-4444-8444-444444444444'
-                for tid,driver in ((TARGET,'codex'),(KEEP,'antigravity'),(unselected,'codex')):
+                claude_thread = '55555555-5555-4555-8555-555555555555'
+                pi_thread = '66666666-6666-4666-8666-666666666666'
+                providers = ((TARGET, 'codex'), (KEEP, 'antigravity'),
+                             (claude_thread, 'claudeAgent'), (pi_thread, 'pi'), (unselected, 'codex'))
+                for tid,driver in providers:
                     t3._rpc(evidence,[{'type':'thread.create','commandId':'fixture-'+tid,'threadId':tid,'projectId':'fixture',
                         'title':'fixture','createdBy':'user','creationSource':'web','modelSelection':{'instanceId':driver,'model':'fixture'},
                         'runtimeMode':'full-access','interactionMode':'default','branch':'fixture' if tid==TARGET else None,
                         'worktreePath':str(worktree) if tid==TARGET else None,
-                        'importedNativeThread':{'ref':{'driver':driver,'nativeId':NATIVE,'strength':'strong'}}}],30)
+                        'importedNativeThread':{'ref':{'driver':driver,
+                            'nativeId': str(pi_native) if driver == 'pi' else NATIVE,
+                            'strength':'strong'}}}],30)
                 keeper=t3._snapshot(root,unselected)
                 coordinator=OperationCoordinator(CleanupService())
                 from local_agent_manager.t3code_workflow import run_server_batch
-                result=run_server_batch(coordinator, record_ids=(TARGET,KEEP), roots=(root,),
+                result=run_server_batch(coordinator, record_ids=(TARGET,KEEP,claude_thread,pi_thread), roots=(root,),
                     authorized=True, out=root/'batch.json')
                 self.assertEqual(result['goal_status'],'complete',result)
-                self.assertEqual(len(result['plans']),2)
-                self.assertEqual(native.read_bytes(),b'native sentinel')
+                self.assertEqual(len(result['plans']),4)
+                self.assertEqual({path: path.read_bytes() for path in native_files}, native_before)
                 self.assertEqual((worktree/'keep.txt').read_text(),'committed worktree sentinel')
                 self.assertEqual(t3._snapshot(root,unselected),keeper)
                 git('worktree','list','--porcelain')

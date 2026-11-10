@@ -15,7 +15,7 @@ import time
 from . import frozen_files
 from .office_database import logical_hash
 from .sqlite_utils import connect_readonly
-from .t3code_store import CONTRACT, RELATIVE, V2, T3CodeError, database_path, fail, identifier, qualify, rows
+from .t3code_store import CONTRACT, RELATIVE, V2, T3CodeError, database_path, fail, identifier, native_handle, qualify, rows
 
 SCHEMA = "larj.t3code-database.v1"
 THREAD_TABLES = (
@@ -99,7 +99,7 @@ def closure(db, ids):
                 FROM "{table}" AS t,json_tree(t.payload_json) AS j
                 WHERE ({predicate}) AND j.key='nativeThreadRef' AND j.type='object' ''', args):
                 if row["native_id"] is not None:
-                    native_refs.add((identifier(row["driver"]), identifier(row["native_id"])))
+                    native_refs.add((identifier(row["driver"]), native_handle(row["driver"], row["native_id"])))
     active = db.execute(f"SELECT 1 FROM orchestration_v2_effect_outbox WHERE {where} AND status IN ('pending','running') LIMIT 1", ids).fetchone()
     if active:
         fail("pending_effects")

@@ -71,7 +71,19 @@ def identifier(value, *, nullable=False):
 
 
 def engine(provider):
-    return {"codex": "codex", "claudeAgent": "claude"}.get(provider, normalize_engine("unsupported:" + str(provider)))
+    return {"codex": "codex", "claudeAgent": "claude", "pi": "pi"}.get(provider, normalize_engine("unsupported:" + str(provider)))
+
+
+def native_handle(driver, value, *, nullable=False):
+    if value is None and nullable:
+        return None
+    if driver == "pi":
+        # T3 resumes Pi by the exact session JSONL path, not its header UUID.
+        if not isinstance(value, str) or len(value) > 32767:
+            fail("native_path_invalid")
+        local_root(value)
+        return value
+    return identifier(value)
 
 
 def database_path(root):
@@ -146,7 +158,7 @@ def read_database(root):
     for row in providers:
         identifier(row["provider_thread_id"])
         identifier(row["thread_id"], nullable=True)
-        identifier(row["native_id"], nullable=True)
+        native_handle(row["native_driver"], row["native_id"], nullable=True)
         if row["native_id"] is not None and row["native_driver"] != (row["driver"] or row["provider"]):
             fail("provider_reference_conflict")
     # Orphaned projections remain visible as a coverage failure, never empty success.
@@ -194,7 +206,7 @@ class T3CodeAdapter:
                 if row["native_id"] is None or row["thread_id"] is None:
                     continue
                 binding = hashlib.sha256(json.dumps([canonical_path(path), row], sort_keys=True).encode()).hexdigest()
-                references.append(ClientReference("t3code", path, row["thread_id"], row["native_id"],
+                references.append(ClientReference("t3code", path, row["thread_id"], None if backend == "pi" else row["native_id"],
                     row["driver"] or row["provider"], backend, binding, kind=ReferenceKind.RESTORE,
                     lifecycle=ReferenceLifecycle.RESTORABLE, source_locator=V2 + "provider_threads/" + row["provider_thread_id"],
                     evidence_complete=False, opaque_native_locator=row["native_id"]))

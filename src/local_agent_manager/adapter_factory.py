@@ -157,7 +157,26 @@ def create_default_adapters(args: Any) -> list[object]:
         # Validate the original spelling before canonicalization can conceal
         # a link. Physical alias deduplication happens after reader checks.
         unique = {os.path.normcase(os.path.normpath(os.fspath(root))): root for root in roots}
-        adapters.extend(PaseoAdapter(profile_root=local_root(root)) for root in unique.values())
+        automatic_cleanup = (getattr(args, "command", None) == "delete"
+                             and getattr(args, "client", None) == "paseo"
+                             and getattr(args, "delete_action", None) in {"plan", "run"}
+                             and not getattr(args, "paseo_only", False))
+        if automatic_cleanup:
+            from .paseo_discovery import BindingDiscoveryError, discover_bindings
+            from .paseo_bound_adapter import PaseoBoundAdapter
+            from .client_contracts import SourceFailure
+            for root in unique.values():
+                try:
+                    adapters.append(PaseoBoundAdapter(discover_bindings(root)))
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                    codes = ["paseo_binding_discovery_unverified"]
+                    if isinstance(exc, BindingDiscoveryError):
+                        codes = sorted({item["blocker_code"] for item in exc.blockers})
+                    error = SourceFailure(str(Path(root) / "config.json"), ", ".join(codes),
+                                          profile_root=Path(root), error_type="PaseoBindingDiscovery")
+                    adapters.append(PaseoAdapter(profile_root=root, binding_errors=(error,)))
+        else:
+            adapters.extend(PaseoAdapter(profile_root=local_root(root)) for root in unique.values())
     from .office_store import PROFILES, default_profile_roots
     for client in PROFILES:
         requested = tuple(getattr(args, client + "_root", ()) or ())

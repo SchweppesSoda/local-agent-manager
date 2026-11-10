@@ -28,6 +28,13 @@ def add_connection_commands(commands) -> None:
     prepare.add_argument("--out", type=_absolute, help="可选的绑定文件路径")
     prepare.add_argument("--json", action="store_true")
 
+    cleanup = commands.add_parser("paseo-cleanup", help="自动准备 Paseo 原生记录和桌面绑定")
+    actions = cleanup.add_subparsers(dest="paseo_cleanup_action", required=True)
+    prepare = actions.add_parser("prepare", help="从配置和原生句柄自动发现完整清理所需的绑定")
+    prepare.add_argument("--paseo-root", type=_absolute)
+    prepare.add_argument("--out", type=_absolute)
+    prepare.add_argument("--json", action="store_true")
+
     connect = commands.add_parser("claude-connect", help="准备或应用 Claude 客户端配置")
     actions = connect.add_subparsers(dest="connection_action", required=True)
     prepare = actions.add_parser("prepare", help="只读生成精确配置计划")
@@ -115,17 +122,21 @@ def _plan_parent(path: Path) -> None:
 
 def run_connection_command(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
     from .t3code_discovery import BindingDiscoveryError, discover_bindings
+    from .paseo_discovery import BindingDiscoveryError as PaseoBindingError, discover_bindings as discover_paseo
     from .claude_connection import ClaudeConnectionError, apply_connection, prepare_connection
     from .cindy_memory import CindyMemoryError, export_memory, inspect_memory
     from .claude_session_import import (SessionImportError, prepare_paseo_import,
         prepare_t3code_import, run_session_import, verify_session_import)
 
     try:
-        if args.environment_command == "t3-cleanup":
-            manifest = discover_bindings(args.t3code_root)
+        if args.environment_command in {"t3-cleanup", "paseo-cleanup"}:
+            if args.environment_command == "t3-cleanup":
+                manifest = discover_bindings(args.t3code_root)
+            else:
+                manifest = discover_paseo(args.paseo_root)
             if args.out:
                 _save_plan(args.out, manifest)
-            report = {"schema_version": "lam.t3-cleanup-prepare.v1", "status": "ready",
+            report = {"schema_version": f"lam.{args.environment_command}-prepare.v1", "status": "ready",
                       "binding_manifest": manifest}
         elif args.environment_command == "claude-connect":
             if args.connection_action == "prepare":
@@ -163,8 +174,8 @@ def run_connection_command(args: argparse.Namespace, *, stdout: TextIO, stderr: 
                 report = inspect_memory(**options)
             else:
                 report = export_memory(**options, shards=args.shard, out=args.out)
-    except BindingDiscoveryError as exc:
-        report = {"schema_version": "lam.t3-cleanup-prepare.v1", "status": "blocked", "blockers": exc.blockers}
+    except (BindingDiscoveryError, PaseoBindingError) as exc:
+        report = {"schema_version": f"lam.{args.environment_command}-prepare.v1", "status": "blocked", "blockers": exc.blockers}
     except (ClaudeConnectionError, CindyMemoryError, SessionImportError) as exc:
         uncertain = exc.code in {"config_write_unverified", "output_unverified", "config_lock_cleanup_unverified",
                                  "t3code_import_preflight_and_session_revoke_unverified"}

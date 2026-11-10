@@ -49,6 +49,9 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
         transport = patch.object(paseo, "_rpc", side_effect=self.rpc)
         transport.start()
         self.addCleanup(transport.stop)
+        state = patch.dict(os.environ, {"LOCALAPPDATA": str(base / "state"), "XDG_STATE_HOME": str(base / "state")})
+        state.start()
+        self.addCleanup(state.stop)
 
     def rpc(self, evidence, verb, timeout):
         self.assertEqual(evidence["root"], str(self.profile))
@@ -105,6 +108,52 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertFalse(self.keeper.exists())
         self.assertTrue(self.target.exists())
+        self.assertEqual(self.calls.count((KEEP, "delete")), 1)
+
+    def test_batch_runs_all_four_providers_and_keeps_native_history(self):
+        selected = [AGENT, KEEP, "55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666"]
+        for identifier, provider in zip(selected[2:], ("claude", "pi")):
+            value = agent(identifier, NATIVE, self.profile.parent)
+            value.update(provider=provider, persistence={"provider": provider, "sessionId": NATIVE},
+                         runtimeInfo={"provider": provider, "sessionId": None})
+            write(self.profile / "agents" / (identifier + ".json"), value)
+            self.live.add(identifier)
+        selectors = [part for identifier in selected for part in ("--record-id", identifier)]
+        code, result = self.invoke("delete", "run", "--client", "paseo", "--paseo-only",
+            "--paseo-root", str(self.profile), *selectors, "--yes", "--out", str(self.profile.parent / "batch.json"))
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["goal_satisfied"])
+        self.assertEqual(len(result["plans"]), 4)
+        self.assertEqual(self.native.read_bytes(), b"retained codex history")
+        for identifier in selected:
+            self.assertEqual(self.calls.count((identifier, "delete")), 1)
+
+    def test_batch_failure_preflights_all_targets_and_never_repeats_unknown(self):
+        arguments = ("delete", "run", "--client", "paseo", "--paseo-only", "--paseo-root", str(self.profile),
+                     "--record-id", AGENT, "--record-id", KEEP, "--yes")
+        self.assertNotEqual(self.invoke(*arguments[:-1])[0], 0)
+        self.assertEqual(self.calls, [])
+        _, result = self.invoke(*arguments, "--record-id", "not-a-uuid")
+        self.assertFalse(result["mutation_started"])
+        self.assertFalse(any(verb == "delete" for _, verb in self.calls))
+        self.remove_registry = False
+        _, result = self.invoke(*arguments)
+        self.assertEqual(result["goal_status"], "unknown", result)
+        self.assertEqual(self.calls.count((AGENT, "delete")), 1)
+        self.assertNotIn((KEEP, "delete"), self.calls)
+
+    def test_batch_lost_apply_response_recovers_without_a_second_delete(self):
+        from local_agent_manager.operation_coordinator import OperationCoordinator
+        original = OperationCoordinator.apply_operation
+        def response_lost(coordinator, **kwargs):
+            original(coordinator, **kwargs)
+            raise RuntimeError("fixture response lost after completed mutation")
+        with patch.object(OperationCoordinator, "apply_operation", response_lost):
+            code, result = self.invoke("delete", "run", "--client", "paseo", "--paseo-only",
+                "--paseo-root", str(self.profile), "--record-id", AGENT, "--record-id", KEEP, "--yes")
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["goal_satisfied"])
+        self.assertEqual(self.calls.count((AGENT, "delete")), 1)
         self.assertEqual(self.calls.count((KEEP, "delete")), 1)
 
     def test_exact_id_approval_profile_and_snapshot_are_required(self):
@@ -167,7 +216,7 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LARJ_PASEO_BUNDLE_ACCEPTANCE") == "1",
                      "Opt in to a local temporary daemon with installed Paseo 0.15.3")
 class PaseoBundleAcceptanceTests(unittest.TestCase):
-    def test_real_daemon_deletes_only_selected_paseo_id(self):
+    def test_real_daemon_deletes_four_providers_and_preserves_native(self):
         install = paseo._bundled_install()
         cli = [str(install / "Paseo.exe"), "--disable-warning=DEP0040", str(install / paseo._RUNNER),
                "node-script", str(install / paseo._ARCHIVE / "node_modules/@getpaseo/cli/dist/index.js")]
@@ -184,12 +233,26 @@ class PaseoBundleAcceptanceTests(unittest.TestCase):
             sibling = profile / "agents" / f"{KEEP}.json"
             write(target, agent(AGENT, NATIVE, base))
             write(sibling, {**agent(KEEP, OTHER, base), "title": AGENT})
+            selected = [AGENT]
+            for identifier, provider in (("55555555-5555-4555-8555-555555555555", "claude"),
+                                         ("66666666-6666-4666-8666-666666666666", "pi"),
+                                         ("77777777-7777-4777-8777-777777777777", "antigravity")):
+                value = agent(identifier, NATIVE, base)
+                value.update(provider=provider, persistence={"provider": provider, "sessionId": NATIVE},
+                             runtimeInfo={"provider": provider, "sessionId": None})
+                write(profile / "agents" / (identifier + ".json"), value)
+                selected.append(identifier)
+                sentinel = user / provider / "native-sentinel"
+                sentinel.parent.mkdir(parents=True)
+                sentinel.write_bytes(b"provider native history")
+                native_before[sentinel] = sentinel.read_bytes()
 
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 endpoint = f"127.0.0.1:{listener.getsockname()[1]}"
             env = {k: v for k, v in os.environ.items()
-                   if not k.upper().startswith(("PASEO_", "ELECTRON_", "NODE_", "CODEX_"))}
+                   if not k.upper().startswith(("PASEO_", "ELECTRON_", "NODE_", "CODEX_", "CLAUDE_",
+                                                "ANTHROPIC_", "OPENAI_", "GOOGLE_", "GEMINI_", "AGY_", "PI_"))}
             env.update(ELECTRON_RUN_AS_NODE="1", PASEO_NODE_ENV="production", PASEO_HOME=str(profile),
                        PASEO_LISTEN=endpoint, PASEO_RELAY_ENABLED="false",
                        PASEO_VOICE_MODE_ENABLED="false", PASEO_DICTATION_ENABLED="false",
@@ -203,11 +266,11 @@ class PaseoBundleAcceptanceTests(unittest.TestCase):
                 try:
                     self.wait_until_ready(proc, profile, endpoint)
                     # Startup can migrate a legacy flat row into its project directory.
-                    target = Path(paseo._snapshot(profile, AGENT)["source"])
+                    targets = [Path(paseo._snapshot(profile, identifier)["source"]) for identifier in selected]
                     sibling = Path(paseo._snapshot(profile, KEEP)["source"])
                     sibling_before = sibling.read_bytes()
-                    self.exercise_operation(profile, base / "plan.json")
-                    self.assertFalse(target.exists())
+                    self.exercise_operation(profile, base / "batch.json", selected)
+                    self.assertFalse(any(path.exists() for path in targets))
                     self.assertEqual(sibling.read_bytes(), sibling_before)
                     self.assertEqual({path: path.read_bytes() for path in native_before}, native_before)
                 finally:
@@ -227,7 +290,7 @@ class PaseoBundleAcceptanceTests(unittest.TestCase):
             time.sleep(0.2)
         self.fail("Temporary Paseo daemon did not publish its local endpoint")
 
-    def exercise_operation(self, profile, plan_path):
+    def exercise_operation(self, profile, plan_path, record_ids):
         def invoke(*args):
             output, errors = io.StringIO(), io.StringIO()
             code = main([*args, "--json"], stdin=io.StringIO(), stdout=output, stderr=errors)
@@ -235,12 +298,13 @@ class PaseoBundleAcceptanceTests(unittest.TestCase):
             self.assertEqual(code, 0, result)
             return result
 
-        plan = invoke("delete", "plan", "--paseo-only", "--client", "paseo",
-                      "--paseo-root", str(profile), "--record-id", AGENT, "--out", str(plan_path))
-        operation = ("--operation-id", plan["operation_id"], "--plan", str(plan_path))
-        applied = invoke("delete", "apply", "--paseo-only", "--plan-sha256", plan["plan_sha256"], *operation)
+        selectors = [part for identifier in record_ids for part in ("--record-id", identifier)]
+        applied = invoke("delete", "run", "--paseo-only", "--client", "paseo",
+                         "--paseo-root", str(profile), *selectors, "--yes", "--out", str(plan_path))
         self.assertTrue(applied["goal_satisfied"])
-        self.assertTrue(invoke("operation", "verify", *operation)["goal_satisfied"])
+        for plan in applied["plans"]:
+            self.assertTrue(invoke("operation", "verify", "--operation-id", plan["operation_id"],
+                "--plan", plan["plan_path"])["goal_satisfied"])
 
 
 if __name__ == "__main__":

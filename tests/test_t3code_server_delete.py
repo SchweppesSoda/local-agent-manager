@@ -1,6 +1,7 @@
 from contextlib import closing
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -40,7 +41,8 @@ class T3ServerDeleteTests(unittest.TestCase):
         install = self.base/'install'
         for part in t3._RUNTIME_FILES:
             p = install/part;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'fixture')
-        for item in (patch.object(t3,'_bundled_install',return_value=install),patch.object(t3,'_rpc',side_effect=self.rpc)):
+        for item in (patch.object(t3,'_bundled_install',return_value=install),patch.object(t3,'_rpc',side_effect=self.rpc),
+                     patch.dict(os.environ, {'LOCALAPPDATA': str(self.base/'state'), 'XDG_STATE_HOME': str(self.base/'state')})):
             item.start();self.addCleanup(item.stop)
         self.calls=[]
         self.plan_path=self.base/'plan.json'

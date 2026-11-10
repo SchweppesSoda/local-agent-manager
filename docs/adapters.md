@@ -36,8 +36,9 @@
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
 | WorkBuddy / WorkBuddy | 独立 SQLite、精确会话 artifacts 和 UI 引用 | 仅支持已识别 5.6.2 本地终态范围，Windows writer 覆盖及完整冻结证据；未知副本只读 |
 | 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
-| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 支持 daemon 单会话删除。显式绑定的完整清理支持 Codex/Pi/Claude |
-| T3 Code / Codex、Claude | v1/v2 thread 元数据及 provider 恢复 ID | 默认只读；Windows 显式绑定的 v2 本地记录支持原生依赖、事件/投影、终端及桌面清理，未知 schema 关闭 |
+| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 在线批量删除支持四种引擎；Codex/Pi/Claude 可自动绑定完成完整清理 |
+| T3 Code / Codex、Claude、Pi | v1/v2 thread 元数据及 provider 恢复句柄 | Windows 在线批量删除支持四种引擎；自动或显式绑定的 v2 记录支持完整本地清理，未知 schema 关闭 |
+| T3 Code / Antigravity | 在线会话删除、已验证托管 ACP 完整清理 | 独立 `agy` CLI 原生清理待适配 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
 
 兼容回归使用[固定 v1 样本](../tests/fixtures/operation_v1.json)及
@@ -198,7 +199,7 @@ WorkBuddy 不继承 Claude/Codex 身份或存储规则。其 `ClientAdapter` 使
 重复 roots 按规范化物理定位去重，不作为其他客户端的全局保护来源。
 
 支持 schema 固定为 WorkBuddy 5.6.2 的 `workbuddy.db`，完整表、列、索引和 trigger
-集合必须匹配[随包 schema 资源](../src/local_agent_record_janitor/workbuddy_schema_562.json)。
+集合必须匹配[随包 schema 资源](../src/local_agent_manager/workbuddy_schema_562.json)。
 未知 schema、损坏或缺失数据库、链接路径、超出有界发现范围，以及无法解释的
 会话来源都产生结构化错误。SQLite 用 URI `mode=ro` 盘点；只查询白名单 ID、cwd、
 归属、状态和时间字段。共享库内容以临时 SQLite snapshot 的规范化文件指纹守护，
@@ -654,6 +655,10 @@ Codex/Pi/Claude 根目录，以及全部相关本机桌面 profile 与运行文�
 原生记录、未知 provider、冲突恢复句柄或不完整清单阻挡计划。普通 provider metadata
 作为所属记录的一部分清理，不从配置内容推断路径或权限。
 若 `launchEnv` 覆盖了对应引擎的存储环境变量，其值必须与显式绑定一致。
+`delete plan/run --client paseo` 可根据 provider 环境、逐 agent 环境及原生 ID/路径
+自动准备同一绑定。Pi 同时核对文件头 UUID 与 cwd。无法证明的配置返回阻挡计划。
+桌面 IndexedDB 存在时，自动绑定使用 `LARJ_PASEO_ELECTRON_RUNTIME` 指定的完整依赖，
+并沿用逐文件哈希验证。自定义 provider 与额外命令参数保留显式资格检查。
 
 原生批次复用既有引擎写入器及其他客户端的引用保护。全部原生依赖缺失后，前端批次清理
 已冻结的平铺/项目注册 JSON 和严格匹配上游原子写入命名的副本。选中 agent 专属调度可
@@ -712,14 +717,15 @@ T3 数据库操作所用的 Python `sqlite3` 需链接启用 FTS5 的 SQLite 3.4
 `0.1.8-nightly.20261108.4353` 验证；未知结构或服务版本拒绝该模式。
 
 `--t3code-bindings` 为整个 profile 的每个已观察 thread 明确绑定 Codex home、Claude
-config dir 或已验证的 T3 Antigravity ACP 实例，同时绑定 `environment-id`、所有相关本机桌面 profile 和实际运行文件。
+config dir、Pi session 根及 agent 根，或已验证的 T3 Antigravity ACP 实例，
+同时绑定 `environment-id`、所有相关本机桌面 profile 和实际运行文件。
 完整删除目前限定 v2，且原生引用必须为 `strong`；历史事件和其他 per-thread payload
 中的 `nativeThreadRef` 也检查，不能只删除当前投影。v1 恢复记录、provider 切换造成的
 多引擎历史、弱引用、缺失原生归属、peer 环境及未选 thread 共享 native ID 会阻挡。
 计划列出所选 thread 的后代和实际原生依赖，不以 cwd 或相似 ID 猜测归属。
 
 上游的 `thread.deleted` 是事件/软删除，不能用它证明本机历史消失。这里先复用既有
-Codex/Claude writer 与跨客户端保护，或清理绑定 ACP 实例的精确会话文件，再事务删除对应 command receipts、effects、events、
+Codex/Claude/Pi writer 与跨客户端保护，或清理绑定 ACP 实例的精确会话文件，再事务删除对应 command receipts、effects、events、
 runtime 与 projection 行；FTS 触发器同步移除搜索数据。模拟副本预先计算 before/after
 逻辑摘要，原库核对 schema、完整性、外键、行数和批准摘要后提交，冷读再验。
 未选中的 JSON 恢复关系、跨选择边界的 handoff/subagent、共享 provider session、

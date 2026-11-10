@@ -11,7 +11,7 @@ from .environment_config import _unique_object
 from .t3code_bound_adapter import DATABASE_ONLY_SCHEMA, T3CodeBoundAdapter, validate_manifest, native_catalog
 from .t3code_server_delete import _snapshot
 from .t3code_store import identifier
-from .herdr_cleanup import native_remaining as generic_native_remaining
+from .herdr_cleanup import native_remaining as generic_native_remaining, pi_reference_matches_action
 from . import antigravity_acp_cleanup as antigravity
 from .office_cleanup import digest
 from .record_identity import canonical_path
@@ -78,16 +78,20 @@ def validate(evidence):
         for action in actions:
             if action["action_id"] not in target["action_ids"]:
                 continue
-            kind = {"codex": "delete_conversation", "claude": "delete_claude_session"}[target["engine"]]
+            kind = {"codex": "delete_conversation", "pi": "delete_pi_session", "claude": "delete_claude_session"}[target["engine"]]
             impact = action["impact"]
-            root = impact.get("external_storage_root")
+            payload = impact.get("external_action_payload") or {}
+            root = payload.get("session_root") if target["engine"] == "pi" else impact.get("external_storage_root")
             root = root or action.get("t3code_native_root")
             if action["kind"] != kind or root is None or canonical_path(root) != target["root"]:
                 files.fail("native_action_binding_changed")
             owners = [r for r in evidence["references"] if r["engine"] == target["engine"]
                 and r["native_id"] == action["thread_id"] and r["native_record"]["store"]["canonical_path"] == target["root"]]
-            if not owners:
+            if not owners or target["engine"] == "pi" and not any(
+                    pi_reference_matches_action(ref, payload["path"]) for ref in owners):
                 files.fail("native_action_owner_unproven")
+            if target["engine"] == "pi" and canonical_path(payload["path"]) not in set(map(canonical_path, target["paths"])):
+                files.fail("pi_action_path_changed")
             covered.update((action["thread_id"], *action["affected_thread_ids"], *impact.get("descendant_thread_ids", ())))
         covered.update(r["native_id"] for r in evidence["references"] if r["engine"] == target["engine"]
                        and r["native_record"]["store"]["canonical_path"] == target["root"])
@@ -106,11 +110,14 @@ def validate(evidence):
                 or not any(t["engine"] == ref["engine"] and t["root"] == native["store"]["canonical_path"]
                            and ref["native_id"] in t["ids"] for t in targets)):
             files.fail("reference_scope_changed")
-        if ref["opaque_native_locator"] != ref["native_id"]:
+        if ref["engine"] == "pi":
+            if str(Path(ref["opaque_native_locator"])) != str(Path(native["path"])):
+                files.fail("reference_path_changed")
+        elif ref["opaque_native_locator"] != ref["native_id"]:
             files.fail("reference_identity_changed")
     from .t3code_bound_adapter import engine
     for ref in evidence["files"]["database"]["native_references"]:
-        if not any(r["engine"] == engine(ref["driver"]) and r["native_id"] == ref["native_id"] for r in evidence["references"]):
+        if not any(r["engine"] == engine(ref["driver"]) and r["opaque_native_locator"] == ref["native_id"] for r in evidence["references"]):
             files.fail("historical_native_reference_unbound")
     if len(evidence["desktop"]) != len(manifest["desktop_profiles"]):
         files.fail("desktop_scope_changed")
@@ -332,7 +339,10 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
                 files.fail("native_catalog_incomplete")
             context = coordinator.service.prepare_session_catalog(engine, catalog,
                 catalog_builder=lambda b=binding: native_catalog(b), target_root=None)
-            chosen = [a for a in context.plan.actions if a.target.thread_id in ids]
+            chosen = [a for a in context.plan.actions if a.target.thread_id in ids and
+                (engine != "pi" or canonical_path(a.impact.external_action_payload["path"]) in set(map(canonical_path, exact_paths)))]
+            if engine == "pi" and chosen:
+                exact_paths = {a.impact.external_action_payload["path"] for a in chosen}
         action_contexts.update({str(a.action_id): context for a in chosen})
         actions.extend(chosen)
         native_contexts.append(context)

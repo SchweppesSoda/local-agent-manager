@@ -279,12 +279,43 @@ class T3CodeFullflowTests(unittest.TestCase):
             result = self.apply(plan)
         self.assertFalse(transcript.exists(), result)
         self.assertTrue(keeper.exists())
+
         original = CleanupService.execute
         def only_frontend(service, context, actions, **kwargs):
             self.assertTrue(all(str(a.kind.value) == cleanup.KIND for a in actions))
             return original(service, context, actions, **kwargs)
         with patch.object(CleanupService, "execute", only_frontend):
             result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertTrue(keeper.exists())
+
+    def test_pi_exact_path_survives_interrupted_native_and_frontend_cleanup(self):
+        agent_dir = self.base / "pi"
+        sessions = agent_dir / "sessions"
+        transcript = sessions / "project" / "session.jsonl"
+        transcript.parent.mkdir(parents=True)
+        header = {"type": "session", "version": 3, "id": NATIVE, "timestamp": "2026-11-10T00:00:00Z", "cwd": str(self.base)}
+        transcript.write_text(json.dumps(header) + "\n", encoding="utf-8")
+        keeper = transcript.with_name("same-id-other-file.jsonl")
+        keeper.write_bytes(transcript.read_bytes())
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            db.execute(f"UPDATE {V2}threads SET default_provider='pi' WHERE thread_id=?", (THREAD,))
+            db.execute(f"UPDATE {V2}provider_threads SET driver='pi',provider='pi',payload_json=? WHERE thread_id=?",
+                (json.dumps({"nativeThreadRef": {"driver": "pi", "nativeId": str(transcript), "strength": "strong"}}), THREAD))
+            db.commit()
+        self.manifest["native_stores"][0].update(engine="pi", root=str(sessions), agent_dir=str(agent_dir))
+        self.adapter = T3CodeBoundAdapter(self.manifest)
+        plan = self.coordinator().plan_operation(client="t3code", record_ids=(THREAD,),
+            adapters=(self.adapter,), plan_path=self.plan_path, operation_id="t3-pi-fullflow")
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        self.assertEqual({a["kind"] for a in plan["actions"]}, {"delete_pi_session", cleanup.KIND})
+        with patch.object(cleanup, "execute", side_effect=RuntimeError("stop before frontend")):
+            result = self.apply(plan)
+        self.assertFalse(transcript.exists(), result)
+        self.assertTrue(keeper.exists())
+        result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "complete", result)
+        result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
         self.assertTrue(keeper.exists())
 

@@ -53,6 +53,8 @@ def _catalog_ids(binding):
 
 def _native_binding(row, providers, instance, cache):
     driver = row["default_provider"]
+    if driver == "pi":
+        return _pi_binding(row, providers, instance, cache)
     backend = {"codex": "codex", "claudeAgent": "claude"}.get(driver)
     if backend is None:
         raise ValueError("provider_cleanup_unsupported")
@@ -95,6 +97,30 @@ def _native_binding(row, providers, instance, cache):
     if len(matches) != 1:
         raise ValueError("native_ids_not_in_configured_home")
     return matches[0]
+
+
+def _pi_binding(row, providers, instance, cache):
+    config = instance.get("config", {})
+    if not isinstance(config, dict) or config.get("launchArgs", ""):
+        raise ValueError("pi_launch_arguments_require_explicit_binding")
+    agent_dirs = _environment_paths(instance, "PI_CODING_AGENT_DIR")
+    agent_dir = _plain_directory(agent_dirs[0] if agent_dirs else Path.home() / ".pi/agent")
+    session_dirs = _environment_paths(instance, "PI_CODING_AGENT_SESSION_DIR")
+    root = _plain_directory(session_dirs[0] if session_dirs else agent_dir / "sessions")
+    binding = {"thread_id": row["thread_id"], "engine": "pi", "root": str(root), "agent_dir": str(agent_dir)}
+    key = "pi", canonical_path(root)
+    if key not in cache:
+        catalog = native_catalog(binding)
+        if catalog.errors:
+            raise ValueError("native_inventory_incomplete")
+        cache[key] = {canonical_path(record.path) for record in catalog.records}
+    handles = [item["native_id"] for item in providers if item["thread_id"] == row["thread_id"]
+               and item["native_id"] is not None and item["native_strength"] == "strong"]
+    if not handles and not agent_dirs and not session_dirs:
+        raise ValueError("native_root_unproven")
+    if any(canonical_path(local_root(path)) not in cache[key] for path in handles):
+        raise ValueError("native_ids_not_in_configured_home")
+    return binding
 
 
 def _acp_binding(root, row, instance, runtime_binaries):
@@ -189,9 +215,10 @@ def discover_bindings(root=None):
         if item["native_id"] is None or item["strength"] != "strong":
             continue
         binding = next(value for value in bindings if value["thread_id"] == item["thread_id"])
-        if binding["engine"] in {"codex", "claude"}:
+        if binding["engine"] in {"codex", "claude", "pi"}:
             ids = cache[binding["engine"], canonical_path(binding["root"])]
-            if item["native_id"] not in ids:
+            native_id = canonical_path(local_root(item["native_id"])) if binding["engine"] == "pi" else item["native_id"]
+            if native_id not in ids:
                 raise BindingDiscoveryError([{"blocker_code": "historical_native_root_unproven", "thread_id": item["thread_id"]}])
     if frozen_files.read_file(root, "userdata/settings.json")[0] != settings_proof:
         raise BindingDiscoveryError([{"blocker_code": "t3code_provider_settings_changed"}])
