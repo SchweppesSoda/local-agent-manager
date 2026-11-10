@@ -163,6 +163,8 @@ def recovery_scope(document, coordinator, approved_hash):
                         prior = store.read_result(maintain=False)
                         audits = list(store.directory.glob('recovery-*.json'))
                         if prior and prior.get('goal_status') == 'complete' and prior.get('plan_sha256') == plan['plan_sha256'] and len(audits) == 1:
+                            if store.read_plan() != plan:
+                                raise RuntimeError('joint_recovery_reservation_changed')
                             ff._plain(audits[0].lstat())
                             audit = strict_json_load(audits[0])
                             if (audit.get('schema_version') != 'lam.joint-cli-recovery.v1'
@@ -219,12 +221,25 @@ def recovery_scope(document, coordinator, approved_hash):
                 joint.recheck(evidence, client)
                 guards.acquire(evidence['cli_guards'], held)
                 stack.enter_context(guards.leased_reads(evidence['cli_guards'], held))
+            from .antigravity_cli_current import hold_current
+            for entry in entries.values():
+                entry['native_current'] = stack.enter_context(hold_current(
+                    entry['plan']['antigravity_cli_evidence'], held))
+            # Qualify desktop restore sources before an unrelated native source
+            # can refuse the subsequent inventory. Use the same admitted ticket
+            # and decoder that terminal verification uses.
+            from . import t3code_localstorage
+            for evidence, client in frontends:
+                if client == 't3code' and any(t3code_localstorage.remaining(d['localstorage'])
+                                             for d in evidence['desktop']):
+                    raise RuntimeError('joint_recovery_desktop_target_present')
             yield entries
         finally:
             _settings.reset(settings_token)
             _active.reset(token)
             for entry in entries.values():
                 if entry['completed']:
+                    entry['native_current'].stable()
                     # Atomic handle disposition: never close/reopen/unlink a
                     # pathname based only on a PID or terminal receipt.
                     held.dispose(entry['store'].directory, 'apply.lock', before=entry['proof'])
@@ -235,6 +250,42 @@ def completion_entry(store, plan):
     if entry and entry['plan'] != plan:
         raise RuntimeError('joint_recovery_ticket_changed')
     return entry if entry and entry['proof'] is not None else None
+
+
+def native_evolution(evidence):
+    """Only a bound recovery ticket may replace native strict after equality."""
+    for entry in (_active.get() or {}).values():
+        if entry['plan']['antigravity_cli_evidence'] != evidence:
+            continue
+        current = entry.get('native_current')
+        if current is None:
+            return False
+        proof = current.qualify()
+        entry['audit']['current_native'] = proof
+        if proof['blockers']:
+            from .antigravity_cli_cleanup import fail
+            fail('current_preserved_source_changed')
+        return True
+    return False
+
+
+def native_read(root, relative, **options):
+    for entry in (_active.get() or {}).values():
+        current = entry.get('native_current')
+        if current is not None and current.root == Path(root):
+            # No fallback for an unheld path inside an admitted native root.
+            return current.read(Path(root), relative, **options)
+    return None
+
+
+def current_proofs(entries):
+    """Each verification returns today's proof while retaining the first audit."""
+    return [{'reservation_operation_id': e['store'].operation_id,
+             'children': e['audit']['children'],
+             'current_native': e['audit'].get('current_native'),
+             'current_database': e['audit'].get('current_database'),
+             'current_desktop': e['audit'].get('current_desktop')}
+            for e in entries.values()]
 
 
 def database_evolution(evidence, db, current_hash):
@@ -277,6 +328,8 @@ def desktop_evolution(evidence, value):
 def publish_completion(entry):
     # Retained alongside the journal/receipt; does not overwrite the executor
     # failure, frozen plan, original events or an earlier recovery attempt.
+    if not native_evolution(entry['plan']['antigravity_cli_evidence']):
+        raise RuntimeError('joint_recovery_current_native_unproven')
     audit = {**entry['audit'], 'goal_status': 'complete', 'goal_satisfied': True}
     path = entry['store'].directory / ('recovery-'+audit['original_lock_sha256']+'.json')
     if path.exists():

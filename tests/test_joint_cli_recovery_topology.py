@@ -25,6 +25,7 @@ from tests.test_antigravity_cli_joint import FRONT, OTHER, KEEP, TARGET
 from tests.orca_native_support import create_native_schema, add_native_record
 from tests.t3code_support import add_thread, V2, create_store
 from tests.test_t3code_localstorage import local_storage
+from tests.native_recovery_support import initial_sources, reopen, NEW_NATIVE, LATER_NATIVE
 
 NEW = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 CODEX_THREAD = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
@@ -71,6 +72,7 @@ class TopologyTests(unittest.TestCase):
         summary = CliFormatTests('runTest')
         summary.root = self.f.native
         summary.search_index()
+        initial_sources(self.f.native)
         self.install = self.f.base/'install'
         self.install.mkdir()
         self.binary = self.install/'T3 Code (Nightly).exe'
@@ -103,6 +105,7 @@ class TopologyTests(unittest.TestCase):
             capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 73, result.stdout.decode(errors='replace')+result.stderr.decode(errors='replace'))
         self.assertTrue(self.store.lock_exists())
+        reopen(self.f.native, KEEP)
         settings_copy = self.f.t3/'userdata/settings-reopened.tmp'
         settings_copy.write_bytes((self.f.t3/'userdata/settings.json').read_bytes())
         settings_copy.replace(self.f.t3/'userdata/settings.json')
@@ -153,6 +156,11 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
         self.assertTrue(audit['goal_satisfied'])
         self.assertIn(NEW, audit['current_database']['new_thread_ids'])
         self.assertTrue(audit['current_desktop'])
+        self.assertEqual(audit['current_native']['new_summary_ids'], [NEW_NATIVE])
+        self.assertFalse(audit['current_native']['blockers'])
+        with self.assertRaisesRegex(ValueError, 'log_link_changed'):
+            native = __import__('local_agent_manager.antigravity_cli_cleanup', fromlist=['remaining'])
+            native.remaining(joint.targets(self.evidence)[0]['native_files'])
         self.assertNotEqual(audit['current_provider_settings']['original']['identity'],
                             audit['current_provider_settings']['current']['identity'])
         self.assertEqual(audit['current_provider_settings']['original']['sha256'],
@@ -164,9 +172,15 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
         self.assertTrue((self.f.native/'conversations'/(KEEP+'.db')).exists())
         with closing(sqlite3.connect(self.f.t3/'userdata/statev2.sqlite')) as db:
             self.assertEqual({r[0] for r in db.execute(f'SELECT thread_id FROM {V2}threads')}, {OTHER, CODEX_THREAD, NEW})
+        reopen(self.f.native, KEEP, LATER_NATIVE)
         result, payload = self.cold('second-cold')
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace')+str(payload))
         self.assertTrue(payload['goal_satisfied'])
+        self.assertEqual(audit_path.read_bytes(), audit_raw)
+        (self.f.native/'cache/unknown-resume.json').write_text('{}')
+        result, payload = self.cold('danger-after-second')
+        self.assertNotEqual(result.returncode, 0, payload)
+        self.assertFalse(payload['goal_satisfied'])
         self.assertEqual(audit_path.read_bytes(), audit_raw)
         if os.environ.get('LAM_TOPOLOGY_EVIDENCE'):
             out = Path(os.environ['LAM_TOPOLOGY_EVIDENCE'])
@@ -204,6 +218,106 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
     def test_settings_change_is_rejected(self):
         with (self.f.t3/'userdata/settings.json').open('a') as stream: stream.write(' ')
         self.assert_blocked('changed-settings')
+
+    def test_native_target_parent_fts_and_restore_references_block(self):
+        from local_agent_manager import antigravity_cli_cleanup as native
+        mutations = (
+            ('summary-parent', 'UPDATE conversation_summaries SET parent_conversation_id=?,nesting_depth=1 WHERE conversation_id=?'),
+            ('summary-reference', 'UPDATE conversation_summaries SET raw_summary=? WHERE conversation_id=?'),
+            ('fts-reference', 'UPDATE conversations_fts SET user_body=? WHERE conversation_id=?'),
+        )
+        for label, sql in mutations:
+            path = self.f.native/native.SUMMARY
+            before = path.read_bytes()
+            with closing(sqlite3.connect(path)) as db:
+                db.execute(sql, (TARGET, NEW_NATIVE)); db.commit()
+            self.assert_blocked(label)
+            path.write_bytes(before)
+
+    def test_native_target_file_reappearance_blocks(self):
+        (self.f.native/'conversations'/(TARGET+'.db')).write_bytes(b'reappeared target')
+        self.assert_blocked('native-target-file')
+
+    def test_unknown_restore_source_and_opaque_implicit_churn_block(self):
+        cases = ('cache/saved-resume.json', 'implicit/new.pb', 'unknown.pb')
+        for relative in cases:
+            path = self.f.native/relative
+            path.write_bytes(b'opaque unknown restoration source')
+            self.assert_blocked(relative.replace('/', '-'))
+            path.unlink()
+        (self.f.native/'implicit/original.pb').unlink()
+        self.assert_blocked('implicit-missing-original')
+
+    def test_unknown_mirror_fields_and_mismatch_block(self):
+        from local_agent_manager import antigravity_cli_restore as restore
+        path = self.f.native/restore.METADATA
+        before = path.read_bytes()
+        value = json.loads(before)
+        value['conversations'][NEW_NATIVE]['summary']['CloudProject']['unknownResume'] = 'opaque'
+        path.write_text(json.dumps(value))
+        self.assert_blocked('unknown-metadata-nested-field')
+        path.write_bytes(before)
+        proto = self.f.native/restore.PROTO
+        before = proto.read_bytes()
+        proto.write_bytes(before+b'\x12\x00')
+        self.assert_blocked('unknown-proto-field')
+        proto.write_bytes(before.replace(b'synthetic summary', b'different summary', 1))
+        self.assert_blocked('proto-summary-mismatch')
+
+    def test_missing_or_corrupt_unselected_native_blocks(self):
+        path = self.f.native/'conversations'/(KEEP+'.db')
+        before = path.read_bytes()
+        path.unlink()
+        self.assert_blocked('native-missing-unselected')
+        path.write_bytes(b'broken SQLite database')
+        self.assert_blocked('native-corrupt-unselected')
+        path.write_bytes(before)
+        brain = self.f.native/'brain'/KEEP/'artifact.md'
+        brain.unlink()
+        self.assert_blocked('native-missing-unselected-artifact')
+
+    def test_dangerous_diagnostic_link_and_unknown_onboarding_block(self):
+        link = self.f.native/'cli.log'
+        for target in ('../outside.log', 'log/../outside.log', 'log/cli.log:stream', 'log/CON', 'log/missing.log'):
+            link.unlink(); link.symlink_to(target)
+            self.assert_blocked('bad-diagnostic-link')
+        link.unlink(); link.symlink_to('log/cli-'+NEW_NATIVE+'.log')
+        path = self.f.native/'cache/onboarding.json'
+        path.write_text(json.dumps({'onboardingComplete': True, 'savedResume': TARGET}))
+        self.assert_blocked('unknown-onboarding-field')
+
+    def test_current_native_file_handle_blocks_and_keeps_exclusion(self):
+        from local_agent_manager.windows_held_files import exclusive_fd
+        from local_agent_manager.joint_cli_recovery import recovery_scope, native_evolution
+        path = self.f.native/'conversations'/(NEW_NATIVE+'.db')
+        fd = exclusive_fd(path)
+        try: self.assert_blocked('native-third-party-handle')
+        finally: os.close(fd)
+        with recovery_scope(self.document, self.f.coordinator(), self.plan['plan_sha256']):
+            self.assertTrue(native_evolution(joint.targets(self.evidence)[0]['native_files']))
+            with self.assertRaises(PermissionError): path.open('ab')
+            with self.assertRaises(PermissionError): path.read_bytes()
+            with self.assertRaises(PermissionError): (self.f.native/'cli.log').unlink()
+
+    def test_large_current_diagnostic_namespace_keeps_all_leases(self):
+        from local_agent_manager.joint_cli_recovery import recovery_scope, native_evolution
+        from local_agent_manager.windows_held_files import ensure_descriptor_capacity
+        with self.assertRaisesRegex(RuntimeError, 'lease_budget_exceeded'):
+            ensure_descriptor_capacity(8193)
+        # More files than the Windows CRT's initial 512-descriptor table, with
+        # shared ancestors. Every diagnostic and restore source remains held.
+        for index in range(650):
+            (self.f.native/'log'/('cli-large-'+str(index)+'.log')).write_text('diagnostic')
+        with recovery_scope(self.document, self.f.coordinator(), self.plan['plan_sha256']) as entries:
+            self.assertTrue(native_evolution(joint.targets(self.evidence)[0]['native_files']))
+            current = next(iter(entries.values()))['native_current']
+            self.assertGreater(len(current.held.handles), 650)
+            self.assertLess(len(current.held.parents), 100)
+            with self.assertRaises(PermissionError): (self.f.native/'log/cli-large-649.log').open('ab')
+            with self.assertRaises(PermissionError): (self.f.native/'log').rename(self.f.native/'moved-log')
+        result, payload = self.cold('large-diagnostic-cold')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace')+str(payload))
+        self.assertTrue(payload['goal_satisfied'])
 
     def test_restore_reference_is_rejected(self):
         with closing(sqlite3.connect(self.f.t3/'userdata/statev2.sqlite')) as db:
@@ -250,6 +364,8 @@ class MixedTopologyTests(unittest.TestCase):
         host.start(); self.addCleanup(host.stop)
         f = ColdCliRehearsal('runTest')
         f.setUp(); self.addCleanup(f.doCleanups)
+        from tests.test_antigravity_cli_cleanup import KEEP as AGY_KEEP
+        initial_sources(f.agyroot)
         install = f.base/'install'; install.mkdir()
         frontend = install/'T3 Code (Nightly).exe'
         f.frontend.rename(frontend)
@@ -278,6 +394,7 @@ class MixedTopologyTests(unittest.TestCase):
         evidence = t3code_cleanup.evidence_from_document(plan)
         store, _ = joint.reservation(plan, evidence, joint.targets(evidence)[0])
         self.assertTrue(store.lock_exists())
+        reopen(f.agyroot, AGY_KEEP)
         with closing(sqlite3.connect(f.root/'userdata/statev2.sqlite')) as db:
             # A genuinely new AGY binding and a new Codex binding, both only
             # protection sources; no frozen target or child hash is changed.
@@ -288,6 +405,8 @@ class MixedTopologyTests(unittest.TestCase):
         (out/'frozen-plan.json').write_bytes(f.plan_path.read_bytes())
         audit_raw = None
         for label in ('first-cold', 'second-cold'):
+            if label == 'second-cold':
+                reopen(f.agyroot, AGY_KEEP, LATER_NATIVE)
             result = subprocess.run([sys.executable, '-c', COLD, str(f.plan_path), str(f.base/'profile'),
                 plan['plan_sha256'], str(install), '[]'], cwd=Path(__file__).resolve().parents[1],
                 env=f.env, capture_output=True, timeout=180)
@@ -306,7 +425,12 @@ class MixedTopologyTests(unittest.TestCase):
         self.assertEqual({str(p):__import__('hashlib').sha256(p.read_bytes()).hexdigest() for p in f.preserved}, f.before)
         self.assertFalse(any(p.exists() for p in f.native_paths[:-1]))
         with patch.dict(os.environ, f.env), patch('pathlib.Path.home', return_value=f.base/'profile'):
-            self.assertTrue(all(not t3code_cleanup.native_remaining(t) for t in evidence['native_targets']))
+            self.assertTrue(all(not t3code_cleanup.native_remaining(t) for t in evidence['native_targets']
+                                if t['engine'] != 'antigravity'))
+            with self.assertRaisesRegex(ValueError, 'log_link_changed'):
+                native.remaining(joint.targets(evidence)[0]['native_files'])
+        self.assertEqual(payload['recovery_current'][0]['current_native']['new_summary_ids'],
+                         sorted([NEW_NATIVE, LATER_NATIVE]))
         with closing(sqlite3.connect(f.root/'userdata/statev2.sqlite')) as db:
             present = {r[0] for r in db.execute(f'SELECT thread_id FROM {V2}threads')}
             self.assertEqual(present, {'keeper', NEW, CODEX_THREAD})

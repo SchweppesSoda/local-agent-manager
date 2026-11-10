@@ -779,6 +779,7 @@ class OperationCoordinator:
     ) -> dict[str, Any]:
         document: Mapping[str, Any] | None = None
         computed: Mapping[str, Any] | None = None
+        recoveries = None
         try:
             from .child_recovery import query_child_operation
             child_result = query_child_operation(self, plan_path or _find_operation_plan(
@@ -797,7 +798,7 @@ class OperationCoordinator:
                 return self._status_for_document(document)
             with mutation_roots(frozen_operation_roots(document)):
                 from contextlib import nullcontext
-                from .joint_cli_recovery import recovery_scope
+                from .joint_cli_recovery import recovery_scope, current_proofs
                 with (recovery_scope(document, self, authorized_plan_sha256)
                       if recover_joint_reservations else nullcontext()) as recoveries:
                     computed = self._verify_operation_locked(
@@ -813,6 +814,8 @@ class OperationCoordinator:
                             'audit_path': str(e['store'].directory/('recovery-'+e['proof']['sha256']+'.json')),
                             'verification_only': True, 'mutation_replayed': False}
                             for e in recoveries.values() if e['completed']]
+                    if recoveries:
+                        computed['recovery_current'] = current_proofs(recoveries)
             return dict(computed)
         except Exception as exc:
             if document is not None:
@@ -827,6 +830,9 @@ class OperationCoordinator:
                 )
                 if live is not None:
                     live.result = result
+                if recoveries:
+                    from .joint_cli_recovery import current_proofs
+                    result['recovery_current'] = current_proofs(recoveries)
                 return result
             return self._error_document(
                 "verify", dict(scope or {}), str(exc) or repr(exc),

@@ -122,8 +122,9 @@ def freeze_rewrite(root: Path, relative: str, transform: Callable[[bytes], bytes
             "after_size": len(after)}
 
 
-def freeze_remove(root: Path, relative: str):
+def freeze_remove(root: Path, relative: str, *, reader=None):
     """Freeze one owned file/tree including empty directories and all members."""
+    reader = reader or read_file
     files, directories, total = [], [], 0
 
     def names_of(path):
@@ -150,7 +151,7 @@ def freeze_remove(root: Path, relative: str):
                     or names != names_of(path)):
                 raise FrozenFilesError("client_file_tree_changed")
         else:
-            evidence, _ = read_file(root, name, limit=MAX_BYTES - total)
+            evidence, _ = reader(root, name, limit=MAX_BYTES - total)
             files.append(evidence)
             total += evidence["size"]
 

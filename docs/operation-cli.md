@@ -35,7 +35,7 @@ The original frozen evidence and strict first after-state proof remain unchanged
 Reopened T3 sessions may have continued after the child receipts proved that exact
 after-state. Only inside the explicitly held recovery scope, a fully verified
 original frontend child permits current schema/integrity, target absence, frozen
-unselected thread membership, preserved file hashes, native after-state and all
+unselected thread membership, preserved file hashes, qualified native current state and all
 current restoration-reference guards to replace the old whole-database equality
 test. The desktop decoder must find zero selected target pairs; its current
 logical hash is recorded. Continued conversation content is not claimed byte-identical
@@ -50,6 +50,35 @@ for a pathname recheck. An unheld path receives no lease exemption, and changed
 programs, settings or guard sources remain blockers.
 A new unselected thread must acquire a positively discovered
 protection binding; it cannot expand the frozen deletion authorization.
+
+Native current-state proof is available only for the exact reservation and
+completed children in this ticket, including later cold verification bound to
+its retained audit. Ordinary plan, apply and remaining checks keep the original
+strict after-state. The proof holds every current native source through Windows
+handles, qualifies summary schema/integrity and FTS postings, checks all current
+session databases and artifact ownership, and decodes the protobuf, metadata and
+last-conversation mirrors. Selected IDs, parents, restoration references, missing
+frozen unselected files and unknown formats remain blockers. New sessions and
+artifacts become protection sources only. Summary and mirror evolution is
+recorded separately from original completion hashes and object sets.
+
+Diagnostic log/crash trees may evolve, with every member still plain and leased.
+The diagnostic link itself is leased without following it and must name a current
+ordinary file directly inside the trusted log namespace. The exact three-boolean
+onboarding format may change. Other caches and opaque implicit files require
+their original full preservation evidence. Rotation, new ciphertext or a missing
+implicit member does not prove safe evolution and refuses recovery. An ID byte
+scan alone does not qualify such a new source.
+Each opt-in verification returns current logical hashes, object sets and change
+classifications in `recovery_current`. The first recovery audit remains immutable.
+The admitted T3 desktop decoder also runs before native inventory, so a native
+refusal cannot conceal a later desktop restoration-source blocker.
+Directory fences are shared within each held file set and revalidated on reuse.
+For large current native namespaces, the verifier raises only its own process's
+CRT descriptor capacity, with an 8192-descriptor bound and reserved headroom.
+An oversized or unavailable handle budget refuses admission. No system setting
+or runtime installation is changed, and no existing file lease is released to
+make a discovery read succeed.
 
 After all these checks, the protocol publishes a separate retained
 `recovery-<original-lock-sha256>.json` audit, including parent/child hashes, old lock,

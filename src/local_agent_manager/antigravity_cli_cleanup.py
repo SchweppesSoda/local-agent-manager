@@ -169,7 +169,7 @@ def _check(db, contract):
 @contextmanager
 def private_database(root, relative, *, reader=None):
     """Never let a metadata read initialize SHM in the user's WAL database."""
-    reader = reader or ff.read_file
+    reader = reader or read_source
     proofs = []
     with tempfile.TemporaryDirectory(prefix='lam-agy-db-') as directory:
         target = Path(directory) / 'copy.db'
@@ -190,6 +190,12 @@ def private_database(root, relative, *, reader=None):
             yield db, proofs, target
         if any(reader(root, p['path'])[0] != p for p in proofs):
             fail('database_changed')
+
+
+def read_source(root, relative, **options):
+    from .joint_cli_recovery import native_read
+    result = native_read(root, relative, **options)
+    return ff.read_file(root, relative, **options) if result is None else result
 
 
 def _rows(db):
@@ -268,9 +274,10 @@ def _root_names(root):
     return sorted(names)
 
 
-def _protect_reference(root, proof, ids):
+def _protect_reference(root, proof, ids, *, reader=None):
+    reader = reader or ff.read_file
     for entry in proof['files']:
-        current, raw = ff.read_file(root, entry['path'], content=True)
+        current, raw = reader(root, entry['path'], content=True)
         if current != entry:
             fail('preserved_file_changed')
         if any(s.encode() in raw or s in entry['path'] for s in ids):
@@ -292,9 +299,67 @@ def _log_link(root):
             or normalized.split('/')[1] in ('', '.', '..') or ':' in normalized
             or any(ord(c) < 32 for c in normalized)):
         fail('log_link_unqualified')
+    ff.checked_path(root, normalized)
     if ff._revision(path.lstat()) != ff._revision(before):
         fail('log_link_changed')
     return {'identity': ff._identity(before), 'mtime_ns': before.st_mtime_ns, 'target': target}
+
+
+def _qualify_sessions(root, rows, selected, directories, *, reader=None, reference_check=None):
+    reader = reader or ff.read_file
+    sessions = set()
+    for name in directories[0].get('entries', ()):
+        sid = native_id(name[:36])
+        if name[36:] not in tuple('.db'+s for s in SIDECARS):
+            fail('conversation_layout_unqualified')
+        sessions.add(sid)
+    if sessions != set(rows):
+        fail('summary_session_set_mismatch')
+    for name in directories[1].get('entries', ()):
+        if native_id(name) not in sessions:
+            fail('artifact_owner_unproven')
+    # Observed CLI annotations contain only a protobuf-text title field. Do
+    # not treat unknown annotation fields or nonempty presence files as owned
+    # disposable state. A matching SQL ID and exact native filename are both
+    # required; no workspace/title matching grants ownership.
+    for directory, suffix in ((directories[3], '.pbtxt'), (directories[4], '.lock')):
+        for name in directory.get('entries', ()):
+            if not name.endswith(suffix) or native_id(name[:-len(suffix)]) not in sessions:
+                fail('auxiliary_session_owner_unproven')
+            _, raw = reader(root, directory['path']+'/'+name, content=True, limit=ff.MAX_REWRITE_BYTES)
+            if directory['path'] == 'annotations':
+                try:
+                    text = raw.decode('utf-8')
+                except UnicodeError:
+                    fail('annotation_format_unqualified')
+                if not re.fullmatch(r'\s*title\s*:\s*"(?:[^"\\\r\n]|\\[^\r\n])*"\s*', text):
+                    fail('annotation_format_unqualified')
+            elif raw:
+                fail('presence_format_unqualified')
+    for sid in sorted(sessions):
+        with private_database(root, 'conversations/'+sid+'.db', reader=reader) as (db, _, _):
+            _check(db, SESSION_CONTRACT)
+            identities = [tuple(r) for r in db.execute('SELECT * FROM trajectory_meta')]
+            if (len(identities) != 1 or identities[0][1] != sid or identities[0][2] != 4
+                    or type(identities[0][3]) is not int):
+                fail('session_identity_mismatch')
+            native_id(identities[0][0])
+            # Protobuf parent and subtrajectory payloads have not been
+            # qualified. A summary link alone cannot grant their deletion.
+            if (db.execute('SELECT 1 FROM parent_references LIMIT 1').fetchone()
+                    or db.execute('SELECT 1 FROM steps WHERE has_subtrajectory IS NOT 0 LIMIT 1').fetchone()):
+                fail('opaque_trajectory_relationship')
+            if sid not in selected:
+                # Search privately across typed BLOB/TEXT cells. This is only
+                # a blocker, never a positive ownership relationship.
+                for table in ('steps', 'trajectory_metadata_blob', 'executor_metadata', 'gen_metadata', 'battle_mode_infos'):
+                    for row in db.execute('SELECT * FROM '+table):
+                        for cell in row:
+                            raw = cell.encode() if isinstance(cell, str) else cell if isinstance(cell, bytes) else b''
+                            if any(s.encode() in raw for s in selected):
+                                fail('unselected_trajectory_restore_reference')
+                            if reference_check is not None:
+                                reference_check(raw, selected)
 
 
 def freeze(root, ids, *, binary):
@@ -324,57 +389,7 @@ def freeze(root, ids, *, binary):
         parents = {sid: row['parent_conversation_id'] for sid, row in rows.items()}
         raw_hashes = {sid: hashlib.sha256(row['raw_summary'] or b'').hexdigest() for sid, row in rows.items()}
     directories = [_names(root, name) for name in ('conversations', 'brain', 'cache', 'annotations', 'presence')]
-    sessions = set()
-    for name in directories[0].get('entries', ()):
-        sid = native_id(name[:36])
-        if name[36:] not in tuple('.db'+s for s in SIDECARS):
-            fail('conversation_layout_unqualified')
-        sessions.add(sid)
-    if sessions != set(rows):
-        fail('summary_session_set_mismatch')
-    for name in directories[1].get('entries', ()):
-        if native_id(name) not in sessions:
-            fail('artifact_owner_unproven')
-    # Observed CLI annotations contain only a protobuf-text title field. Do
-    # not treat unknown annotation fields or nonempty presence files as owned
-    # disposable state. A matching SQL ID and exact native filename are both
-    # required; no workspace/title matching grants ownership.
-    for directory, suffix in ((directories[3], '.pbtxt'), (directories[4], '.lock')):
-        for name in directory.get('entries', ()):
-            if not name.endswith(suffix) or native_id(name[:-len(suffix)]) not in sessions:
-                fail('auxiliary_session_owner_unproven')
-            _, raw = ff.read_file(root, directory['path']+'/'+name, content=True, limit=ff.MAX_REWRITE_BYTES)
-            if directory['path'] == 'annotations':
-                try:
-                    text = raw.decode('utf-8')
-                except UnicodeError:
-                    fail('annotation_format_unqualified')
-                if not re.fullmatch(r'\s*title\s*:\s*"(?:[^"\\\r\n]|\\[^\r\n])*"\s*', text):
-                    fail('annotation_format_unqualified')
-            elif raw:
-                fail('presence_format_unqualified')
-    for sid in sorted(sessions):
-        with private_database(root, 'conversations/'+sid+'.db') as (db, _, _):
-            _check(db, SESSION_CONTRACT)
-            identities = [tuple(r) for r in db.execute('SELECT * FROM trajectory_meta')]
-            if (len(identities) != 1 or identities[0][1] != sid or identities[0][2] != 4
-                    or type(identities[0][3]) is not int):
-                fail('session_identity_mismatch')
-            native_id(identities[0][0])
-            # Protobuf parent and subtrajectory payloads have not been
-            # qualified. A summary link alone cannot grant their deletion.
-            if (db.execute('SELECT 1 FROM parent_references LIMIT 1').fetchone()
-                    or db.execute('SELECT 1 FROM steps WHERE has_subtrajectory IS NOT 0 LIMIT 1').fetchone()):
-                fail('opaque_trajectory_relationship')
-            if sid not in selected:
-                # Search privately across typed BLOB/TEXT cells. This is only
-                # a blocker, never a positive ownership relationship.
-                for table in ('steps', 'trajectory_metadata_blob', 'executor_metadata', 'gen_metadata', 'battle_mode_infos'):
-                    for row in db.execute('SELECT * FROM '+table):
-                        for cell in row:
-                            raw = cell.encode() if isinstance(cell, str) else cell if isinstance(cell, bytes) else b''
-                            if any(s.encode() in raw for s in selected):
-                                fail('unselected_trajectory_restore_reference')
+    _qualify_sessions(root, rows, selected, directories)
     changes, preserved = [], []
     for d in [*directories[:2], *directories[3:]]:
         for name in d.get('entries', ()):
@@ -449,6 +464,9 @@ def validate(evidence):
 
 
 def remaining(evidence):
+    from .joint_cli_recovery import native_evolution
+    if native_evolution(evidence):
+        return 0
     root = validate(evidence)
     if ff._identity(root.stat()) != evidence['root_identity']:
         fail('root_replaced')

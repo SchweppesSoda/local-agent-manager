@@ -11,6 +11,19 @@ from pathlib import Path
 from . import frozen_files
 
 
+def ensure_descriptor_capacity(minimum):
+    """Raise only this process's CRT descriptor table for a bounded lease set."""
+    if os.name != 'nt' or minimum > 8192:
+        raise frozen_files.FrozenFilesError('windows_file_lease_budget_exceeded')
+    import ctypes
+    crt = ctypes.CDLL('ucrtbase', use_errno=True)
+    crt._getmaxstdio.restype = ctypes.c_int
+    crt._setmaxstdio.argtypes = (ctypes.c_int,)
+    crt._setmaxstdio.restype = ctypes.c_int
+    if crt._getmaxstdio() < minimum and crt._setmaxstdio(8192) != 8192:
+        raise frozen_files.FrozenFilesError('windows_file_lease_budget_unavailable')
+
+
 def exclusive_fd(path, *, writable=False, delete=False, directory=False):
     if os.name != "nt":
         raise frozen_files.FrozenFilesError("windows_file_lease_unavailable")
@@ -62,6 +75,7 @@ class HeldFiles:
     def __init__(self):
         self.stack = ExitStack()
         self.handles = {}
+        self.parents = {}
 
     def __enter__(self):
         return self
@@ -74,7 +88,22 @@ class HeldFiles:
         key = (str(root), evidence["path"])
         if key in self.handles:
             raise frozen_files.FrozenFilesError("duplicate_file_lease")
-        path = self.stack.enter_context(frozen_files._parent_fence(root, evidence["path"]))
+        path = frozen_files.checked_path(root, evidence["path"])
+        # One fence per directory for this complete lease lifetime. Reopening
+        # the same ancestors for every file wastes CRT descriptors and does
+        # not strengthen the namespace exclusion. Revalidate every reuse.
+        for parent in reversed(path.parents):
+            before = parent.lstat()
+            frozen_files._plain(before, directory=True)
+            key_parent = str(parent)
+            if key_parent not in self.parents:
+                parent_fd = frozen_files._windows_fd(parent, directory=True)
+                self.stack.callback(os.close, parent_fd)
+                self.parents[key_parent] = parent_fd
+            opened = os.fstat(self.parents[key_parent])
+            frozen_files._plain(opened, directory=True)
+            if frozen_files._identity(opened) != frozen_files._identity(before):
+                raise frozen_files.FrozenFilesError('client_file_parent_replaced')
         fd = exclusive_fd(path, writable=writable, delete=delete)
         self.stack.callback(os.close, fd)
         self.handles[key] = (fd, writable)
