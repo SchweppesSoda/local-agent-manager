@@ -14,6 +14,9 @@ def main(argv=None):
     if arguments and arguments[0] == "state":
         from .state_maintenance import main as state_main
         return state_main(arguments[1:])
+    if arguments and arguments[0] == "maintenance":
+        from .artifact_maintenance import main as maintenance_main
+        return maintenance_main(arguments[1:])
     if arguments == ["resources"] or arguments == ["resources", "--json"]:
         from .resources import describe_resources
         import json

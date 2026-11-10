@@ -80,6 +80,23 @@ T3 导入支持已验证的 Windows Nightly `4353` 和 `4399`，计划绑定实�
 原 `MEMORY.md` 及相关分片。该流程由助手执行，源文件与快照分别选择。
 命令示例、会话导入范围与验证方式见 [Claude 接入流程](skills/agent-management/references/claude-connections.md)。
 
+## 客户端运行数据维护
+
+`maintenance inventory` 统一盘点已知客户端的缓存、诊断日志、历史备份、下载及运行时。
+Windows 下可通过 `maintenance plan/apply` 或已授权范围的 `maintenance run` 清理
+格式合格的 Chromium 缓存、过期轮转日志、满足替代与保留条件的备份及更新器临时下载。
+默认保留期为 14 天，Cindy 数据库备份另保留两代健康的新备份。当前更新包和差分基包、
+共享运行时、原生恢复数据及格式不明的对象会列为保留或待核定项。
+
+```powershell
+local-agent-manager maintenance inventory --client cindy --json
+local-agent-manager maintenance run --client cindy --category logs --older-than-days 14 --clients-closed --json
+```
+
+计划冻结文件和依赖，执行时取得实际文件排他句柄。中断后使用
+`maintenance status/verify` 核验，已尝试的计划不能重放。多 profile 用 `--root`
+限定实际目录。完整规则与恢复入口见 [客户端数据维护](docs/state-maintenance.md#client-artifact-maintenance)。
+
 ## 记录清理
 
 管理器自身的日志通过 `state inventory/cleanup/migrate --root '<数据根>'` 维护。

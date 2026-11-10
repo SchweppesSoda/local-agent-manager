@@ -26,6 +26,7 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
   [Operation evidence and receipts](agent-automation.md#operation-evidence-and-receipts)
   and [Temporary rollback copies](agent-automation.md#temporary-rollback-copies).
 - Manager state cleanup or layout migration: read [State maintenance](state-maintenance.md).
+- Client cache, diagnostic log, historical backup or download maintenance uses `maintenance inventory/plan/apply/run/status/verify` and the qualified rules in [State maintenance](state-maintenance.md#client-artifact-maintenance).
   Use its explicit-root preview/apply commands and retain the permanent lock
   and migration marker at their original location.
 

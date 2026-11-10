@@ -97,13 +97,74 @@ operation documents and original plans remain byte-for-byte intact. An
 unexecuted record-deletion plan can still require regeneration when its
 implementation fingerprints have changed during a manager upgrade.
 
-## Client backups, runtimes and caches: proposed extension
+## Client artifact maintenance
 
-The following is an implementation design, not a currently available cleanup
-command. `state cleanup` remains limited to manager-owned evidence. A database
-backup, an updater download and a session artifact are different targets even
-when all three have a `.bak`, `cache` or `tmp` name. Environment inventory is not
-deletion authorization.
+`maintenance inventory/plan/apply/run/status/verify` handles qualified client
+artifacts through the shared operation store and mutation admission. Inventory
+supports explicit profiles and known default or environment roots for Cindy,
+Codex, Codex desktop, Claude, Pi, T3, Paseo, Antigravity CLI and desktop,
+WorkBuddy, Orca, Herdr and QwenWork. A missing candidate reports its observation
+scope. Custom, portable and additional account profiles require an explicit root.
+The offline artifact writer currently supports Windows file exclusion.
+
+```powershell
+local-agent-manager maintenance inventory --client cindy --json
+local-agent-manager maintenance plan --client cindy --root '<physical profile root>' --category caches --category logs --plan maintenance.json --json
+local-agent-manager maintenance apply --plan maintenance.json --plan-sha256 '<reviewed hash>' --clients-closed --json
+local-agent-manager maintenance run --client cindy --category logs --older-than-days 14 --clients-closed --json
+local-agent-manager maintenance status --root '<physical profile root>' --operation-id '<operation ID>' --json
+local-agent-manager maintenance verify --plan maintenance.json --json
+```
+
+Plan and run require explicit categories. An omitted root selects a unique
+observed profile. Multiple profiles produce a scope blocker. `run` freezes,
+accepts and executes its own plan in one invocation for an already authorized
+scope. `apply` binds the reviewed plan hash. Client closure acknowledgement
+accompanies actual OS leases on every selected file and recovery dependency.
+
+| Category | Executable qualification |
+|---|---|
+| `caches` | Chromium blockfile caches in registered cache locations, recognized index magic/version and ordinary known members. Other cache formats are reported as unqualified. |
+| `logs` | Dated or rotated diagnostics with a qualified Cindy NDJSON or tracing/electron-log header, past retention. Current files and nested session/terminal diagnostics retain their record ownership. |
+| `backups` | Dated Cindy SQLite backups with a recognized migration marker, healthy compatible current database and two healthy newer generations. Codex atomic fallback temporary generations require valid current and fallback JSON slots. Both generation time and mtime must satisfy retention. |
+| `downloads` | Old unselected electron-updater temporary downloads with qualified pending metadata and frozen selected installer/base dependencies. Pending installers, packages and differential bases retain their updater roles. |
+| `runtimes` | Bounded inventory with explicit retained consumer/selection requirements. Runtime pruning requires an owning installer and complete consumer rules. |
+
+The default retention period is 14 days. Cindy backup pruning keeps the newest
+two generations and validates their health before pruning older generations.
+Current fallback slots, native resume caches, checkpoints, memory, credentials
+and manager rollback evidence retain their owning workflows. `state cleanup`
+handles manager recovery metadata.
+
+Cache qualification follows Chromium's
+[blockfile format](https://github.com/chromium/chromium/blob/main/net/disk_cache/blockfile/disk_format.h).
+Temporary download qualification follows electron-updater's
+[download staging](https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/AppUpdater.ts)
+and [temporary-file selection](https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/DownloadedUpdateHelper.ts).
+
+Plans freeze member lists, identities, hashes, implementation fingerprints and
+SQLite sidecar presence or absence. Apply acquires every file lease and rechecks
+missing sidecar slots before its durable mutation marker. It disposes only the
+approved files and leaves directory containers available to their producers.
+New files receive no approval from a directory name.
+
+An interrupted attempt reports `unknown` and cannot replay. Read-only artifact
+verification resolves exact absence or unchanged residual files, preserving an
+unknown result when dependencies or residual identities changed. Known residuals
+require a fresh plan. Status and verify support original journal plan paths,
+external plan copies and root/operation-ID locators after journal compaction.
+An outstanding `apply.lock` keeps the outcome unknown, including a compacted
+completion receipt. Unreadable recovery evidence reports nullable mutation flags.
+
+Reports use `lam.maintenance-inventory.v1` or `lam.maintenance-result.v1` and list
+retained and unqualified observations. A complete result covers the approved
+eligible files. Unmeasured residual counts and reclaimed physical capacity are
+null. Logical bytes describe observed file sizes. Hard links, redirects, unknown
+layouts, access errors and traversal budgets prevent affected qualification.
+Inventory, ready plans and completed eligible actions return 0. Blocked, unknown
+and verified residual outcomes return 3. Argument errors return 2.
+
+The remaining client-specific qualification work follows the design below.
 
 ### Reuse and gaps
 
@@ -115,9 +176,9 @@ deletion authorization.
 | Software lifecycle skill | Owning installer/updater/uninstaller, active version and consumers | Format-qualified download/pruning adapters when the owner exposes no suitable operation |
 | Skill management | Source/discovery bindings, shared resources, deployment journals | Vendor plugin-cache version/refcount rules; a plugin or Skill source is not disposable merely because it is cached |
 
-The next common component should return metadata-only observations for explicit
-or adapter-discovered roots. It should never run a discovered binary. Each
-observation needs root and file identity, source/owner, category and evidence,
+The shared component returns observations for explicit or discovered roots
+without executing discovered binaries. Further adapters need root and file
+identity, source/owner, category and evidence,
 logical and allocated-byte coverage, links skipped, scan races/errors/budgets,
 consumer and recovery dependencies, and a decision of `retain`, `unqualified`
 or `eligible_for_plan`. An observed byte count is not reclaimable capacity.
