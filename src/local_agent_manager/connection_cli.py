@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import TextIO
 
@@ -20,6 +21,13 @@ def _absolute(value: str) -> Path:
 
 
 def add_connection_commands(commands) -> None:
+    cleanup = commands.add_parser("t3-cleanup", help="自动准备 T3 原生记录和桌面绑定")
+    actions = cleanup.add_subparsers(dest="t3_cleanup_action", required=True)
+    prepare = actions.add_parser("prepare", help="从配置和原生 ID 自动发现完整清理所需的绑定")
+    prepare.add_argument("--t3code-root", type=_absolute)
+    prepare.add_argument("--out", type=_absolute, help="可选的绑定文件路径")
+    prepare.add_argument("--json", action="store_true")
+
     connect = commands.add_parser("claude-connect", help="准备或应用 Claude 客户端配置")
     actions = connect.add_subparsers(dest="connection_action", required=True)
     prepare = actions.add_parser("prepare", help="只读生成精确配置计划")
@@ -106,13 +114,20 @@ def _plan_parent(path: Path) -> None:
 
 
 def run_connection_command(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
+    from .t3code_discovery import BindingDiscoveryError, discover_bindings
     from .claude_connection import ClaudeConnectionError, apply_connection, prepare_connection
     from .cindy_memory import CindyMemoryError, export_memory, inspect_memory
     from .claude_session_import import (SessionImportError, prepare_paseo_import,
         prepare_t3code_import, run_session_import, verify_session_import)
 
     try:
-        if args.environment_command == "claude-connect":
+        if args.environment_command == "t3-cleanup":
+            manifest = discover_bindings(args.t3code_root)
+            if args.out:
+                _save_plan(args.out, manifest)
+            report = {"schema_version": "lam.t3-cleanup-prepare.v1", "status": "ready",
+                      "binding_manifest": manifest}
+        elif args.environment_command == "claude-connect":
             if args.connection_action == "prepare":
                 report = prepare_connection(target=args.target, config_path=args.config,
                     claude_binary=args.claude_binary, claude_home=args.claude_home,
@@ -148,12 +163,14 @@ def run_connection_command(args: argparse.Namespace, *, stdout: TextIO, stderr: 
                 report = inspect_memory(**options)
             else:
                 report = export_memory(**options, shards=args.shard, out=args.out)
+    except BindingDiscoveryError as exc:
+        report = {"schema_version": "lam.t3-cleanup-prepare.v1", "status": "blocked", "blockers": exc.blockers}
     except (ClaudeConnectionError, CindyMemoryError, SessionImportError) as exc:
         uncertain = exc.code in {"config_write_unverified", "output_unverified", "config_lock_cleanup_unverified",
                                  "t3code_import_preflight_and_session_revoke_unverified"}
         report = {"schema_version": "larj.connection-error.v1",
                   "status": "unknown" if uncertain else "blocked", "code": exc.code}
-    except (OSError, ValueError, RuntimeError, RecursionError):
+    except (OSError, ValueError, RuntimeError, RecursionError, sqlite3.Error):
         # Parser/config/tool output can contain secrets. Only stable error codes leave the CLI.
         report = {"schema_version": "larj.connection-error.v1", "status": "blocked",
                   "code": "connection_io_or_plan_invalid"}

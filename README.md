@@ -219,19 +219,24 @@ provider 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固
 
 ```powershell
 local-agent-record-janitor records --client t3code --json
+local-agent-manager delete run --client t3code --t3code-only --record-id '<完整 T3 ID 1>' --record-id '<完整 T3 ID 2>' --yes --progress --json
+local-agent-manager environment t3-cleanup prepare --json
 local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json
 local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
 ```
 
 `--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除；支持混合 Antigravity，
 先解除工作树关联，保留 provider 原生会话及工作树，并核验软删除和后台清理结果。
-需要显式 profile 和批准的计划 hash；用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
+单条 plan/apply 可审阅原计划；批量 `run --yes` 自动传递哈希并验证，每条保留独立恢复入口。
+该在线模式按实际 locator、所需字段和执行结果检查兼容，普通升级无需新增版本白名单。
+用法见 [只删 T3](docs/operation-cli.md#只删-t3-会话)。
 
 T3 Nightly `20261108.4353` 起可以用现有 CLI 1.5.0+ 的 `agy acp` 替代受管运行时。
 该模式的原生清理尚未支持，不能复用下述 ACP 1.4.5 绑定；`--t3code-only` 仍保留原生历史。
 切换与卸载方法见 [Antigravity 技能说明](skills/agent-management/references/antigravity.md#switch-t3-to-the-cli-and-remove-the-managed-runtime)。
 
-Windows 显式绑定可使用计划、apply 和冷验证：清理实际 Codex/Claude 存储，或已验证
+Windows 完整清理可自动从 provider 配置和原生 ID 准备绑定，已有显式绑定也可使用。
+计划、apply 和冷验证清理实际 Codex/Claude 存储，或已验证
 T3 ACP 1.4.5 实例的 Antigravity 原生数据库、元数据与会话产物，再清理
 T3 的事件、投影、搜索索引、终端历史和绑定桌面的草稿/布局。执行持有 T3 自身的
 server-owner 锁；未知附件、弱恢复引用、共享会话和远程环境会阻挡。标题、正文与凭据

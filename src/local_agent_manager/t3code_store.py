@@ -169,8 +169,9 @@ def capability(value):
 
 
 class T3CodeAdapter:
-    def __init__(self, *, profile_root):
+    def __init__(self, *, profile_root, binding_errors=()):
         self.profile_root = local_root(profile_root)
+        self.binding_errors = tuple(binding_errors)
         self.observation = None
         self._snapshot = None
 
@@ -178,7 +179,7 @@ class T3CodeAdapter:
         if self._snapshot is not None and not refresh:
             return self._snapshot
         path = self.profile_root / RELATIVE
-        errors, references = [], []
+        errors, references = list(self.binding_errors), []
         self.observation = None
         try:
             self.observation = read_database(self.profile_root)

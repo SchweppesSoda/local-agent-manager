@@ -25,6 +25,21 @@ def engine(provider):
     return 'antigravity' if provider == 'antigravity' else inventory_engine(provider)
 
 
+def thread_engine(row, providers):
+    backend = engine(row["default_provider"])
+    if backend in _NATIVE_ENGINES:
+        return backend
+    # Recent T3 stores the custom instance ID as default_provider. Resolve its
+    # driver from persisted provider rows for that exact thread and instance.
+    matches = [item for item in providers if item["thread_id"] == row["thread_id"]]
+    backends = {engine(item["driver"]) for item in matches}
+    if (row["default_provider"] == row["provider_instance_id"] and len(backends) == 1
+            and backends <= _NATIVE_ENGINES
+            and all(item["provider_instance_id"] == row["provider_instance_id"] for item in matches)):
+        return next(iter(backends))
+    fail("provider_binding_conflict")
+
+
 def validate_manifest(value):
     fields = {"schema_version", "profile_root", "environment_id", "runtime_binaries", "native_stores", "desktop_profiles"}
     if not isinstance(value, dict):
@@ -165,7 +180,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
             if binding is None or len(copies) != 1 or copies[0]["version"] != "v2":
                 fail("thread_native_root_unbound")
             row = copies[0]
-            if binding["engine"] != engine(row["default_provider"]):
+            if binding["engine"] != thread_engine(row, data["providers"]):
                 fail("provider_binding_conflict")
             if any(p['thread_id'] == thread_id and engine(p['driver'] or p['provider']) != binding['engine'] for p in data['providers']):
                 fail('provider_binding_conflict')

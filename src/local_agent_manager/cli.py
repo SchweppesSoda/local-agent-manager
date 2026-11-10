@@ -543,7 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="delete plan/apply：只通过本机 Paseo daemon 删除一条 Paseo 记录，保留 provider 原生会话",
     )
     delete.add_argument("--t3code-only", action="store_true",
-                        help="delete plan/apply：按完整 thread ID 调用 T3 自带删除，保留原生会话和工作树")
+                        help="delete plan/apply/run：按完整 thread ID 调用 T3 自带删除。run --yes 支持多条")
     delete.add_argument(
         "--yes",
         action="store_true",
@@ -1512,8 +1512,9 @@ def _run_operation_backend(
                 operation_kwargs["scope"] = scope
                 operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
             if (scope or {}).get("t3code_only"):
+                from .t3code_store import default_root
                 operation_kwargs["scope"] = scope
-                operation_kwargs["t3code_roots"] = tuple(args.t3code_root or ())
+                operation_kwargs["t3code_roots"] = tuple(args.t3code_root or (default_root(),))
             result = coordinator.plan_operation(**operation_kwargs)
         elif verb == "apply":
             operation_kwargs = {
@@ -1546,6 +1547,12 @@ def _run_operation_backend(
                 operation_kwargs["t3code_bindings"] = args.t3code_bindings
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
+            if (scope or {}).get("t3code_only"):
+                from .t3code_workflow import run_server_batch
+                result = run_server_batch(coordinator, record_ids=scope["record_ids"],
+                    roots=tuple(args.t3code_root or ()), authorized=args.yes, out=args.out,
+                    timeout=float(args.timeout), progress_callback=progress_callback)
+                return _emit_operation_payload(result, json_output=bool(args.json), stdout=stdout, stderr=stderr)
             if supplied_adapters is None and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
@@ -1656,8 +1663,11 @@ def _run_delete_operation(
                 raise ValueError("--paseo-only 仅用于 delete plan/apply，不能与 --paseo-bindings 合用")
             scope["paseo_only"] = True
         if args.t3code_only:
-            if verb not in {"plan", "apply"} or args.t3code_bindings or args.paseo_bindings or args.paseo_only:
-                raise ValueError("--t3code-only 仅用于 delete plan/apply，不能与绑定清理或 --paseo-only 合用")
+            if verb not in {"plan", "apply", "run"} or args.t3code_bindings or args.paseo_bindings or args.paseo_only:
+                raise ValueError("--t3code-only 用于 delete plan/apply/run，不能与绑定清理或 --paseo-only 合用")
+            if verb == "run" and (scope.get("client") != "t3code" or not scope.get("record_ids")
+                                  or scope.get("projects") or scope.get("all_projects") or scope.get("engines")):
+                raise ValueError("T3 自动删除需要 --client t3code 和完整 --record-id")
             scope["t3code_only"] = True
     except ValueError as exc:
         payload = _operation_error_payload(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import sqlite3
 from typing import Any
 
 from .adapters import CindyAdapter, NativeIntegrityAdapter, OrcaAdapter, HerdrAdapter, WorkBuddyAdapter, OfficeAdapter
@@ -123,7 +124,26 @@ def create_default_adapters(args: Any) -> list[object]:
         from .t3code_store import T3CodeAdapter, default_root as t3code_default_root
         roots = t3code_roots or (t3code_default_root(),)
         unique = {os.path.normcase(os.path.normpath(os.fspath(root))): root for root in roots}
-        adapters.extend(T3CodeAdapter(profile_root=root) for root in unique.values())
+        automatic_cleanup = (getattr(args, "command", None) == "delete"
+                             and getattr(args, "client", None) == "t3code"
+                             and getattr(args, "delete_action", None) in {"plan", "run"}
+                             and not getattr(args, "t3code_only", False))
+        if automatic_cleanup:
+            from .t3code_discovery import BindingDiscoveryError, discover_bindings
+            from .t3code_bound_adapter import T3CodeBoundAdapter
+            from .client_contracts import SourceFailure
+            for root in unique.values():
+                try:
+                    adapters.append(T3CodeBoundAdapter(discover_bindings(root)))
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                    codes = ["t3code_binding_discovery_unverified"]
+                    if isinstance(exc, BindingDiscoveryError):
+                        codes = sorted({item["blocker_code"] for item in exc.blockers})
+                    error = SourceFailure(str(Path(root) / "userdata/settings.json"), ", ".join(codes),
+                                          profile_root=Path(root), error_type="T3CodeBindingDiscovery")
+                    adapters.append(T3CodeAdapter(profile_root=root, binding_errors=(error,)))
+        else:
+            adapters.extend(T3CodeAdapter(profile_root=root) for root in unique.values())
     paseo_roots = tuple(getattr(args, "paseo_root", ()) or ())
     if getattr(args, "paseo_bindings", None) is not None:
         from .paseo_bound_adapter import PaseoBoundAdapter, load_manifest

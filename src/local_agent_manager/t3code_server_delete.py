@@ -21,18 +21,20 @@ from .office_cleanup import digest
 from .planning import ActionImpact, ActionKind, CandidateAction, RiskLevel, ScanStatus, StorageLocation, TargetRef, storage_id_for_path
 from .record_identity import canonical_path
 from .sqlite_utils import connect_readonly
-from .t3code_store import V2, database_path, engine, identifier, local_root, qualify, rows
+from .t3code_store import V2, database_path, engine, identifier, local_root, rows
 
 KIND = 'delete_t3code_server_thread'
 SCHEMA = 'larj.t3code-server-delete.v1'
-VERSIONS = (
-    '0.1.8-nightly.20261107.4301',
-    '0.1.8-nightly.20261108.4353',
-    '0.1.8-nightly.20261108.4380',
-    '0.1.8-nightly.20261109.4399',
-)
 _ENTRY = 'resources/server.asar/apps/server/dist/bin.mjs'
 _RUNTIME_FILES = ('T3 Code (Nightly).exe', 'resources/app.asar', 'resources/server.asar')
+_PROJECTION_COLUMNS = {
+    V2 + 'threads': {'thread_id', 'project_id', 'default_provider', 'provider_instance_id', 'deleted_at', 'payload_json'},
+    V2 + 'runs': {'thread_id', 'status'},
+    V2 + 'provider_sessions': {'provider_session_id', 'thread_id', 'status'},
+    V2 + 'provider_session_bindings': {'provider_session_id', 'thread_id'},
+    V2 + 'provider_threads': {'provider_thread_id', 'thread_id', 'provider', 'driver', 'provider_instance_id', 'payload_json'},
+    'orchestration_v2_effect_outbox': {'effect_id', 'thread_id', 'status'},
+}
 
 
 class T3ServerError(RuntimeError):
@@ -68,7 +70,7 @@ def _locator(root):
         state = json.loads(raw)
         url = urlsplit(state['origin'])
         if (state['version'] != 1 or type(state['pid']) is not int or state['pid'] <= 0
-                or state.get('serverVersion') not in VERSIONS or not state.get('ownerId')
+                or not _version_label(state.get('serverVersion')) or not state.get('ownerId')
                 or url.scheme != 'http' or url.hostname != '127.0.0.1'
                 or url.port != state['port'] or not 1 <= url.port <= 65535
                 or url.path not in ('', '/') or url.query or url.fragment or url.username or url.password
@@ -79,10 +81,24 @@ def _locator(root):
         raise T3ServerError('t3code_local_server_unproven') from None
 
 
+def _version_label(value):
+    return isinstance(value, str) and 0 < len(value) <= 128 and all(32 < ord(char) < 127 for char in value)
+
+
+def _qualify_projection(db):
+    # The product owns all writes in this mode. Only the readback contract is
+    # required here, so additive tables, columns and indexes can evolve freely.
+    for table, required in _PROJECTION_COLUMNS.items():
+        kind = db.execute('SELECT type FROM sqlite_master WHERE name=?', (table,)).fetchone()
+        columns = {row['name'] for row in db.execute(f'PRAGMA table_info("{table}")')}
+        if kind is None or kind['type'] != 'table' or not required <= columns:
+            raise T3ServerError('t3code_server_projection_unverified')
+
+
 def _snapshot(root, thread_id):
     with closing(connect_readonly(database_path(root))) as db:
         db.execute('BEGIN')
-        qualify(db)
+        _qualify_projection(db)
         record = rows(db, f'''SELECT thread_id,project_id,default_provider,provider_instance_id,deleted_at,
             json_extract(payload_json,'$.worktreePath') AS worktree_path,
             json_extract(payload_json,'$.branch') AS branch FROM {V2}threads WHERE thread_id=?''', (thread_id,))
@@ -200,7 +216,7 @@ def approved_evidence(document):
     e = action['impact']['external_action_payload']['t3code_server_evidence']
     local_root(e['root']); identifier(e['thread_id'])
     if (e['schema_version'] != SCHEMA or list(scope['record_ids']) != [e['thread_id']]
-            or e['install'] != str(_bundled_install()) or e['server']['serverVersion'] not in VERSIONS
+            or e['install'] != str(_bundled_install()) or not _version_label(e['server']['serverVersion'])
             or e['before']['thread_id'] != e['thread_id'] or e['before'].get('deleted_at') is not None
             or e['provider_history'] != 'preserved' or e['worktree_policy'] != 'detach_and_preserve'
             or e['deletion_semantics'] != 't3_soft_delete'):

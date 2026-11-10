@@ -384,16 +384,30 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 
 Windows `--t3code-only` 使用本机已安装 T3 Nightly 的 CLI 发放短期凭证，通过该 profile
 的回环服务调用 `thread.delete`。要求服务运行、所选 thread 空闲、完整 ID 精确匹配，
-并显式指定一个 T3 home；不接受 ID 前缀、批量 project 范围或 native bindings。
-支持已验证的 Nightly `0.1.8-nightly.20261107.4301`、`0.1.8-nightly.20261108.4353`、
-`0.1.8-nightly.20261108.4380`、`0.1.8-nightly.20261109.4399` 和固定数据库结构。
-此版本资格限于内置删除，历史导入和原生记录清理分别验证。
+使用一个 T3 home，省略 `--t3code-root` 时采用 `T3CODE_HOME` 或 `~/.t3`。
+不接受 ID 前缀、批量 project 范围或 native bindings。版本号只作运行信息记录。
+准入检查本机 locator、所需投影表和列、冻结的运行文件、所选线程及 provider 状态。
+增加无关表、列或索引可以继续使用该入口，缺少必需字段会阻挡。
+RPC 仍使用既有本机认证和 orchestration protocol 2，成功必须经过实际结果回读。
+原生记录的直接磁盘清理与历史导入各自沿用对应格式和接口契约。
 
 ```powershell
 local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json
 local-agent-record-janitor delete apply --t3code-only --operation-id '<计划中的 operation_id>' --plan t3-only.json --plan-sha256 '<已批准的 plan_sha256>' --json
 local-agent-record-janitor operation verify --operation-id '<同一 operation_id>' --plan t3-only.json --json
 ```
+
+已授权的多个完整 ID 可用一条命令自动完成计划、应用和验证。
+
+```powershell
+local-agent-manager delete run --client t3code --t3code-only --record-id '<完整 T3 ID 1>' --record-id '<完整 T3 ID 2>' --yes --progress --json
+```
+
+`--yes` 确认这组精确 ID 的 T3 内置删除范围。批量 run 先为所有 ID 生成独立计划，
+预检都通过才开始写入，自动传递实际计划哈希。每个操作都有原计划路径和单独的
+`operation status/verify` 恢复入口。可用 `--out batch.json` 保存批次定位清单，
+相邻的 `batch.1.plan.json` 等文件保存各线程原计划。发生 unknown 时只运行
+status/verify，未收敛就停止后续线程；不会自动重发删除。
 
 计划固定 profile、environment ID、服务实例、运行文件摘要和所选记录。删除前先通过
 `thread.metadata.update` 的预期路径/分支条件解除工作树关联，读回确认后再删除，
@@ -413,6 +427,23 @@ Codex、Claude、Antigravity 混合 profile 不需要原生绑定，选中 Antig
 先用 `records --client t3code --json` 获取元数据，或用可重复的 `--t3code-root` 指定
 实际 T3 home（包含 `userdata` 的目录，不是 Electron 桌面 profile）。默认使用
 `T3CODE_HOME` 或 `~/.t3`。普通 inventory 不执行删除，也不推断原生 provider 根目录。
+
+`delete plan/run --client t3code` 省略 `--t3code-bindings` 时自动准备绑定。
+准备流程读取 provider instance、配置的原生 home 和 executable，并用原生会话 ID
+及历史引用核对归属，支持自定义 instance ID。已知桌面 profile 一并纳入原有计划。
+已有显式绑定文件仍可继续使用。
+
+```powershell
+local-agent-manager environment t3-cleanup prepare --json
+local-agent-manager delete plan --client t3code --record-id '<完整 T3 ID>' --out plan.json --json
+local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --clients-closed --progress --json
+```
+
+独立 prepare 命令返回绑定或结构化 blockers，可用 `--out bindings.json` 保存。
+准备和计划均不删除记录、不关闭程序。完整清理执行仍要求相关写入进程退出，并持有
+原有生命周期锁。受当前会话占用时，助手须按已授权范围办理关闭或执行器交接。
+无法证明的旧 home、历史句柄、原生格式及共享引用会汇总报告并保留。
+自动发现失败时 plan 仍生成阻挡计划，不会将完整清理自动改成 T3 软删除。
 
 Antigravity 记录仍使用 `unsupported:antigravity`；元数据的
 `provider_backend_family_hint=antigravity-acp` 只描述内置实现线索，

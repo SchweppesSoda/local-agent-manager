@@ -35,7 +35,7 @@ class T3ServerDeleteTests(unittest.TestCase):
         db.commit();db.close()
         (self.root/'userdata/environment-id').write_text('env-fixture')
         self.server = {'version':1,'pid':123,'origin':'http://127.0.0.1:6767','port':6767,'startedAt':'fixture',
-                       'serverVersion':t3.VERSIONS[-1],'ownerId':'owner-fixture'}
+                       'serverVersion':'0.1.9-nightly.20261109.4443','ownerId':'owner-fixture'}
         (self.root/'userdata/server-runtime.json').write_text(json.dumps(self.server))
         install = self.base/'install'
         for part in t3._RUNTIME_FILES:
@@ -104,6 +104,43 @@ class T3ServerDeleteTests(unittest.TestCase):
         self.assertEqual([c['type'] for c in self.calls],['thread.delete'])
         self.assertEqual(self.native.read_bytes(),b'retained provider history')
 
+    def test_batch_run_plans_and_verifies_both_ids_without_manual_hashes(self):
+        output = self.base / 'batch.json'
+        code, result = self.invoke('delete', 'run', '--client', 't3code', '--t3code-only',
+            '--t3code-root', str(self.root), '--record-id', THREAD, '--record-id', KEEP,
+            '--yes', '--out', str(output))
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['goal_satisfied'])
+        self.assertEqual(len(result['plans']), 2)
+        manifest = json.loads(output.read_text())
+        self.assertEqual(len(manifest['plans']), 2)
+        self.assertEqual([c['type'] for c in self.calls], ['thread.metadata.update', 'thread.delete', 'thread.delete'])
+        for plan in result['plans']:
+            code, checked = self.invoke('operation', 'verify', '--operation-id', plan['operation_id'], '--plan', plan['plan_path'])
+            self.assertEqual(checked['goal_status'], 'complete', checked)
+
+    def test_batch_preflight_checks_every_target_before_any_mutation(self):
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db, V2+'provider_sessions', provider_session_id='busy', thread_id=KEEP, status='running')
+            db.commit()
+        code, result = self.invoke('delete', 'run', '--client', 't3code', '--t3code-only',
+            '--t3code-root', str(self.root), '--record-id', THREAD, '--record-id', KEEP, '--yes')
+        self.assertEqual(code, 3, result)
+        self.assertFalse(result['mutation_started'])
+        self.assertEqual(self.calls, [])
+
+    def test_batch_requires_authorization_and_unknown_is_not_replayed(self):
+        arguments = ('delete', 'run', '--client', 't3code', '--t3code-only',
+            '--t3code-root', str(self.root), '--record-id', THREAD, '--record-id', KEEP)
+        self.assertNotEqual(self.invoke(*arguments)[0], 0)
+        self.assertEqual(self.calls, [])
+        self.ack_only = True
+        code, result = self.invoke(*arguments, '--yes')
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result['goal_satisfied'])
+        self.assertEqual(sum(c['type'] == 'thread.delete' for c in self.calls), 1)
+        self.assertIsNone(t3._snapshot(self.root, KEEP).get('deleted_at'))
+
     def test_prefix_wrong_profile_missing_approval_and_drift_block(self):
         self.assertNotEqual(self.plan(THREAD[:8])[0],0)
         code,plan=self.plan();self.assertEqual(code,0,plan)
@@ -144,9 +181,23 @@ class T3ServerDeleteTests(unittest.TestCase):
         self.assertNotEqual(self.plan(THREAD,'--paseo-only')[0],0)
         self.assertEqual(self.calls,[])
 
-    def test_unqualified_server_version_is_rejected_before_rpc(self):
-        self.server['serverVersion'] = '0.1.8-nightly.20261109.9999'
+    def test_new_versions_and_additive_schema_changes_use_existing_contract(self):
+        self.server['serverVersion'] = '0.1.9-nightly.20261109.4443'
         (self.root / 'userdata/server-runtime.json').write_text(json.dumps(self.server))
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            db.execute(f'ALTER TABLE {V2}threads ADD COLUMN future_metadata TEXT')
+            db.execute('CREATE TABLE future_feature(id TEXT PRIMARY KEY)')
+            db.commit()
+        code, plan = self.plan()
+        self.assertEqual(code, 0, plan)
+        code, result = self.apply(plan)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(self.verify(plan)[1]['goal_status'], 'complete')
+
+    def test_incompatible_projection_or_locator_blocks_before_rpc(self):
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            db.execute(f'ALTER TABLE {V2}threads RENAME COLUMN deleted_at TO incompatible_delete')
+            db.commit()
         self.assertNotEqual(self.plan()[0], 0)
         self.assertEqual(self.calls, [])
 

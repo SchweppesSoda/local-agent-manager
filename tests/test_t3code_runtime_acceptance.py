@@ -217,26 +217,23 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
                 with closing(sqlite3.connect(root/'userdata/statev2.sqlite')) as db:
                     db.execute("INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES('fixture','fixture',?,'[]',?,?)",
                         (str(repo),'2026-11-08T00:00:00Z','2026-11-08T00:00:00Z'));db.commit()
-                for tid,driver in ((TARGET,'codex'),(KEEP,'antigravity')):
+                unselected = '44444444-4444-4444-8444-444444444444'
+                for tid,driver in ((TARGET,'codex'),(KEEP,'antigravity'),(unselected,'codex')):
                     t3._rpc(evidence,[{'type':'thread.create','commandId':'fixture-'+tid,'threadId':tid,'projectId':'fixture',
                         'title':'fixture','createdBy':'user','creationSource':'web','modelSelection':{'instanceId':driver,'model':'fixture'},
                         'runtimeMode':'full-access','interactionMode':'default','branch':'fixture' if tid==TARGET else None,
                         'worktreePath':str(worktree) if tid==TARGET else None,
                         'importedNativeThread':{'ref':{'driver':driver,'nativeId':NATIVE,'strength':'strong'}}}],30)
-                keeper=t3._snapshot(root,KEEP)
+                keeper=t3._snapshot(root,unselected)
                 coordinator=OperationCoordinator(CleanupService())
-                for tid in (TARGET,KEEP):
-                    plan_path=root/(tid+'.plan.json')
-                    plan=coordinator.plan_operation(scope={'client':'t3code','t3code_only':True,'record_ids':[tid]},
-                        t3code_roots=[root],plan_path=plan_path)
-                    self.assertEqual(plan['goal_status'],'ready',plan)
-                    result=coordinator.apply_operation(scope={'t3code_only':True},operation_id=plan['operation_id'],
-                        plan_path=plan_path,plan_sha256=plan['plan_sha256'])
-                    self.assertEqual(result['goal_status'],'complete',result)
-                    self.assertEqual(coordinator.verify_operation(operation_id=plan['operation_id'],plan_path=plan_path)['goal_status'],'complete')
-                    self.assertEqual(native.read_bytes(),b'native sentinel')
-                    self.assertEqual((worktree/'keep.txt').read_text(),'committed worktree sentinel')
-                    if tid==TARGET:self.assertEqual(t3._snapshot(root,KEEP),keeper)
+                from local_agent_manager.t3code_workflow import run_server_batch
+                result=run_server_batch(coordinator, record_ids=(TARGET,KEEP), roots=(root,),
+                    authorized=True, out=root/'batch.json')
+                self.assertEqual(result['goal_status'],'complete',result)
+                self.assertEqual(len(result['plans']),2)
+                self.assertEqual(native.read_bytes(),b'native sentinel')
+                self.assertEqual((worktree/'keep.txt').read_text(),'committed worktree sentinel')
+                self.assertEqual(t3._snapshot(root,unselected),keeper)
                 git('worktree','list','--porcelain')
                 self.assertIn(str(worktree).replace('\\','/'),subprocess.run(['git','-C',str(repo),'worktree','list','--porcelain'],capture_output=True,text=True,check=True).stdout)
 
