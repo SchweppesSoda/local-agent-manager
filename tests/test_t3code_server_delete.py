@@ -161,6 +161,17 @@ class T3ServerDeleteTests(unittest.TestCase):
             db.commit()
         self.assertNotEqual(self.plan()[0],0)
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db,V2+'provider_session_bindings',provider_session_id='provider-session',thread_id=THREAD)
+            db.execute(f'DELETE FROM {V2}provider_sessions')
+            db.commit()
+        self.assertNotEqual(self.plan()[0],0)
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db,V2+'provider_sessions',provider_session_id='provider-session',thread_id=THREAD,status='stopped')
+            db.commit()
+        code,plan=self.plan();self.assertEqual(code,0,plan)
+        self.plan_path.unlink()
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f"UPDATE {V2}provider_sessions SET status='ready'")
             db.execute(f'DELETE FROM {V2}provider_session_bindings');db.commit()
         code,plan=self.plan();self.assertEqual(code,0,plan)
         code,result=self.apply(plan);self.assertEqual(code,0,result)

@@ -1815,7 +1815,7 @@ class OperationCoordinator:
             # every rollout twice before one plan is written.
             from .inventory import build_session_catalog
             from .manual_delete import build_manual_delete_plan
-            from .native_project_cleanup import merge_project_context
+            from .native_project_cleanup import merge_project_context, projects_for_adapters
 
             catalog = build_session_catalog(selected)
             manual_plan = build_manual_delete_plan(catalog)
@@ -1830,9 +1830,10 @@ class OperationCoordinator:
                 for record in catalog.records
                 if record.indexed or record.rollouts or record.frontend_references
             }
+            project_ids = {project.project_id for project in projects_for_adapters(selected)}
             desktop_ids = tuple(
                 value for value in explicit_session_ids
-                if value not in catalog_ids and self._is_full_thread_id(value)
+                if value not in catalog_ids and value not in project_ids and self._is_full_thread_id(value)
             )
             scoped = []
             has_desktop_residuals = False

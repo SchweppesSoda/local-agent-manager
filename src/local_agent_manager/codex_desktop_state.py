@@ -445,7 +445,14 @@ def find_state_references(
     elif isinstance(value, list):
         for index, child in enumerate(value):
             child_path = f"{path}[{index}]"
-            if isinstance(child, str) and child in targets:
+            if isinstance(child, str) and (
+                child in targets
+                or any(
+                    child == f"{prefix}{target}"
+                    for target in targets
+                    for prefix in ("local:", "codex:project:", "chatgpt:project:")
+                )
+            ):
                 references.append(f"value:{child_path}")
                 continue
             references.extend(find_state_references(child, targets, child_path))
@@ -480,7 +487,14 @@ def strip_state_references(
         cleaned_list: list[Any] = []
         for index, child in enumerate(value):
             child_path = f"{path}[{index}]"
-            if isinstance(child, str) and child in targets:
+            if isinstance(child, str) and (
+                child in targets
+                or any(
+                    child == f"{prefix}{target}"
+                    for target in targets
+                    for prefix in ("local:", "codex:project:", "chatgpt:project:")
+                )
+            ):
                 removed.append(f"value:{child_path}")
                 continue
             cleaned_child, child_removed = strip_state_references(

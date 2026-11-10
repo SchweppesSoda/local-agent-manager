@@ -16,6 +16,10 @@ Check current official product documentation for the requested channel, platform
 
 Use the exact paths and identities again when checking the result. Refresh the shell or frontend if it inherited old environment variables. For uninstall, check package and launcher absence separately and check that any intended retained consumer still resolves. For install/update, verify version and selection, then verify provider use at the layer requested by the user. Follow [runtime and migration](runtime-and-migration.md) for verification steps.
 
-For an installer launched from a packaged Agent, verify its physical destination and accessibility through the user's actual launcher. A successful version probe inside the installing Agent covers that context. Follow [AppData redirection checks](runtime-and-migration.md#windows-file-visibility-and-appdata-redirection) when an external consumer cannot see the same path.
-
 Report uninstall scope precisely: program files, extraction caches, retained profiles and shared resources have separate outcomes. Removing a runtime does not establish that its old instance data was removed. For T3 Antigravity, use the [instance-data scope checks](antigravity.md#distinguish-uninstall-results-from-discarded-instance-data) before treating an old profile as a selected disposal target.
+
+## Standalone CLI installation on Windows
+
+Run the vendor installer or package manager in a normal Windows host shell for the intended user, outside the packaged Agent's private or sandboxed environment. Before running an installer, verify the account, effective AppData roots, and the destination for the chosen install scope. Keep the standalone executable and its command entry point in the vendor-supported host locations, outside desktop app caches and sandbox directories. If the host shell is unavailable, give the user the exact installer command and the context in which to run it.
+
+From a fresh shell in that user's normal launch context, check `Get-Command <name> -All`, resolve any shim to its executable, and verify the physical install path and version. If a frontend will use the CLI, check resolution in that frontend's actual launcher or backend context as well. For discrepancies, follow [Windows PATH inheritance](runtime-and-migration.md#windows-path-inheritance) and [AppData redirection checks](runtime-and-migration.md#windows-file-visibility-and-appdata-redirection).

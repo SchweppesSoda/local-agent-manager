@@ -28,6 +28,11 @@ Only these keys may be removed, in the main global-state file and its existing
 - `local-projects[project_id]`;
 - the boolean `sidebar-project-expanded-v1-chatgpt:<id>` or
   `sidebar-project-expanded-v1-codex:<id>` atom;
+- `codex:project:<id>` or `chatgpt:project:<id>` entries in the
+  `unified-sidebar-project-order-v1` atom;
+- local computer mappings to `<id>` in the `new-task-project-by-computer` atom;
+- `<id>` entries in top-level `project-order`;
+- top-level `selected-project` when it selects local `<id>`;
 - the selected ID in `app-server-project-id-by-legacy-project-id-by-host`, for
   the exact `local:<CODEX_HOME>` host only.
 

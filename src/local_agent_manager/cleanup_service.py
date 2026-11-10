@@ -175,7 +175,7 @@ def _mutation_resource_key(action: Any, family: str) -> tuple[str, ...]:
     elif family == "remove_broken_relation":
         attributes = ("relation_database_paths",)
     elif family == "remove_desktop_state":
-        attributes = ("desktop_database_paths", "desktop_global_state_paths")
+        attributes = ("desktop_database_paths",)
     else:
         attributes = ("external_storage_root",)
     values: list[str] = []

@@ -74,6 +74,22 @@ class NativeProjectCleanupTests(unittest.TestCase):
         self.assertFalse(list(self.home.glob(".larj-project-*")))
         self.assertEqual(remaining_native_project_markers(self.home, (self.project_id,)), ())
 
+    def test_removes_sidebar_order_and_selected_project_references(self):
+        self.data["electron-persisted-atom-state"]["unified-sidebar-project-order-v1"] = [
+            "codex:project:" + self.project_id,
+            "codex:project:keep",
+        ]
+        self.data["electron-persisted-atom-state"]["new-task-project-by-computer"] = {
+            '["comp-1","user-1","local"]': self.project_id,
+            '["comp-2","user-1","local"]': "keep",
+        }
+        self.data["project-order"] = [self.project_id, "keep"]
+        self.data["selected-project"] = {"type": "local", "projectId": self.project_id}
+        self.write()
+        result = self.run_cleanup(self.evidence())
+        self.assertEqual(result.entries_removed, 14)
+        self.assertEqual(remaining_native_project_markers(self.home, (self.project_id,)), ())
+
     def test_changed_backup_and_new_backup_block(self):
         evidence = self.evidence()
         (self.home / STATE_FILES[1]).write_text("{}", encoding="utf-8")
