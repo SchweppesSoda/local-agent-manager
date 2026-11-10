@@ -30,8 +30,29 @@ class SupervisorTests(unittest.TestCase):
 
     def test_long_progress_outlives_many_intervals_without_kill(self):
         notices = self.run_child("import sys,time\nfor i in range(12):\n print(i,file=sys.stderr,flush=True);time.sleep(.025)\nprint('complete')")
+        # Hosted scheduling can exceed the tiny diagnostic interval even while
+        # this child makes progress. A stall notice must never kill or replay it.
+        self.assertEqual(notices[-1]['status'], 'exited')
+        self.assertTrue(all(not n.get('writer_terminated', False) for n in notices))
+        self.assertTrue(all(not n.get('replay_allowed', False) for n in notices))
+
+    def test_observed_progress_resets_idle_across_many_intervals(self):
+        child = Mock(pid=123)
+        child.wait.side_effect = [subprocess.TimeoutExpired('synthetic', .01)] * 12 + [0]
+        notices = []
+        with patch('local_agent_manager.supervised_cli.subprocess.Popen', return_value=child), \
+                patch('local_agent_manager.supervised_cli.time.monotonic',
+                      side_effect=[0] + [i * .025 for i in range(1, 14)]), \
+                patch('local_agent_manager.supervised_cli.Path.stat',
+                      side_effect=[Mock(st_size=i, st_mtime_ns=i) for i in range(12)]):
+            result = wait_with_diagnostics(['synthetic'], stdout=None, stderr=None,
+                progress_path='unused', observe=notices.append, idle_seconds=.05, poll_seconds=.01)
+        self.assertEqual(result.returncode, 0)
         self.assertTrue(any(n['status'] == 'running' for n in notices), notices)
         self.assertFalse(any(n['status'] == 'suspected_stall' for n in notices), notices)
+        self.assertGreater(notices[-1]['elapsed_seconds'], .05 * 5)
+        child.kill.assert_not_called()
+        child.terminate.assert_not_called()
 
     def test_idle_is_diagnosed_but_not_killed_or_replayed(self):
         notices = self.run_child("import time;time.sleep(.25);print('complete')")
