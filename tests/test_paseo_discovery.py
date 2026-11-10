@@ -69,7 +69,7 @@ class PaseoDiscoveryTests(unittest.TestCase):
         write(self.root / "agents" / (AGENT + ".json"), value)
         with self.assertRaises(BindingDiscoveryError) as raised:
             discover_bindings(self.root)
-        self.assertEqual(raised.exception.blockers[0]["blocker_code"], "provider_native_cleanup_unsupported")
+        self.assertEqual(raised.exception.blockers[0]["blocker_code"], "antigravity_handle_unqualified")
 
     def test_other_clients_keep_paseo_as_readonly_guard(self):
         from local_agent_manager.adapter_factory import create_default_adapters

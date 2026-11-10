@@ -169,7 +169,7 @@ class PaseoStoreTests(unittest.TestCase):
                 "server_id": "srv_fixture", "runtime_binaries": [str(runtime)], "desktop_profiles": [],
                 "native_stores": [{"agent_id": "keeper", "engine": "codex", "root": str(native_root)}]}
             for engine, message in (
-                ("antigravity", "paseo_binding_store_invalid"),
+                ("antigravity", "antigravity_cli_binding_layout_unqualified"),
                 ("codex", "paseo_agent_native_root_unbound"),
             ):
                 with self.subTest(forged_engine=engine):

@@ -41,6 +41,20 @@ def _environment(*layers):
 def _binding(entry, settings, cache):
     row, value = entry["row"], entry["value"]
     backend = row["provider"]
+    if backend == 'antigravity':
+        from .antigravity_cli_binding import paseo_launch
+        from .antigravity_cli_operations import records
+        if not row.get('antigravity_handle_qualified'):
+            raise ValueError('antigravity_handle_unqualified')
+        binary, home = paseo_launch(settings.get(backend, {}), value.get('launchEnv', {}))
+        root = _directory(home/'.gemini/antigravity-cli')
+        key = backend, canonical_path(root)
+        if key not in cache:
+            cache[key] = {r['record_id'] for r in records(root)['records']}
+        if any(h['value'] not in cache[key] for h in row['references']):
+            raise ValueError('native_handle_not_in_configured_home')
+        return {'agent_id': row['id'], 'engine': backend, 'root': str(root), 'native_layout': 'cli',
+                'cli_binary': str(binary), 'cli_user_home': str(home)}
     if backend not in {"codex", "claude", "pi"}:
         raise ValueError("provider_native_cleanup_unsupported")
     provider = settings.get(backend, {})
@@ -141,7 +155,8 @@ def discover_bindings(root=None):
         desktops.append({"root": str(desktop), "electron_runtime": str(_directory(runtime) if runtime else install),
                          "runtime_binaries": [str(binary)]})
     manifest = validate_manifest({"schema_version": SCHEMA, "profile_root": str(root), "server_id": _server_id(root),
-        "runtime_binaries": [str(binary)], "native_stores": list(bindings.values()), "desktop_profiles": desktops})
+        "runtime_binaries": sorted({str(binary), *(b['cli_binary'] for b in bindings.values() if b.get('native_layout') == 'cli')}),
+        "native_stores": list(bindings.values()), "desktop_profiles": desktops})
     # The bound adapter additionally proves Pi UUID/path/cwd agreement and
     # rejects opaque or conflicting handles before returning a usable binding.
     PaseoBoundAdapter(manifest).snapshot_references()

@@ -315,7 +315,8 @@ Unproven bindings block planning. Frozen bindings drive apply and cold status/ve
 [Paseo boundaries](adapters.md#paseoagent-注册记录只读盘点).
 
 For `antigravity`, inventory retains `unsupported:antigravity` and reports a
-`provider_backend_family_hint` plus `native_cleanup_status=unsupported` in record
+`provider_backend_family_hint` plus `native_cleanup_status=requires_paseo_binding` for qualified built-in handles
+(or `unsupported` for unknown variants) in record
 metadata. The hint describes the built-in provider family; custom implementations
 and effective native homes still require evidence. It does not enable deletion or
 make a serialized provider handle a native record ID. See
@@ -359,7 +360,8 @@ local-agent-manager delete run --client paseo --record-id '<完整 Paseo agent I
 自动发现核对 provider 环境、逐 agent 的 `launchEnv` 及所有已保存原生句柄。
 逐 agent 环境覆盖 provider 环境，默认目录需由实际原生 ID 或 Pi 文件头证明。
 自定义 provider 实现、额外启动参数和未知原生目录仍需显式资格。
-独立 Antigravity CLI 使用下文独立入口；Paseo 的完整清理尚未组合该原生 writer。
+内置 Antigravity 插件的已验证句柄可绑定 CLI 原生 writer，见下文
+[T3/Paseo 与 CLI 联合清理](#t3paseo-与-antigravity-cli-联合清理)。旧插件和未知句柄仍阻挡。
 桌面 IndexedDB 存在时使用 `LARJ_PASEO_ELECTRON_RUNTIME` 指向下述已验证依赖。
 绑定文件仍可显式传入，来自实际启动配置和原生证据。示例为
 
@@ -532,9 +534,8 @@ WAL。范围限于选中的数据库记录，原生存储和桌面缓存属于�
 
 ### Antigravity ACP 完整删除绑定
 
-此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**，不是独立 `agy` CLI 或
-Paseo 的原生删除入口；T3 自定义 `binaryPath=agy` 的 CLI ACP 模式也不支持。
-该模式需要保留原生历史时使用 `--t3code-only`，不得把旧 ACP 目录当作新 CLI 会话目录。
+此路径只支持 Windows T3 托管 ACP **1.4.5 的已验证构建**。CLI 使用下一节的独立布局绑定；
+需要保留原生历史时使用 `--t3code-only`，不得把旧 ACP 目录当作新 CLI 会话目录。
 每条 Antigravity 绑定使用 `engine: "antigravity"`，增加
 `provider_instance_id` 和 `acp_runtime_binaries`（`agy_acp_server.exe`、配套
 `localharness_external.exe` 的绝对路径）；二者也必须列入顶层 `runtime_binaries`。
@@ -573,6 +574,56 @@ key 和合成会话，不发送模型提示；Windows 的 SQLite 测试临时目
 `LARJ_AGY_CLI_ACCEPTANCE=1` 和绝对路径 `LARJ_AGY_CLI_BINARY`；测试固定 Windows CLI 1.5.3
 构建摘要，只进行 ACP 握手及无真实凭据的请求，验证它没有沿用 T3 的旧实例目录。
 旧存储探测本身不授予删除能力。独立 CLI writer 的新验收见下节；两者均不证明实际账号生成成功。
+
+### T3/Paseo 与 Antigravity CLI 联合清理
+
+Windows 上，普通 `delete plan/run --client t3code` 或 `--client paseo` 可把已证明的 CLI
+会话及其原生子会话，与选中前端记录放进同一个冻结计划。选择仍用前端 ID；native UUID
+必须来自该记录的强引用或已验证插件句柄。完整计划、哈希批准、`--clients-closed` 和
+冷启动 `operation status/verify` 沿用对应客户端流程，不与 `--t3code-only/--paseo-only` 混用。
+
+CLI 绑定在各自 `native_stores` 项增加以下字段；T3 使用 `thread_id` 并保留
+`provider_instance_id`，Paseo 使用 `agent_id`，不使用 `acp_runtime_binaries`：
+
+```json
+{
+  "thread_id": "完整-T3-thread-ID",
+  "engine": "antigravity",
+  "provider_instance_id": "antigravity",
+  "native_layout": "cli",
+  "root": "C:/Users/example/.gemini/antigravity-cli",
+  "cli_user_home": "C:/Users/example",
+  "cli_binary": "C:/Users/example/AppData/Local/agy/bin/agy.exe"
+}
+```
+
+`cli_binary` 也必须列入顶层 `runtime_binaries`。当前资格限 CLI 1.5.3 的已验证 Windows
+构建（SHA-256 `47b1bec8c4a6d4afa1587177530e329cee4f5c6e76573a12ac9ab47b846e50e6`）。
+T3 的绝对 `config.binaryPath`、Paseo 的单项绝对 `agents.providers.antigravity.command`
+必须选择该实际文件；裸 `agy` 的 daemon PATH 尚无精确证明格式，当前拒绝自动猜测。CLI 根必须对应实际 OS 用户 home 下的
+`.gemini/antigravity-cli`；provider/逐 agent 的 home 覆盖须一致，T3 的 `GEMINI_HOME`
+不能替代该证明。包装脚本、额外命令参数、其他构建和冲突 home 需要另行资格，不能手填目录绕过。
+
+Paseo 0.15.3 内置插件把 `{version:1,data:{conversationId:"<UUID>"}}` 序列化成
+`persistence.sessionId = "plugin:" + JSON`，并在
+`persistence.metadata.pluginProviderPersistence` 保存恢复对象；`runtimeInfo.sessionId`
+若存在也必须解出同一 UUID。只接受这一精确版本和字段形状；裸 UUID、旧 ACP 自定义序列化、
+`nativeHandle` 变体、额外 metadata 和相互冲突的恢复句柄明确阻挡。
+依据：[provider 持久对象](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/plugins/antigravity-provider/server/internal/session.ts)
+与 [核心序列化及恢复](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/packages/server/src/server/agent/plugin-provider.ts)。
+
+计划冻结全部原生子会话、共享摘要/cache/恢复镜像、原生会话文件，以及原有前端文件和绑定桌面闭包。
+跨客户端 guard 只允许冻结的选中前端转换：扫描其私有 after-image，其他 profile、未选记录、
+历史和可恢复引用、共享原生消费者保持保护。一次计划仅选一个前端 profile；另一个 profile
+也引用同一原生会话时阻挡，不自动扩大批准范围。
+
+执行复用前端启动锁、运行文件租约及 CLI 写入 ticket。原生根另保存关联父计划哈希的占用日志，
+防止中断后其他独立 native 操作修改共享文件。共享文件 before-image 写入该原生日志目录，
+部分删除或前端后续失败保持 `unknown`，禁止重放。用原计划 status/verify 核验；只有完整
+after-state 得到确认才解除占用，不能通过重建计划或删除管理日志强行继续。
+
+旧托管 ACP 的 manifest 和冻结 evidence 继续由原适配器处理，不自动升级成 CLI 绑定。
+未选会话、凭据、配置、skills、工作目录和未授权前端 profile 不在删除范围。
 
 ## 独立 Antigravity CLI 原生清理
 
@@ -613,7 +664,7 @@ workspace、设置、凭据、skills、运行文件及诊断日志保留。
 默认保护。T3 所有合格数据库历史单元、Paseo agent/atomic/schedule/creation/receipt
 恢复文件存在目标 ID 时阻挡，不按前端软删除状态豁免，也不凭相同 UUID猜测归属。
 这些前端仍运行或其来源读取失败时不写入。本入口不删除 T3/Paseo 记录；现有托管
-ACP writer 仍拒绝 CLI 绑定，T3/Paseo 的 CLI 原生与前端联合删除尚未开放。
+ACP writer 仍拒绝 CLI 绑定；T3/Paseo 联合删除使用上文独立的 CLI 布局和精确前端闭包。
 若存在引用，应在已授权、已支持的前端完整清理路径解决；不能编辑日志状态或关闭保护。
 
 writer 对运行文件、共享重写文件和待删会话文件持有 Windows 排他句柄，对已有前端

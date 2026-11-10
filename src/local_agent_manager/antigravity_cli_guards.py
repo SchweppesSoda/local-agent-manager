@@ -22,7 +22,13 @@ def locations(*, t3code_roots=(), paseo_roots=()):
             for _, path in sorted({canonical_path(p): p for p in paths}.items())]
 
 
-def freeze(sources, ids):
+def freeze(sources, ids, *, joint=None):
+    """Allow only the exact frozen frontend transform to remove protection.
+
+    Scan its private after-image, including every unselected row/restore
+    family. A profile-level exemption or arbitrary list of UUIDs is never
+    accepted. The owning cleanup module validates the joint closure first.
+    """
     result = []
     for source in sources:
         root = Path(source['root'])
@@ -38,6 +44,16 @@ def freeze(sources, ids):
             continue
         root_path(root)
         item['identity'] = ff._identity(root.stat())
+        owned = bool(joint and source['client'] == joint['client']
+                     and canonical_path(root) == canonical_path(joint['files']['root']))
+        if owned:
+            from .office_cleanup import digest
+            item['joint_files_sha256'] = digest(joint['files'])
+            if source['client'] == 't3code':
+                from .t3code_cleanup_files import remaining
+            else:
+                from .paseo_cleanup_files import remaining
+            remaining(joint['files'])
         if source['client'] == 't3code':
             from .t3code_store import RELATIVE, qualify
             from .t3code_cleanup_files import _names, _require_known_database_family
@@ -48,6 +64,17 @@ def freeze(sources, ids):
                 fail('t3code_recovery_source_unqualified')
             with private_database(root, RELATIVE) as (db, proofs, _):
                 qualify(db)
+                if owned:
+                    from .t3code_database import _transform
+                    from .office_database import logical_hash
+                    database = joint['files']['database']
+                    current = logical_hash(db)
+                    if current == database['before_sha256']:
+                        _transform(db, database['thread_ids'])
+                    elif current != database['after_sha256']:
+                        fail('joint_database_state_unknown')
+                    if logical_hash(db) != database['after_sha256']:
+                        fail('joint_database_transform_changed')
                 # Project only counts, never a payload or credential. Include
                 # legacy events and all restore-capable tables, not merely the
                 # currently visible provider_threads projection.
@@ -63,34 +90,51 @@ def freeze(sources, ids):
                             if db.execute('SELECT 1 FROM '+quoted+' WHERE instr(CAST('+qcol+' AS BLOB),?)>0 LIMIT 1',
                                           (sid.encode(),)).fetchone():
                                 fail('t3code_native_or_restore_reference')
-                item['files'] = proofs
+                            # JSON escapes must not hide a UUID from the
+                            # cross-profile guard. Interpret JSON only as a
+                            # protection source, never as ownership proof.
+                            if db.execute('SELECT 1 FROM '+quoted+' AS t, json_tree(CASE WHEN json_valid(t.'+qcol+') '
+                                          'THEN t.'+qcol+" ELSE 'null' END) AS j WHERE j.type='text' AND instr(j.value,?)>0 LIMIT 1",
+                                          (sid,)).fetchone():
+                                fail('t3code_native_or_restore_reference')
+                item['files'] = [] if owned else proofs
+                if owned:
+                    # The owning lifecycle protects this DB; its byte changes
+                    # are authorized by the exact logical before/after pair.
+                    item['directories'] = item['directories'][1:]
         elif source['client'] == 'paseo':
-            from .paseo_cleanup_files import rows
+            from .paseo_cleanup_files import rows, transform
             entries, directories = rows(root)
             item['directories'] = directories
             item['files'] = []
             for entry in entries:
-                if any(sid.encode() in entry['raw'] for sid in ids):
+                raw = transform(entry, set(joint['files']['agent_ids'])) if owned else entry['raw']
+                if raw is None:
+                    continue
+                if any(sid.encode() in raw for sid in ids):
                     fail('paseo_native_or_restore_reference')
                 row = entry['row']
-                if row.get('provider') == 'antigravity' and (row.get('opaque_session_handle_present')
-                        or row.get('provider_metadata_present') or row.get('opaque_native_handle_present')
-                        and not row.get('native_handle_projected')):
+                if any(h['value'] in ids for h in row.get('references', ())):
+                    fail('paseo_native_or_restore_reference')
+                if row.get('provider') == 'antigravity' and not row.get('antigravity_handle_qualified'):
                     fail('paseo_opaque_native_reference')
-                item['files'].append(entry['before'])
+                if not owned:
+                    item['files'].append(entry['before'])
+            if owned:
+                item['directories'] = []
         else:
             fail('guard_client_unqualified')
         result.append(item)
     return result
 
 
-def recheck(evidence, ids):
+def recheck(evidence, ids, *, joint=None):
     sources = [{'client': s['client'], 'root': s['root']} for s in evidence]
     # A newly selected default profile also becomes a protection source.
     expected = {(s['client'], canonical_path(s['root'])) for s in sources}
     if any((s['client'], canonical_path(s['root'])) not in expected for s in locations()):
         fail('guard_discovery_changed')
-    if freeze(sources, ids) != evidence:
+    if freeze(sources, ids, joint=joint) != evidence:
         fail('guard_source_changed')
 
 

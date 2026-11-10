@@ -522,7 +522,9 @@ def apply(evidence, *, phase_callback, recovery_dir, census=None):
         shared_started = False
         with ExitStack() as stack:
             held = stack.enter_context(HeldFiles())
-            held.acquire(Path(runtime['root']), runtime['file'])
+            from .antigravity_cli_joint import runtime_is_held
+            if not runtime_is_held(evidence):
+                held.acquire(Path(runtime['root']), runtime['file'])
             for proof, body in shared:
                 held.acquire(root, proof, writable=True)
             removed = stack.enter_context(HeldFiles())

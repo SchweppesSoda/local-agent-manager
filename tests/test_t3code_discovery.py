@@ -136,7 +136,7 @@ class T3DiscoveryTests(unittest.TestCase):
         self.assertIn(child, json.dumps(plan))
         self.assertNotIn("PRIVATE_SECRET", json.dumps(plan))
 
-    def test_standalone_antigravity_is_reported_as_unsupported_native_cleanup(self):
+    def test_unproven_antigravity_cli_runtime_is_reported_without_claiming_binding(self):
         with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
             add_thread(db, "antigravity-thread", driver="antigravity", native="antigravity-native")
         self.settings["providerInstances"]["antigravity"] = {"driver": "antigravity", "config": {
@@ -144,7 +144,7 @@ class T3DiscoveryTests(unittest.TestCase):
         self.write_settings()
         with self.assertRaises(BindingDiscoveryError) as raised:
             discover_bindings()
-        self.assertEqual(raised.exception.blockers, [{"blocker_code": "antigravity_cli_acp_cleanup_unsupported",
+        self.assertEqual(raised.exception.blockers, [{"blocker_code": "native_binding_unverified",
                                                       "thread_id": "antigravity-thread"}])
 
     def test_pi_environment_session_root_uses_exact_path_and_header_identity(self):

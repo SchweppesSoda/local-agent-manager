@@ -207,6 +207,7 @@ def _merge_scopes(scopes: Iterable[MutationScope]) -> tuple[MutationScope, ...]:
 
 
 def scopes_for_actions(plan: Any, actions: Iterable[Any]) -> tuple[MutationScope, ...]:
+    actions = tuple(actions)
     storage_paths = {
         str(_value(storage, "storage_id")): Path(_value(storage, "path"))
         for storage in (_value(plan, "storages", ()) or ())
@@ -223,7 +224,28 @@ def scopes_for_actions(plan: Any, actions: Iterable[Any]) -> tuple[MutationScope
         if root is None:
             raise OperationStoreError("Mutation target has no trusted local storage root")
         scopes.append(MutationScope(root, action_target_ids(action)))
+    scopes.extend(_joint_cli_scopes(actions))
     return _merge_scopes(scopes)
+
+
+def _joint_cli_scopes(actions):
+    """Shared CLI files require root exclusion, only within a frozen closure."""
+    from . import t3code_cleanup, paseo_cleanup, antigravity_cli_joint
+    result = []
+    for action in actions:
+        kind = str(_value(_value(action, 'kind'), 'value', _value(action, 'kind')))
+        module = {'delete_t3code_frontend': t3code_cleanup, 'delete_paseo_frontend': paseo_cleanup}.get(kind)
+        if module is None:
+            continue
+        payload = _value(_value(action, 'impact', {}), 'external_action_payload', {}) or {}
+        evidence = _value(payload, 't3code_evidence' if module is t3code_cleanup else 'paseo_evidence')
+        if evidence is None:
+            continue
+        targets = antigravity_cli_joint.targets(evidence)
+        if targets:
+            module.validate(evidence)
+            result.extend(MutationScope(Path(t['root']), None) for t in targets)
+    return result
 
 
 def scopes_for_frozen_plan(plan: Mapping[str, Any]) -> tuple[MutationScope, ...]:
@@ -259,7 +281,7 @@ def scopes_for_frozen_plan(plan: Mapping[str, Any]) -> tuple[MutationScope, ...]
     for action in actions:
         item_ids = action_target_ids(action)
         ids = None if ids is None or item_ids is None else ids | item_ids
-    return _merge_scopes((MutationScope(root, ids),))
+    return _merge_scopes((MutationScope(root, ids), *_joint_cli_scopes(actions)))
 
 
 def scopes_for_manual_plan(plan: Any) -> tuple[MutationScope, ...]:

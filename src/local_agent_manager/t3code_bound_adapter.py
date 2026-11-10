@@ -64,7 +64,7 @@ def validate_manifest(value):
         fail("binding_native_stores_required")
     seen = set()
     for item in value["native_stores"]:
-        if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "agent_dir", "codex_binary", "provider_instance_id", "acp_runtime_binaries"}
+        if (not isinstance(item, dict) or set(item) - {"thread_id", "engine", "root", "agent_dir", "codex_binary", "provider_instance_id", "acp_runtime_binaries", "native_layout", "cli_binary", "cli_user_home"}
                 or not {"thread_id", "engine", "root"} <= item.keys() or item["engine"] not in _NATIVE_ENGINES):
             fail("binding_store_invalid")
         identifier(item["thread_id"])
@@ -81,9 +81,16 @@ def validate_manifest(value):
         if "codex_binary" in item:
             local_root(item["codex_binary"])
         if item['engine'] == 'antigravity':
-            from .antigravity_acp_cleanup import check_binding
+            from .antigravity_cli_binding import is_cli
+            if is_cli(item):
+                from .antigravity_cli_binding import check_binding
+                identifier(item.get('provider_instance_id'))
+            else:
+                if set(item) & {'native_layout', 'cli_binary', 'cli_user_home'}:
+                    fail('binding_provider_fields_invalid')
+                from .antigravity_acp_cleanup import check_binding
             check_binding(value, item)
-        elif set(item) & {'provider_instance_id', 'acp_runtime_binaries'}:
+        elif set(item) & {'provider_instance_id', 'acp_runtime_binaries', 'native_layout', 'cli_binary', 'cli_user_home'}:
             fail('binding_provider_fields_invalid')
     if not isinstance(value["desktop_profiles"], list):
         fail("binding_desktop_profiles_invalid")
@@ -191,6 +198,9 @@ class T3CodeBoundAdapter(T3CodeAdapter):
             if any(p['thread_id'] == thread_id and engine(p['driver'] or p['provider']) != binding['engine'] for p in data['providers']):
                 fail('provider_binding_conflict')
             if binding['engine'] == 'antigravity':
+                from .antigravity_cli_binding import is_cli, selection
+                if is_cli(binding):
+                    selection(self.manifest, binding, 't3code')
                 if (row['provider_instance_id'] != binding['provider_instance_id'] or any(
                         p['thread_id'] == thread_id and p['provider_instance_id'] != binding['provider_instance_id']
                         for p in data['providers'])):

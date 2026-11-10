@@ -136,7 +136,14 @@ def _acp_binding(root, row, instance, runtime_binaries):
             raise ValueError("provider_binary_unverified")
         server = local_root(binary)
         if server.name != "agy_acp_server.exe":
-            raise ValueError("antigravity_cli_acp_cleanup_unsupported")
+            from .antigravity_cli_binding import runtime, environment, home_for
+            runtime(server)
+            home = home_for(environment(instance.get('environment', {})))
+            native_root = _plain_directory(home/'.gemini/antigravity-cli')
+            runtime_binaries.add(str(server))
+            return {'thread_id': row['thread_id'], 'engine': 'antigravity', 'root': str(native_root),
+                    'provider_instance_id': identifier(row['provider_instance_id']), 'native_layout': 'cli',
+                    'cli_binary': str(server), 'cli_user_home': str(home)}
         directory = server.parent
     else:
         release = t3_acp_managed_release(root / "tools/antigravity-acp/win32-x64", BoundedPathProbe())
@@ -211,10 +218,18 @@ def discover_bindings(root=None):
     # Validate historical handles as well as the current projection before an
     # automatic binding can be passed to the established operation planner.
     history = history_references(root, {item["thread_id"]: item for item in bindings})
+    from .antigravity_cli_binding import is_cli
+    from .antigravity_cli_operations import records as cli_records
     for item in history:
         if item["native_id"] is None or item["strength"] != "strong":
             continue
         binding = next(value for value in bindings if value["thread_id"] == item["thread_id"])
+        if is_cli(binding):
+            key = 'antigravity', canonical_path(binding['root'])
+            if key not in cache:
+                cache[key] = {r['record_id'] for r in cli_records(binding['root'])['records']}
+            if item['native_id'] not in cache[key]:
+                raise BindingDiscoveryError([{'blocker_code': 'historical_native_root_unproven', 'thread_id': item['thread_id']}])
         if binding["engine"] in {"codex", "claude", "pi"}:
             ids = cache[binding["engine"], canonical_path(binding["root"])]
             native_id = canonical_path(local_root(item["native_id"])) if binding["engine"] == "pi" else item["native_id"]

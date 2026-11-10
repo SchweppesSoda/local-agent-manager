@@ -37,9 +37,9 @@
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
 | WorkBuddy / WorkBuddy | 独立 SQLite、精确会话 artifacts 和 UI 引用 | 仅支持已识别 5.6.2 本地终态范围，Windows writer 覆盖及完整冻结证据；未知副本只读 |
 | 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
-| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 在线批量删除支持四种引擎；Codex/Pi/Claude 可自动绑定完成完整清理 |
+| Paseo / 内置及未知 provider | 当前/旧格式 agent 快照、归档与恢复引用 | Windows 在线批量删除；Codex/Pi/Claude 完整清理；已验证 Antigravity 插件的 CLI 联合清理 |
 | T3 Code / Codex、Claude、Pi | v1/v2 thread 元数据及 provider 恢复句柄 | Windows 在线批量删除支持四种引擎；自动或显式绑定的 v2 记录支持完整本地清理，未知 schema 关闭 |
-| T3 Code / Antigravity | 在线会话删除、已验证托管 ACP 完整清理 | CLI 原生与 T3 联合清理待适配 |
+| T3 Code / Antigravity | 在线会话删除、已验证托管 ACP 或 CLI 联合清理 | 两种布局独立绑定，未知构建或共享引用阻挡 |
 | 未识别 backend | 清单 | 原始名称保留，不继承已知引擎 writer |
 
 兼容回归使用[固定 v1 样本](../tests/fixtures/operation_v1.json)及
@@ -825,7 +825,7 @@ manifest 符合已知插件 ID，则记录为 `legacy_plugin_candidate`，其余
 
 **记录能力。** Paseo 和 T3 的 Antigravity 记录保留 `unsupported:antigravity`
 引擎身份。`provider_backend_family_hint` 仅指各自内置集成的运行时家族，
-Paseo 的 `native_cleanup_status=unsupported` 表明当前缺少 native 清理资格；T3 为
+Paseo 的已验证插件句柄显示 `native_cleanup_status=requires_paseo_binding`，未知句柄仍为 `unsupported`；T3 为
 `requires_t3code_binding`，普通盘点不能自动授予删除能力。
 Paseo 的 [daemon 删除](#paseo-daemon-删除)可以清理 Paseo 侧会话，Google CLI
 自己的会话历史保留。
@@ -847,7 +847,12 @@ Windows 本地清理。`antigravity_cli_cleanup`、`antigravity_cli_restore` 冻
 `antigravity_cli_operations` 通过公共 coordinator 复用 OperationStore、根级 mutation
 gate 和 status/verify。计划不含正文，共享数据库的未选 typed cells 以逻辑摘要核验。
 `antigravity_cli_guards` 将已知 T3/Paseo 当前、历史和恢复引用作为独立保护来源；
-其前端 writer 尚未与 CLI 原生删除组合，不因独立入口可写就宣称两者完整删除已支持。
+T3/Paseo 的完整清理可通过 `native_layout=cli` 组合此原生 writer；只支持明确验证的
+Windows CLI 1.5.3 构建与精确 native home。Paseo 0.15.3 的 `plugin:` JSON 包装和
+`pluginProviderPersistence` 恢复对象按上游代码解码并核对一致性，旧自定义 ACP 句柄不参与推断。
+联合计划只允许已冻结前端转换中的引用消失；未选 profile、历史恢复源和共享消费者仍阻挡。
+原生父子闭包、前端启动锁、共享文件 before-image 和持久 root 占用共同覆盖中断恢复；
+部分完成保持 unknown，不能重放。详见 [联合清理绑定](operation-cli.md#t3paseo-与-antigravity-cli-联合清理)。
 未知 protobuf 关系、schema、镜像不一致和关联前端引用保持阻挡。完整范围、恢复限制
 及命令见 [独立 CLI 原生清理](operation-cli.md#独立-antigravity-cli-原生清理)。
 

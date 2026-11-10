@@ -1019,8 +1019,19 @@ class OperationCoordinator:
                 batches=inspection.batches, modified=inspection.modified,
                 mutation_started=inspection.mutation_started,
             ))
+        from .antigravity_cli_joint import document_has_targets
+        if residuals and document_has_targets(live.document):
+            inspection = self._inspect_child_states(live.document)
+            if inspection.mutation_started:
+                return finish(self._result_document(live.document, live.document['scope'], goal_status='unknown',
+                    blockers=[self._blocker('recovery_required', 'Joint CLI deletion has frozen residuals; do not replay')],
+                    batches=inspection.batches, residuals=residuals, modified=inspection.modified,
+                    mutation_started=True))
         try:
             self._persist_verified_child_journals(live.document, residuals)
+            if not residuals:
+                from .antigravity_cli_joint import complete_document
+                complete_document(live.document)
         except Exception as exc:
             return finish(self._result_document(
                 live.document,
@@ -3740,7 +3751,8 @@ class OperationCoordinator:
 
         if str(getattr(action.kind, "value", action.kind)) in {"delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"}:
             payload = action.impact.external_action_payload or {}
-            native_files = any(t.get('native_files', {}).get('changes') for t in payload.get('t3code_evidence', {}).get('native_targets', ()))
+            native_files = any(t.get('native_files', {}).get('changes') for name in ('t3code_evidence', 'paseo_evidence')
+                               for t in payload.get(name, {}).get('native_targets', ()))
             return "healthy" if payload.get("requires_action_ids") or native_files else "orphan_frontend"
         if str(getattr(action.kind, "value", action.kind)) in {"delete_paseo_daemon_agent", "delete_t3code_server_thread"}:
             return "unverified"
@@ -4909,6 +4921,9 @@ class OperationCoordinator:
                             "guard_started": "action_guard_started",
                             "mutation_started": "mutation_started",
                             "verified": "action_verified",
+                            "recovery_images_durable": "native_recovery_images_durable",
+                            "shared_files_written": "native_shared_files_written",
+                            "native_files_removed": "native_files_removed",
                         }.get(phase)
                         if event_name is None:
                             raise OperationCoordinatorError(

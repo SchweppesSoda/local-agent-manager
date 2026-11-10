@@ -13,6 +13,8 @@ from .t3code_server_delete import _snapshot
 from .t3code_store import identifier
 from .herdr_cleanup import native_remaining as generic_native_remaining, pi_reference_matches_action
 from . import antigravity_acp_cleanup as antigravity
+from . import antigravity_cli_cleanup as cli_native, antigravity_cli_joint as cli_joint
+from .antigravity_cli_binding import is_cli
 from .office_cleanup import digest
 from .record_identity import canonical_path
 
@@ -23,7 +25,7 @@ _ticket = ContextVar("t3code_cleanup_ticket", default=None)
 
 def native_remaining(target):
     if target['engine'] == 'antigravity':
-        return antigravity.remaining(target['native_files'])
+        return (cli_native if is_cli(target['binding']) else antigravity).remaining(target['native_files'])
     return generic_native_remaining(target)
 
 
@@ -73,7 +75,10 @@ def validate(evidence):
         if target['engine'] == 'antigravity':
             if target['action_ids'] or target['paths']:
                 files.fail('antigravity_embedded_action_scope_invalid')
-            antigravity.validate(target['native_files'], manifest, binding, target['ids'])
+            if is_cli(binding):
+                cli_joint.validate_target(target, manifest)
+            else:
+                antigravity.validate(target['native_files'], manifest, binding, target['ids'])
         covered = set()
         for action in actions:
             if action["action_id"] not in target["action_ids"]:
@@ -95,6 +100,10 @@ def validate(evidence):
             covered.update((action["thread_id"], *action["affected_thread_ids"], *impact.get("descendant_thread_ids", ())))
         covered.update(r["native_id"] for r in evidence["references"] if r["engine"] == target["engine"]
                        and r["native_record"]["store"]["canonical_path"] == target["root"])
+        if is_cli(binding):
+            if covered != set(target['native_files']['requested_ids']):
+                files.fail('native_requested_scope_unproven')
+            covered.update(target['native_files']['ids'])
         if covered != set(target["ids"]):
             files.fail("native_target_scope_unproven")
     for ref in evidence["references"]:
@@ -179,6 +188,7 @@ def bound_adapters(document, supplied=None):
 def residuals(document):
     evidence = evidence_from_document(document)
     validate(evidence)
+    cli_joint.recheck(evidence, 't3code')
     result = []
     for target in evidence["native_targets"]:
         if native_remaining(target):
@@ -349,7 +359,11 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
         target = {"engine": engine, "root": canonical_path(root), "ids": sorted(ids), "paths": sorted(exact_paths),
             "binding": binding, "action_ids": sorted(str(a.action_id) for a in chosen)}
         if engine == 'antigravity' and not old:
-            target['native_files'] = antigravity.freeze(adapter.manifest, binding, ids)
+            if is_cli(binding):
+                target['native_files'], target['cli_selection'] = cli_joint.freeze_target(adapter.manifest, binding, ids, 't3code')
+                target['ids'] = target['native_files']['ids']
+            else:
+                target['native_files'] = antigravity.freeze(adapter.manifest, binding, ids)
         if old:
             previous = next(t for t in old["native_targets"] if t["engine"] == engine and t["root"] == canonical_path(root))
             if set(target["action_ids"]) - set(previous["action_ids"]) or not set(ids) <= set(previous["ids"]):
@@ -363,7 +377,7 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
         files.remaining(evidence["files"])
         for target in evidence['native_targets']:
             if target['engine'] == 'antigravity':
-                antigravity.remaining(target['native_files'])
+                native_remaining(target)
     else:
         def matches(ref):
             return any(t["engine"] == ref.engine and t["root"] == ref.native_record.store.canonical_path
@@ -384,6 +398,8 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             if item["kind"] == "delete_conversation":
                 item["t3code_native_root"] = next(t["root"] for t in targets if item["action_id"] in t["action_ids"])
         evidence["lifecycle"] = t3code_lifecycle.freeze(adapter.manifest)
+        cli_joint.freeze_guards(evidence, 't3code', guards)
+    cli_joint.recheck(evidence, 't3code')
     adapter.frozen_references = evidence["references"]
     base = coordinator._merge_cleanup_contexts(base, tuple(native_contexts)) if native_contexts else base
     context, action_contexts = _frontend_context(coordinator, base, adapter, guards, evidence,
@@ -443,12 +459,13 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
             _require_retired_threads(evidence["binding_manifest"], evidence["selected_thread_ids"])
         for target in evidence['native_targets']:
             if target['engine'] == 'antigravity':
-                antigravity.remaining(target['native_files'])
+                native_remaining(target)
         for desktop in evidence["desktop"]:
             t3code_localstorage.remaining(desktop["localstorage"])
         token = _ticket.set((json.loads(json.dumps(evidence)), True))
         try:
-            yield
+            with cli_joint.execution_scope(document, evidence, 't3code', census):
+                yield
         finally:
             _ticket.reset(token)
 
@@ -476,7 +493,10 @@ def execute(evidence, *, phase_callback):
                 prepared.append((module, desktop[key], family))
         for target in evidence['native_targets']:
             if target['engine'] == 'antigravity':
-                antigravity.apply(target['native_files'], phase_callback=phase_callback)
+                if is_cli(target['binding']):
+                    cli_joint.execute(target, phase_callback=phase_callback)
+                else:
+                    antigravity.apply(target['native_files'], phase_callback=phase_callback)
         for module, item, family in prepared:
             module.install(item, family, phase_callback=phase_callback)
         if evidence["binding_manifest"]["schema_version"] == DATABASE_ONLY_SCHEMA:

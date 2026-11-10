@@ -7,13 +7,19 @@ from pathlib import Path
 
 from . import paseo_cleanup_files as files, paseo_lifecycle, paseo_indexeddb, paseo_localstorage
 from .paseo_bound_adapter import PaseoBoundAdapter, validate_manifest, native_catalog
-from .herdr_cleanup import native_remaining, pi_reference_matches_action
+from .herdr_cleanup import native_remaining as generic_native_remaining, pi_reference_matches_action
+from . import antigravity_cli_cleanup as cli_native, antigravity_cli_joint as cli_joint
+from .antigravity_cli_binding import is_cli
 from .office_cleanup import digest
 from .record_identity import canonical_path
 
 KIND = "delete_paseo_frontend"
 SCHEMA = "larj.paseo-cleanup.v1"
 _ticket = ContextVar("paseo_cleanup_ticket", default=None)
+
+
+def native_remaining(target):
+    return cli_native.remaining(target['native_files']) if is_cli(target['binding']) else generic_native_remaining(target)
 
 
 def evidence_from_document(document):
@@ -53,6 +59,8 @@ def validate(evidence):
                 or target["engine"] != binding["engine"] or target["root"] != canonical_path(binding["root"])):
             files.fail("native_target_binding_changed")
         covered = set()
+        if is_cli(binding):
+            cli_joint.validate_target(target, manifest)
         for action in actions:
             if action["action_id"] not in target["action_ids"]:
                 continue
@@ -73,6 +81,10 @@ def validate(evidence):
                 files.fail("pi_action_path_changed")
         covered.update(r["native_id"] for r in evidence["references"] if r["engine"] == target["engine"]
                        and r["native_record"]["store"]["canonical_path"] == target["root"])
+        if is_cli(binding):
+            if covered != set(target['native_files']['requested_ids']):
+                files.fail('native_requested_scope_unproven')
+            covered.update(target['native_files']['ids'])
         if covered != set(target["ids"]):
             files.fail("native_target_scope_unproven")
     owned = {canonical_path(Path(evidence["root"]) / item["before"]["path"]): item["id"]
@@ -86,7 +98,7 @@ def validate(evidence):
                 or binding["engine"] != ref["engine"] or native["record_id"] != ref["native_id"]
                 or native["store"]["backend"] != ref["engine"]
                 or native["store"]["canonical_path"] != canonical_path(binding["root"])
-                or ref["source_locator"] not in {"persistence/sessionId", "persistence/nativeHandle", "runtimeInfo/sessionId"}
+                or ref["source_locator"] not in {"persistence/sessionId", "persistence/nativeHandle", "runtimeInfo/sessionId", "persistence/metadata/pluginProviderPersistence"}
                 or not any(t["engine"] == ref["engine"] and t["root"] == native["store"]["canonical_path"]
                            and ref["native_id"] in t["ids"] for t in targets)):
             files.fail("reference_scope_changed")
@@ -155,9 +167,13 @@ def bound_adapters(document, supplied=None):
 def residuals(document):
     evidence = evidence_from_document(document)
     validate(evidence)
+    cli_joint.recheck(evidence, 'paseo')
     result = []
     for target in evidence["native_targets"]:
         if native_remaining(target):
+            if is_cli(target['binding']):
+                result.append(action_id(evidence))
+                continue
             if not target["action_ids"]:
                 files.fail("absent_native_target_reappeared")
             result.extend(target["action_ids"])
@@ -185,7 +201,8 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
     from .adapters import NativeIntegrityAdapter
     from .inventory import build_session_catalog
     from .manual_delete import build_manual_delete_plan
-    selected = [a for a in candidates if isinstance(a, PaseoBoundAdapter)]
+    selected = list({(canonical_path(a.profile_root), digest(a.manifest)): a
+                     for a in candidates if isinstance(a, PaseoBoundAdapter)}.values())
     if not selected:
         return None
     if len(selected) != 1 or not selectors:
@@ -232,7 +249,9 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
     manual_catalog = manual_plan = None
     for binding, ids, exact_paths in desired:
         engine, root = binding["engine"], Path(binding["root"])
-        if engine == "codex":
+        if engine == 'antigravity':
+            context, chosen = base, []
+        elif engine == "codex":
             native = (NativeIntegrityAdapter(codex_home=root,
                 codex_bin_hint=Path(binding["codex_binary"]) if binding.get("codex_binary") else None),)
             catalog = build_session_catalog(native)
@@ -265,12 +284,15 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
         native_contexts.append(context)
         target = {"engine": engine, "root": canonical_path(root), "ids": sorted(ids), "paths": sorted(exact_paths),
             "binding": binding, "action_ids": sorted(str(a.action_id) for a in chosen)}
+        if is_cli(binding) and not old:
+            target['native_files'], target['cli_selection'] = cli_joint.freeze_target(adapter.manifest, binding, ids, 'paseo')
+            target['ids'] = target['native_files']['ids']
         if old:
             previous = next(t for t in old["native_targets"] if t["engine"] == engine and t["root"] == canonical_path(root))
             if set(target["action_ids"]) - set(previous["action_ids"]) or not set(ids) <= set(previous["ids"]):
                 files.fail("native_scope_changed")
             target = previous
-        if not chosen and native_remaining(target):
+        if not is_cli(binding) and not chosen and native_remaining(target):
             files.fail("native_writer_missing")
         targets.append(target)
     if old:
@@ -297,6 +319,8 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             if item["kind"] == "delete_conversation":
                 item["paseo_native_root"] = next(t["root"] for t in targets if item["action_id"] in t["action_ids"])
         evidence["lifecycle"] = paseo_lifecycle.freeze(adapter.manifest)
+        cli_joint.freeze_guards(evidence, 'paseo', guards)
+    cli_joint.recheck(evidence, 'paseo')
     adapter.frozen_references = evidence["references"]
     base = coordinator._merge_cleanup_contexts(base, tuple(native_contexts)) if native_contexts else base
     sid = storage_id_for_path(adapter.profile_root)
@@ -343,7 +367,8 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
     with paseo_lifecycle.hold(evidence, census=census):
         token = _ticket.set((json.loads(json.dumps(evidence)), True))
         try:
-            yield
+            with cli_joint.execution_scope(document, evidence, 'paseo', census):
+                yield
         finally:
             _ticket.reset(token)
 
@@ -361,7 +386,7 @@ def execute(evidence, *, phase_callback):
     ticket = _ticket.get()
     if not ticket or not ticket[1] or ticket[0] != evidence or paseo_lifecycle.current_boundary(evidence["root"]) is None:
         files.fail("execution_ticket_required")
-    if any(native_remaining(t) for t in evidence["native_targets"]):
+    if any(native_remaining(t) for t in evidence["native_targets"] if not is_cli(t['binding'])):
         files.fail("native_dependency_remains")
     with ExitStack() as stack:
         prepared = []
@@ -369,6 +394,8 @@ def execute(evidence, *, phase_callback):
             for key, module in (("indexeddb", paseo_indexeddb), ("localstorage", paseo_localstorage)):
                 family = stack.enter_context(module.prepared(desktop[key]))
                 prepared.append((module, desktop[key], family))
+        for target in cli_joint.targets(evidence):
+            cli_joint.execute(target, phase_callback=phase_callback)
         for module, item, family in prepared:
             module.install(item, family, phase_callback=phase_callback)
         files.apply(evidence["files"], phase_callback=phase_callback)

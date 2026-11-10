@@ -26,14 +26,19 @@ def validate_manifest(value):
         files.fail("binding_native_stores_required")
     seen = set()
     for item in value["native_stores"]:
-        if (not isinstance(item, dict) or set(item) - {"agent_id", "engine", "root", "agent_dir", "codex_binary"}
-                or not {"agent_id", "engine", "root"} <= item.keys() or item["engine"] not in {"codex", "pi", "claude"}
+        if (not isinstance(item, dict) or set(item) - {"agent_id", "engine", "root", "agent_dir", "codex_binary", "native_layout", "cli_binary", "cli_user_home"}
+                or not {"agent_id", "engine", "root"} <= item.keys() or item["engine"] not in {"codex", "pi", "claude", "antigravity"}
                 or not isinstance(item["agent_id"], str) or not files.ID.fullmatch(item["agent_id"])):
             files.fail("binding_store_invalid")
         if item["agent_id"] in seen:
             files.fail("binding_store_ambiguous")
         seen.add(item["agent_id"])
         local_root(item["root"])
+        from .antigravity_cli_binding import check_binding, FIELDS
+        if item['engine'] == 'antigravity':
+            check_binding(value, item)
+        elif set(item) & FIELDS:
+            files.fail('binding_provider_fields_invalid')
         if item["engine"] == "pi" and "agent_dir" not in item:
             files.fail("binding_pi_agent_dir_required")
         for key in ("agent_dir", "codex_binary"):
@@ -95,7 +100,12 @@ class PaseoBoundAdapter(PaseoAdapter):
             # A per-agent launch overlay overrides the daemon's native home.
             # An explicit binding must agree with that stronger evidence.
             env = entry["value"].get("launchEnv", {})
-            field = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "pi": "PI_CODING_AGENT_DIR"}[engine]
+            if engine == 'antigravity':
+                from .antigravity_cli_binding import selection
+                if not row.get('antigravity_handle_qualified'):
+                    files.fail('antigravity_handle_unqualified')
+                selection(self.manifest, binding, 'paseo', overlay=env)
+            field = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "pi": "PI_CODING_AGENT_DIR"}.get(engine)
             overrides = [v for k, v in env.items() if k.upper() == field]
             expected = binding.get("agent_dir") if engine == "pi" else binding["root"]
             if overrides and (len(overrides) != 1 or canonical_path(local_root(overrides[0])) != canonical_path(expected)):

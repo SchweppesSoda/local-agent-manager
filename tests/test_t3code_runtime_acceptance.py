@@ -311,6 +311,15 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
                      'Opt in with an explicit agy CLI path; temporary profiles only')
 class AgyCliAcceptanceTests(unittest.TestCase):
     def test_cli_native_cleanup_reopen_preserves_other_session(self):
+        self.cleanup_reopen()
+
+    def test_t3_joint_cli_cleanup_reopen_preserves_other_session(self):
+        self.cleanup_reopen('t3code')
+
+    def test_paseo_joint_cli_cleanup_reopen_preserves_other_session(self):
+        self.cleanup_reopen('paseo')
+
+    def cleanup_reopen(self, frontend=None):
         from local_agent_manager import antigravity_cli_cleanup as native
         from local_agent_manager.antigravity_cli_restore import PROTO, METADATA, proto_entries
         binary = Path(os.environ['LARJ_AGY_CLI_BINARY'])
@@ -375,14 +384,27 @@ class AgyCliAcceptanceTests(unittest.TestCase):
                                        capture_output=True, timeout=10, check=False)
                     except OSError as exc:
                         launch_blocked.append(getattr(exc, 'winerror', None))
-            with patch('pathlib.Path.home', return_value=root), patch.dict(os.environ, env, clear=True):
+            with patch('pathlib.Path.home', return_value=root), patch.dict(os.environ, env, clear=True), \
+                    patch('local_agent_manager.office_runtime.processes', return_value=[]):
                 coordinator = OperationCoordinator(CleanupService())
-                plan = coordinator.plan_operation(client='antigravity', record_ids=[ids[0]],
-                    antigravity_root=profile, antigravity_bin=binary, plan_path=root/'plan.json')
+                if frontend:
+                    adapter = self.frontend_binding(root, profile, binary, ids, frontend)
+                    plan = coordinator.plan_operation(client=frontend, record_ids=[TARGET], adapters=[adapter],
+                        plan_path=root/'plan.json')
+                else:
+                    plan = coordinator.plan_operation(client='antigravity', record_ids=[ids[0]],
+                        antigravity_root=profile, antigravity_bin=binary, plan_path=root/'plan.json')
                 self.assertEqual(plan['goal_status'], 'ready', plan)
-                result = coordinator.apply_operation(operation_id=plan['operation_id'], plan_path=root/'plan.json',
-                    plan_sha256=plan['plan_sha256'], clients_closed=True, census=lambda: [],
-                    progress_callback=probe_lease)
+                original_apply = native.apply
+                def observe(*args, phase_callback, **kwargs):
+                    def phase(event):
+                        phase_callback(event)
+                        if frontend: probe_lease({'stage': event})
+                    return original_apply(*args, phase_callback=phase, **kwargs)
+                with patch.object(native, 'apply', observe):
+                    result = coordinator.apply_operation(operation_id=plan['operation_id'], plan_path=root/'plan.json',
+                        plan_sha256=plan['plan_sha256'], clients_closed=True, census=lambda: [],
+                        progress_callback=probe_lease)
                 self.assertEqual(result['goal_status'], 'complete', result)
                 self.assertEqual(launch_blocked, [32], 'Actual CLI launch must fail with a sharing violation')
                 verified = OperationCoordinator(CleanupService()).verify_operation(
@@ -409,6 +431,37 @@ class AgyCliAcceptanceTests(unittest.TestCase):
                 self.assertEqual({r[0] for r in db.execute('SELECT conversation_id FROM conversation_summaries')}, {ids[1]})
             self.assertNotIn(ids[0], proto_entries((profile/PROTO).read_bytes()))
             self.assertNotIn(ids[0], (profile/native.CACHE).read_text())
+
+    def frontend_binding(self, root, native, binary, ids, frontend):
+        from local_agent_manager import t3code_lifecycle
+        from local_agent_manager.paseo_bound_adapter import PaseoBoundAdapter, SCHEMA as PASEO
+        from tests.test_antigravity_cli_joint import paseo_agent
+        from tests.test_paseo_fullflow import write
+        profile = root/frontend
+        if frontend == 't3code':
+            with closing(create_store(profile)) as db:
+                for tid, sid in zip((TARGET, KEEP), ids): add_thread(db, tid, native=sid, driver='antigravity')
+            (profile/'userdata/environment-id').write_text('env_fixture')
+            (profile/t3code_lifecycle.OWNER).touch()
+            (profile/'userdata/settings.json').write_text(json.dumps({'providerInstances': {'antigravity': {
+                'driver': 'antigravity', 'config': {'binaryPath': str(binary)},
+                'environment': {'GEMINI_HOME': str(root/'ignored-t3-home')}}}}))
+            identity = {'environment_id': 'env_fixture'}
+        else:
+            for tid, sid in zip((TARGET, KEEP), ids): write(profile/'agents'/f'{tid}.json', paseo_agent(tid, sid, root))
+            (profile/'server-id').write_text('srv_fixture')
+            (profile/'config.json').write_text(json.dumps({'version': 1, 'agents': {'providers': {
+                'antigravity': {'command': [str(binary)]}}}}))
+            identity = {'server_id': 'srv_fixture'}
+        frontend_binary = root/'synthetic-frontend.exe'
+        frontend_binary.write_bytes(b'fixture frontend identity, never launched')
+        bindings = [{('thread_id' if frontend == 't3code' else 'agent_id'): tid,
+            'engine': 'antigravity', 'native_layout': 'cli', 'root': str(native),
+            'cli_user_home': str(root), 'cli_binary': str(binary),
+            **({'provider_instance_id': 'antigravity'} if frontend == 't3code' else {})} for tid in (TARGET, KEEP)]
+        return (T3CodeBoundAdapter if frontend == 't3code' else PaseoBoundAdapter)({
+            'schema_version': SCHEMA if frontend == 't3code' else PASEO, 'profile_root': str(profile), **identity,
+            'runtime_binaries': [str(frontend_binary), str(binary)], 'native_stores': bindings, 'desktop_profiles': []})
 
     def test_cli_153_uses_user_profile_despite_t3_gemini_home(self):
         binary=Path(os.environ['LARJ_AGY_CLI_BINARY'])

@@ -176,6 +176,18 @@ def _project(value):
     row["opaque_native_handle_present"] = persistence.get("nativeHandle") is not None
     row["native_handle_projected"] = any(handle["locator"] == "persistence/nativeHandle" for handle in handles)
     row["provider_metadata_present"] = persistence.get("metadata") is not None
+    if row['provider'] == 'antigravity':
+        from .paseo_antigravity import references
+        try:
+            row['references'] = references(value)
+            row['opaque_session_handle_present'] = False
+            row['antigravity_handle_qualified'] = True
+        except ValueError:
+            # Preserve read-only inventory of old/custom plugins, but never
+            # project their arbitrary strings as a native conversation ID.
+            row['references'] = []
+            row['opaque_session_handle_present'] = True
+            row['antigravity_handle_qualified'] = False
     return row
 
 
@@ -318,7 +330,7 @@ def _capability(engine):
     reason = "Paseo registry metadata only; native roots, daemon writers and deletion effects are unverified"
     if engine == "unsupported:antigravity":
         reason = ("Paseo exposes Antigravity-labelled registry metadata. Native ownership and "
-                  "storage schema are unverified. Full local cleanup is unsupported.")
+                  "storage schema require a qualified CLI binding before full local cleanup.")
     return EngineCapability("paseo", engine, verify=False, reason=reason)
 
 
@@ -378,7 +390,8 @@ def build_inventory(adapters, *, engines=()):
                     # The built-in provider's family is a hint. A custom provider
                     # or command override may use a different launch implementation.
                     metadata["provider_backend_family_hint"] = "antigravity-cli"
-                    metadata["native_cleanup_status"] = "unsupported"
+                    metadata["native_cleanup_status"] = ("requires_paseo_binding" if all(
+                        row.get('antigravity_handle_qualified') for row in copies) else "unsupported")
                 targets.append(ClientTarget("paseo", engine, RecordKey(store, identifier, kind="paseo_agent"),
                     project, None, (identifier,), RecordClassification.UNVERIFIED, _capability(engine),
                     references=refs, frontend_binding_keys=tuple(ref.binding_key for ref in refs),

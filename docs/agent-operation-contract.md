@@ -17,6 +17,9 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 - Standalone Antigravity CLI: read [native CLI cleanup](operation-cli.md#独立-antigravity-cli-原生清理).
   Use its exact conversation ID and actual CLI root, including when shared by
   T3/Paseo. Frontend IDs and the legacy managed ACP home do not authorize it.
+- Joint T3/Paseo and native CLI deletion: read [joint CLI binding](operation-cli.md#t3paseo-与-antigravity-cli-联合清理).
+  Use the selected frontend ID, qualified runtime/home, and frozen native child closure;
+  unselected frontend references remain protection sources. Partial execution is unknown, never replayed.
 - Existing legacy `agent` integrations: read [Commands](agent-automation.md#commands)
   and [Result contract](agent-automation.md#result-contract) instead of the high-level route.
 - Recovery evidence or rollback copies: read
