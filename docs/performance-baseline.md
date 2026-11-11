@@ -83,3 +83,22 @@ Windows、Python 3.12.10，同一脚本及 100 条健康独立记录，分别运
 真实 Codex app-server、实际客户端存储及其磁盘占用耗时未在本轮测量。
 如果实用中仍慢，下一步应分别记录真实 API 往返和文件读写耗时，再决定是否需要
 持久化增量索引或进一步拆分执行流程。
+
+## 2026-11-11 T3 完整副本诊断
+
+对当前来源的完整私有副本做阶段计时、Python SQLite 语句计数、候选构建计数和
+每 0.2 秒调用栈采样。副本含 18 个历史 JSON 家族、合计 70,035 行（包括事件镜像，
+并非独立会话数）。此轮计划 392.291 秒，执行及失败收尾 2,597.585 秒，未完成整体清理。
+12 次真实原生删除 API 合计 28.062 秒；历史引用扫描在计划阶段调用 75 次、执行阶段
+调用 608 次，后者累计 1,528.352 秒。顶层 native catalog 次数仍只有计划一次、执行两次，
+因此该计数不能排除 T3 底层重复扫描。
+
+采样定位到 `describe_adapter → describe_client → snapshot_references → history_references`，
+以及逐动作复制同一 engine context 后的重复 capability restriction。T3 现在从已经资格化的
+binding manifest 描述保护根与能力，真正的 capability/reference 检查仍分别读取新引用和失败证据；
+同一 context 的动作复用已有保留身份的 restriction 入口，不合并不同 context。
+回归覆盖描述阶段零历史扫描、后续引用漂移仍被发现、同批两条 Claude 删除及未选保留。
+
+上述失败轮次不能作为成功清理速度的对照。SQL 计数只覆盖 Python 连接，不覆盖原生服务或
+Chromium 内部；该轮目录计数只覆盖 `Path.iterdir`，不覆盖全部 glob/rglob。完整路径验收仍需
+在新的一致副本上顺序完成计划、一次执行、冷核验和保留检查，不能重发已开始的副本操作。

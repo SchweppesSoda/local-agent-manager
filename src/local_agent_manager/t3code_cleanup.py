@@ -454,7 +454,6 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
 
 def _frontend_context(coordinator, base, adapter, guards, evidence, engine, actions, action_contexts):
     from .planning import CandidateAction, ActionKind, ActionImpact, TargetRef, StorageLocation, ScanStatus, RiskLevel, storage_id_for_path
-    from .client_capability_guards import restrict_cleanup_context
     # Hash the exact body-free representation that the operation persists.
     # Native bindings can carry long display titles; hashing those before
     # metadata normalization makes an unchanged cold apply disagree with plan.
@@ -471,8 +470,9 @@ def _frontend_context(coordinator, base, adapter, guards, evidence, engine, acti
         plan_fingerprint="t3code-full:v1:" + digest([a.to_dict() for a in actions]))
     context = replace(base, plan=plan, actions=coordinator.service.typed_actions(plan))
     with planning_scope(evidence):
-        context = restrict_cleanup_context(context, guards, coordinator.service.typed_actions)
-        action_contexts = {key: restrict_cleanup_context(value, guards, coordinator.service.typed_actions) for key, value in action_contexts.items()}
+        # Multiple actions from one engine/store must retain the very same
+        # restricted context. Independent copies are rejected by batch routing.
+        context, action_contexts = coordinator._restrict_context_bindings(context, action_contexts, guards)
     return context, action_contexts
 
 

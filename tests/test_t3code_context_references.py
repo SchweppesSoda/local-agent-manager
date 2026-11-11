@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from local_agent_manager import t3code_database as database
 from local_agent_manager.t3code_bound_adapter import SCHEMA, T3CodeBoundAdapter
@@ -37,6 +38,22 @@ class ContextReferenceTests(unittest.TestCase):
             'delivery': {'nativeThreadId': 'keeper-native', 'status': 'injected', 'itemIds': []},
             'createdByProviderInstanceId': None, 'createdAt': '2026-11-10T00:00:00Z',
             'updatedAt': '2026-11-10T00:00:00Z'}
+
+    def test_descriptor_does_not_scan_but_capability_checks_refresh_references(self):
+        from local_agent_manager import t3code_bound_adapter as bound
+        from local_agent_manager.client_capability_guards import ClientCapabilityLimits
+        adapter=T3CodeBoundAdapter(self.manifest)
+        with patch.object(bound,'history_references',wraps=bound.history_references) as history:
+            descriptor=adapter.describe_client()
+            for _ in range(20):self.assertEqual(adapter.describe_client(),descriptor)
+            self.assertEqual(history.call_count,0)
+            self.assertFalse(ClientCapabilityLimits.from_adapters((adapter,)).native_source_failures)
+            self.assertEqual(history.call_count,1)
+            self.db.execute(f'UPDATE {V2}provider_threads SET payload_json=? WHERE thread_id=?',
+                            ('{"nativeThreadId":12}','selected'))
+            self.db.commit()
+            self.assertTrue(ClientCapabilityLimits.from_adapters((adapter,)).native_source_failures)
+            self.assertEqual(history.call_count,2)
 
     def test_single_scan_keeps_escaped_reference_keys_and_shape_guard(self):
         from local_agent_manager.t3code_bound_adapter import history_references

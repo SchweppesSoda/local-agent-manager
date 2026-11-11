@@ -479,6 +479,36 @@ class T3CodeFullflowTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "complete", result)
         self.assertTrue(keeper.exists())
 
+    def test_two_claude_actions_share_one_batch_context_and_preserve_keeper(self):
+        child='55555555-5555-4555-8555-555555555555'
+        child_native='66666666-6666-4666-8666-666666666666'
+        claude=self.base/'claude';project=claude/'projects/synthetic';project.mkdir(parents=True)
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db,child,native=child_native,driver='claudeAgent')
+            db.execute(f"UPDATE {V2}threads SET payload_json=json_set(payload_json,'$.lineage.parentThreadId',?) WHERE thread_id=?",(THREAD,child))
+            for tid,native in ((THREAD,NATIVE),(KEEP,OTHER)):
+                db.execute(f"UPDATE {V2}threads SET default_provider='claudeAgent',provider_instance_id='claudeAgent' WHERE thread_id=?",(tid,))
+                db.execute(f"UPDATE {V2}provider_threads SET driver='claudeAgent',provider='claudeAgent',provider_instance_id='claudeAgent',payload_json=? WHERE thread_id=?",
+                    (json.dumps({'nativeThreadRef':{'driver':'claudeAgent','nativeId':native,'strength':'strong'}}),tid))
+            db.commit()
+        for native in (NATIVE,child_native,OTHER):
+            (project/(native+'.jsonl')).write_text(json.dumps({'sessionId':native,'message':PRIVATE})+'\n')
+        for bound in self.manifest['native_stores']:bound.update(engine='claude',root=str(claude))
+        self.manifest['native_stores'].append({'thread_id':child,'engine':'claude','root':str(claude)})
+        self.adapter=T3CodeBoundAdapter(self.manifest)
+        plan=self.coordinator().plan_operation(client='t3code',record_ids=(THREAD,),adapters=(self.adapter,),
+            plan_path=self.plan_path,operation_id='t3-two-claude')
+        self.assertEqual(plan['goal_status'],'ready',plan)
+        batch=next(b for b in plan['child_batches'] if b['mutation_family']=='delete_claude_session')
+        self.assertEqual(batch['action_count'],2)
+        result=self.apply(plan)
+        self.assertEqual(result['goal_status'],'complete',result)
+        self.assertFalse((project/(NATIVE+'.jsonl')).exists())
+        self.assertFalse((project/(child_native+'.jsonl')).exists())
+        self.assertTrue((project/(OTHER+'.jsonl')).is_file())
+        cold=self.coordinator().verify_operation(operation_id=plan['operation_id'],plan_path=self.plan_path)
+        self.assertEqual(cold['goal_status'],'complete',cold)
+
     def test_pi_exact_path_survives_interrupted_native_and_frontend_cleanup(self):
         agent_dir = self.base / "pi"
         sessions = agent_dir / "sessions"

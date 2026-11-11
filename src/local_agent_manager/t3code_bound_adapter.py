@@ -380,6 +380,21 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         self.observations = ()
         self.legacy_import_ids = set()
 
+    def describe_client(self):
+        if self.manifest['schema_version'] == DATABASE_ONLY_SCHEMA:
+            return super().describe_client()
+        # The qualified manifest defines the protection stores/capabilities.
+        # Describing them must not rescan every event mirror. Consumers still
+        # call snapshot_references for fresh reference and failure evidence.
+        stores = {(item['engine'], canonical_path(item['root'])) for item in self.bindings.values()}
+        names = tuple(sorted({item['engine'] for item in self.bindings.values()}))
+        return ClientDescriptor('t3code', profile_root=self.profile_root, sources=(self.profile_root / RELATIVE,),
+            native_stores=tuple(StoreKey(backend, Path(root), kind='session_root' if backend == 'pi'
+                else 'config_dir' if backend == 'claude' else 'directory') for backend, root in sorted(stores)),
+            owner_process_root=self.profile_root, inventory_engines=names,
+            capability_limits=tuple(EngineCapability('t3code', e, inventory=True, verify=True,
+                reason='T3 Code mutation requires an approved local closure and held server ownership') for e in names))
+
     def snapshot_references(self, *, refresh=False):
         _, raw = frozen_files.read_file(self.profile_root, "userdata/environment-id", content=True, limit=256)
         if raw.decode("utf-8").strip() != self.manifest["environment_id"]:
@@ -457,13 +472,8 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                 row["driver"], binding["engine"], fingerprint, native_record=native, kind=ReferenceKind.RESTORE,
                 lifecycle=ReferenceLifecycle.RESTORABLE, source_locator="provider-native", evidence_complete=True,
                 opaque_native_locator=row["native_id"]))
-        names = tuple(sorted({b["engine"] for b in self.bindings.values()}))
-        descriptor = ClientDescriptor("t3code", profile_root=self.profile_root, sources=(self.profile_root / RELATIVE,),
-            native_stores=tuple(stores.values()), owner_process_root=self.profile_root, inventory_engines=names,
-            capability_limits=tuple(EngineCapability("t3code", e, inventory=True, verify=True,
-                reason="T3 Code mutation requires an approved local closure and held server ownership") for e in names))
         self.observations = tuple(observations)
-        return ReferenceSnapshot(descriptor, tuple(references))
+        return ReferenceSnapshot(self.describe_client(), tuple(references))
 
     def _pi_record(self, binding, row, store):
         path = local_root(row["native_id"])
