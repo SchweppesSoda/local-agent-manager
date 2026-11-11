@@ -259,7 +259,10 @@ def history_references(root, bindings):
     """Project all persisted native thread handles without exporting payloads."""
     with closing(connect_readonly(database_path(root))) as db:
         db.execute("BEGIN")
-        deadline = time.monotonic() + 20
+        # This walks every qualified historical JSON family (not only current
+        # projections). Keep the byte/row/schema limits, but allow a cold
+        # bounded 512-MiB store to finish the complete protection scan.
+        deadline = time.monotonic() + 120
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         from .t3code_store import qualify
         qualify(db)
@@ -299,25 +302,33 @@ def history_references(root, bindings):
                 continue
             event_type = 't.event_type' if 'event_type' in columns else 'NULL'
             content_filter = f"NOT lam_content_reference(?, 'payload_json', t.payload_json, j.fullkey, {event_type})"
-            if db.execute(f'''SELECT 1 FROM {table} AS t,json_tree(t.payload_json) AS j WHERE ({predicate}) AND (
-                    (j.key='nativeThreadRef' AND j.type NOT IN ('object','null')) OR
-                    (j.key='nativeThreadId' AND j.type NOT IN ('text','null')))
-                    AND {content_filter} LIMIT 1''', (table,)).fetchone():
-                fail("native_reference_shape_unqualified")
             instance = 't.provider_instance_id' if 'provider_instance_id' in columns else 'NULL'
             if event_table:
                 instance = "json_extract(t.payload_json,'$.providerInstanceId')"
             owner_expr = owner if event_table else 't.' + owner
-            result.extend(rows(db, f'''SELECT DISTINCT {owner_expr} AS thread_id, {instance} AS provider_instance_id,
-                json_extract(j.value,'$.driver') AS driver, json_extract(j.value,'$.nativeId') AS native_id,
-                json_extract(j.value,'$.strength') AS strength
+            # One complete JSON-tree scan per family. Do not prefilter raw
+            # strings: JSON-escaped keys and unfamiliar nested restore fields
+            # must retain exactly the same shape/content qualification.
+            observed = rows(db, f'''SELECT DISTINCT {owner_expr} AS thread_id,
+                {instance} AS provider_instance_id, j.key AS reference_key, j.type AS reference_type,
+                CASE WHEN j.key='nativeThreadRef' AND j.type='object' THEN json_extract(j.value,'$.driver') END AS driver,
+                CASE WHEN j.key='nativeThreadRef' AND j.type='object' THEN json_extract(j.value,'$.nativeId')
+                     WHEN j.key='nativeThreadId' AND j.type='text' THEN j.value END AS native_id,
+                CASE WHEN j.key='nativeThreadRef' AND j.type='object' THEN json_extract(j.value,'$.strength') END AS strength
                 FROM {table} AS t,json_tree(t.payload_json) AS j
-                WHERE ({predicate}) AND j.key='nativeThreadRef' AND j.type='object'
-                AND {content_filter} ''', (table,)))
-            result.extend(rows(db, f'''SELECT DISTINCT {owner_expr} AS thread_id, NULL AS driver,
-                j.value AS native_id, 'bare' AS strength FROM {table} AS t,json_tree(t.payload_json) AS j
-                WHERE ({predicate}) AND j.key='nativeThreadId' AND j.type='text'
-                AND {content_filter} ''', (table,)))
+                WHERE ({predicate}) AND j.key IN ('nativeThreadRef','nativeThreadId')
+                AND {content_filter} ''', (table,))
+            for item in observed:
+                if item['reference_key'] == 'nativeThreadRef':
+                    if item['reference_type'] not in ('object','null'):
+                        fail('native_reference_shape_unqualified')
+                    if item['reference_type'] == 'object':
+                        result.append({k:item[k] for k in ('thread_id','provider_instance_id','driver','native_id','strength')})
+                else:
+                    if item['reference_type'] not in ('text','null'):
+                        fail('native_reference_shape_unqualified')
+                    if item['reference_type'] == 'text':
+                        result.append({'thread_id':item['thread_id'],'driver':None,'native_id':item['native_id'],'strength':'bare'})
             if len(result) > MAX_ROWS:
                 fail("inventory_budget_exceeded")
         # Legacy imports remain read-only protection sources. Their exact

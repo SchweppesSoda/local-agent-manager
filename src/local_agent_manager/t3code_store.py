@@ -120,7 +120,7 @@ def read_database(root):
     identity = frozen_files._identity(path.stat())
     with closing(connect_readonly(path)) as db:
         db.execute("PRAGMA query_only=ON")
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         db.execute("BEGIN")
         qualify(db)

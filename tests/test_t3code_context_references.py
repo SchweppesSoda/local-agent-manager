@@ -38,6 +38,20 @@ class ContextReferenceTests(unittest.TestCase):
             'createdByProviderInstanceId': None, 'createdAt': '2026-11-10T00:00:00Z',
             'updatedAt': '2026-11-10T00:00:00Z'}
 
+    def test_single_scan_keeps_escaped_reference_keys_and_shape_guard(self):
+        from local_agent_manager.t3code_bound_adapter import history_references
+        payload = json.dumps({'nativeThreadRef': {'driver':'codex','nativeId':'escaped-native','strength':'strong'}})
+        payload = payload.replace('nativeThreadRef', 'native\\u0054hreadRef')
+        self.db.execute(f'UPDATE {V2}provider_threads SET payload_json=? WHERE thread_id=?', (payload,'selected'))
+        self.db.commit()
+        refs=history_references(self.root,{b['thread_id']:b for b in self.manifest['native_stores']})
+        self.assertTrue(any(r['native_id']=='escaped-native' for r in refs))
+        self.db.execute(f'UPDATE {V2}provider_threads SET payload_json=? WHERE thread_id=?',
+                        ('{"nativeThreadId":12}', 'selected'))
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError,'native_reference_shape_unqualified'):
+            history_references(self.root,{b['thread_id']:b for b in self.manifest['native_stores']})
+
     def transfer(self):
         return {'id': 'transfer', 'type': 'provider_handoff', 'sourceThreadId': 'keeper',
             'targetThreadId': 'keeper', 'sourcePoint': {'threadId': 'keeper',
