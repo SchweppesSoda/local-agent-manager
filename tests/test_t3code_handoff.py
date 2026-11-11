@@ -244,6 +244,40 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertEqual(spec["schema_version"], HANDOFF_SPEC_SCHEMA)
         self.assertEqual(spec["expanded_thread_ids"], sorted([TARGET_THREAD, CHILD_THREAD]))
 
+    def test_kernel_image_fallback_groups_cindy_children_and_rejects_unproven_identity(self):
+        from local_agent_manager import t3code_handoff as handoff
+        from local_agent_manager.record_identity import canonical_path
+        cindy = self.base/'Cindy.exe'
+        cindy.write_bytes(b'fixture never launched')
+        home = self.base/'CindyGlobal/codex-home'
+        home.mkdir(parents=True)
+        census = [dict(pid=40010, parent=40000, name='Cindy.exe', executable=None, command=None),
+                  dict(pid=40011, parent=40010, name='Cindy.exe', executable=None, command=None),
+                  dict(pid=40000, parent=0, name='explorer.exe', executable=None, command=None)]
+        def qualify():
+            return handoff._qualify_lifecycle_targets(t3_root=self.root,
+                manifest={'runtime_binaries': [str(cindy)]},
+                target_stores=[('codex', canonical_path(home), str(home))],
+                record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1)
+        with (patch.object(handoff, 'list_processes', return_value=census),
+              patch.object(handoff, '_running_related_process_records', return_value=[]),
+              patch.object(handoff, '_kernel_process_start_unix', return_value=100.0),
+              patch.object(handoff, '_kernel_process_image', return_value=(str(cindy), 100.0)) as image):
+            targets = qualify()
+            self.assertEqual([(t['pid'], t['executable']) for t in targets], [(40010, str(cindy))])
+            self.assertIsNone(census[0]['executable'])
+            for identity in (None, (str(self.t3_exe), 100.0), (str(cindy), 99.0)):
+                image.return_value = identity
+                with self.subTest(identity=identity), self.assertRaises(handoff.HandoffError):
+                    qualify()
+
+    def test_kernel_image_probe_reads_this_process_without_wmi(self):
+        import sys
+        from local_agent_manager.t3code_handoff import _kernel_process_image, _kernel_process_start_unix
+        image, started = _kernel_process_image(os.getpid())
+        self.assertTrue(os.path.samefile(image, sys.executable))
+        self.assertEqual(started, _kernel_process_start_unix(os.getpid()))
+
     def test_worker_orchestrates_cleanup_reopen_and_single_notification(self) -> None:
         handoff_dir = self.localappdata / "local-agent-manager/handoffs/test-worker-1"
         handoff_dir.mkdir(parents=True)

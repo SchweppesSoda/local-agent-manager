@@ -185,6 +185,40 @@ def _iso_from_unix(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
+def _kernel_process_image(pid: int) -> tuple[str, float] | None:
+    """WMI can omit images for elevated/Electron processes still queryable by
+    PROCESS_QUERY_LIMITED_INFORMATION. Never infer an executable from its name.
+    Bind the read to a stable kernel creation time on both sides of the query.
+    """
+    started = _kernel_process_start_unix(pid)
+    if started is None:
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        image = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(image))
+        if not kernel.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size)):
+            return None
+        path = image.value
+    finally:
+        kernel.CloseHandle(handle)
+    if _kernel_process_start_unix(pid) != started:
+        return None
+    return path, started
+
+
 def _expand_t3_selection(adapter: T3CodeBoundAdapter, selectors: Sequence[str]) -> list[str]:
     available = {row["id"] for row in adapter.observations}
     thread_ids = {identifier(s.removeprefix("t3code:")) for s in selectors}
@@ -316,7 +350,14 @@ def _qualify_lifecycle_targets(
     native_record_count: int,
 ) -> list[dict[str, Any]]:
     census = list_processes()
-    by_pid = {int(row["pid"]): row for row in census if isinstance(row.get("pid"), int) and row["pid"] > 0}
+    by_pid = {int(row["pid"]): dict(row) for row in census if isinstance(row.get("pid"), int) and row["pid"] > 0}
+    for pid, row in by_pid.items():
+        name = str(row.get('name') or '').casefold()
+        desktop = name in {'cindy.exe', 'chatgpt.exe'} or name.startswith(('t3 code', 'paseo', 'magpie'))
+        if desktop and not row.get('executable'):
+            identity = _kernel_process_image(pid)
+            if identity is not None and Path(identity[0]).name.casefold() == name:
+                row['executable'], row['_image_created_unix'] = identity
     runtime_keys = {canonical_path(path) for path in manifest.get("runtime_binaries", ()) if Path(path).exists()}
     target_engines = {engine for engine, _, _ in target_stores}
     target_homes = {engine: raw_root for engine, _, raw_root in target_stores}
@@ -396,6 +437,8 @@ def _qualify_lifecycle_targets(
         started_unix = _kernel_process_start_unix(root_pid)
         if started_unix is None:
             continue
+        if '_image_created_unix' in row and row['_image_created_unix'] != started_unix:
+            raise HandoffError('owner_identity_changed', f'待关闭进程 PID {root_pid} 在核验期间发生变化。')
         created_iso = _iso_from_unix(started_unix)
         profile = _software_profile(row, t3_root=t3_root, target_homes=target_homes)
         if profile["software"] == "T3 Code Desktop":
