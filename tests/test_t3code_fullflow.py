@@ -1,5 +1,5 @@
 import copy
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
 import os
 from pathlib import Path
@@ -91,15 +91,26 @@ class T3CodeFullflowTests(unittest.TestCase):
             self.skipTest('existing qualified Electron required')
         profile = self.base/'desktop'
         profile.mkdir()
-        self.manifest['runtime_binaries'] = [str(installed/'T3 Code (Nightly).exe')]
         seed = json.loads(json.dumps(fixture()).replace(ENV, 'env_test').replace(IDS[0], THREAD))
-        with d.isolated_runtime(installed) as runtime:
-            d.observe(runtime, profile, 'env_test', [THREAD], native=True, mode='seed', seed=seed)
+        runtime = self.enterContext(d.isolated_runtime(installed))
+        d.observe(runtime, profile, 'env_test', [THREAD], native=True, mode='seed', seed=seed)
+        (runtime/'electron.exe').rename(runtime/'T3 Code (Nightly).exe')
+        installed = runtime
+        self.manifest['runtime_binaries'] = [str(installed/'T3 Code (Nightly).exe')]
         self.manifest['desktop_profiles'] = [{'root':str(profile), 'runtime_binaries':self.manifest['runtime_binaries']}]
         self.adapter = T3CodeBoundAdapter(self.manifest)
         with patch.object(d, 'default_runtime', return_value=installed), patch.dict(os.environ, {
                 'LARJ_LEVELDB_RUNTIME':str(self.leveldb_runtime)}):
-            plan = self.plan()
+            running = [dict(pid=987654, parent=1, name='T3 Code (Nightly).exe',
+                            executable=str(installed/'T3 Code (Nightly).exe'), command='synthetic desktop')]
+            before = d.source_files(profile)
+            with patch('local_agent_manager.office_runtime.processes', return_value=running):
+                plan = self.plan()
+                item = cleanup.evidence_from_document(plan)['desktop'][0]['localstorage']['indexeddb']
+                with self.assertRaisesRegex(ValueError, 'writer_running'):
+                    d.apply_plan(item, item['plan_sha256'], clients_closed=True)
+                self.assertFalse((d.journal_root(profile)/item['operation_id']).exists())
+            self.assertEqual(before, d.source_files(profile))
             item = cleanup.evidence_from_document(plan)['desktop'][0]['localstorage']['indexeddb']
             self.assertEqual(item['schema_version'], 'lam.t3-desktop-full.v1')
             self.assertEqual(item['evidence']['native']['counts']['thread'], 1)
@@ -119,6 +130,32 @@ class T3CodeFullflowTests(unittest.TestCase):
             "antigravity": {"driver": "antigravity", "enabled": False}}}), encoding="utf-8")
         return T3CodeBoundAdapter({**self.manifest, "schema_version": DATABASE_ONLY_SCHEMA,
             "native_stores": [], "provider_instance_id": "antigravity"})
+
+    def test_online_desktop_plan_rejects_source_change_during_copy_rehearsal(self):
+        from local_agent_manager import t3code_desktop_cleanup as d
+        from tests.test_t3code_desktop_writer import fixture, ENV, IDS
+        runtime = self.enterContext(d.isolated_runtime(self.installed_runtime))
+        profile = self.base/'desktop'
+        profile.mkdir()
+        seed = json.loads(json.dumps(fixture()).replace(ENV, 'env_test').replace(IDS[0], THREAD))
+        d.observe(runtime, profile, 'env_test', [THREAD], native=True, mode='seed', seed=seed)
+        (runtime/'electron.exe').rename(runtime/'T3 Code (Nightly).exe')
+        self.manifest['runtime_binaries'] = [str(runtime/'T3 Code (Nightly).exe')]
+        self.manifest['desktop_profiles'] = [{'root':str(profile), 'runtime_binaries':self.manifest['runtime_binaries']}]
+        frozen = files.freeze(self.root, [THREAD])['database']
+        prepare = d.prepared
+        @contextmanager
+        def concurrent_writer(evidence, copied):
+            with prepare(evidence, copied) as after:
+                with (profile/d.LEVEL/'LOG').open('ab') as log:
+                    log.write(b'concurrent fixture writer\n')
+                yield after
+        with (patch.object(d, 'default_runtime', return_value=runtime),
+              patch.object(d, 'prepared', side_effect=concurrent_writer),
+              self.assertRaisesRegex(ValueError, 'desktop_planning_source_changed')):
+            d.new_full_plan(self.manifest, frozen, profile)
+        self.assertFalse(d.journal_root(profile).exists())
+        self.assertGreater(database.remaining(frozen), 0)
 
     def test_retired_database_only_purges_legacy_rows_and_truncates_wal(self):
         path = self.root / "userdata/statev2.sqlite"

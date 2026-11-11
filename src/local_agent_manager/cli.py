@@ -551,6 +551,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="delete run --client t3code：弹窗确认待关闭并自动重开的客户端后，分离后台进程在当前 T3 回合落盘后执行完整离线清理、冷核验与自动重开",
     )
     delete.add_argument(
+        "--handoff-app-pid", action="append", type=int, default=[], metavar="PID",
+        help="配合 --handoff，将已查明会周期启动 provider 的桌面应用 PID 列入本次关闭/重开确认；不能指定 shell 或共享 runtime",
+    )
+    delete.add_argument(
         "--notify-thread-id",
         metavar="THREAD_ID",
         help="配合 delete run --client t3code --handoff，在 T3 重开就绪后向指定保留 thread ID 发送一次完成通知",
@@ -1718,6 +1722,8 @@ def _run_delete_operation(
             scope["t3code_only"] = True
         if getattr(args, "notify_thread_id", None) and not getattr(args, "handoff", False):
             raise ValueError("--notify-thread-id 仅能与 delete run --handoff 配合使用")
+        if getattr(args, 'handoff_app_pid', None) and not getattr(args, 'handoff', False):
+            raise ValueError('--handoff-app-pid 仅能与 delete run --handoff 配合使用')
         if getattr(args, "handoff", False):
             if (
                 verb != "run"

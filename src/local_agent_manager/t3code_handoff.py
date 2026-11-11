@@ -358,7 +358,7 @@ def _software_profile(row: Mapping[str, Any], *, t3_root: Path, target_homes: Ma
     if key.startswith("magpie"):
         return {
             "software": "Magpie",
-            "home": target_homes.get("codex") or str(Path(exe).parent),
+            "home": str(Path(exe).parent),
             "reopen": True,
             "hold_executable": True,
         }
@@ -378,6 +378,7 @@ def _qualify_lifecycle_targets(
     record_ids: Sequence[str],
     expanded_thread_ids: Sequence[str],
     native_record_count: int,
+    extra_app_pids: Sequence[int] = (),
 ) -> list[dict[str, Any]]:
     census = list_processes()
     by_pid = {int(row["pid"]): dict(row) for row in census if isinstance(row.get("pid"), int) and row["pid"] > 0}
@@ -448,6 +449,17 @@ def _qualify_lifecycle_targets(
             blocking_pids.add(pid)
 
     owner_roots: list[int] = sorted(t3_roots)
+    explicit_owners = set()
+    for pid in extra_app_pids:
+        row = by_pid.get(pid)
+        if type(pid) is not int or pid <= 0 or row is None or _desktop_family(row) is None:
+            raise HandoffError('handoff_app_unverified',
+                f'额外桌面应用 PID {pid} 不存在或不属于已识别的 Agent 桌面；未请求关闭。')
+        owner = _climb_desktop_owner(pid, by_pid)
+        owner_pid = int(owner['pid'])
+        explicit_owners.add(owner_pid)
+        if owner_pid not in owner_roots:
+            owner_roots.append(owner_pid)
     for pid in sorted(blocking_pids):
         owner = _climb_desktop_owner(pid, by_pid)
         owner_pid = int(owner["pid"])
@@ -476,6 +488,8 @@ def _qualify_lifecycle_targets(
                 f"待当前回合结束后关闭并自动重开；清理 T3 会话 {selector_label}"
                 f"（级联 {len(expanded_thread_ids)} 条 T3 记录、{native_record_count} 条原生记录）"
             )
+        elif root_pid in explicit_owners:
+            task_desc = f"调用方明确列入的 provider 后台启动应用；关闭并在核验后自动重开 {profile['software']}"
         elif profile["reopen"]:
             task_desc = f"关闭占用目标原生存储的后台进程，并在清理核验完成后自动重开 {profile['software']}"
         else:
@@ -767,6 +781,7 @@ def start_t3code_handoff(
                 record_ids=record_ids,
                 expanded_thread_ids=expanded_thread_ids,
                 native_record_count=native_record_count,
+                extra_app_pids=getattr(args, 'handoff_app_pid', ()),
             )
 
         _step("[预检 4/4] 已弹出置顶确认窗口（请点击“确定”继续，默认焦点为“取消”）...")

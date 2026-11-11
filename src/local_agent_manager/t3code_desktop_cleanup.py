@@ -368,10 +368,12 @@ def new_plan(source_path, profile, installed):
 
 
 def new_full_plan(manifest, database, profile):
-    """Freeze IDB before any native mutation, as part of a NEW full plan.
+    """Rehearse IDB on private copies, without acquiring a live writer lock.
 
     Historical residual plans still require service absence. This distinct
     schema binds the exact service before/after transaction, not an old receipt.
+    Sources must remain stable throughout planning. Real installation still
+    enters held_lifecycle in apply_plan, including a fresh closed-process check.
     """
     from .record_identity import canonical_path
     if not any(canonical_path(p['root']) == canonical_path(profile) for p in manifest['desktop_profiles']):
@@ -379,18 +381,23 @@ def new_full_plan(manifest, database, profile):
     life = {'root': manifest['profile_root'], 'binding_manifest': manifest,
             'lifecycle': lifecycle.freeze(manifest)}
     installed = default_runtime()
-    with lifecycle.hold(life):
-        admission(profile)
-        from .t3code_database import remaining
-        if not remaining(database):
-            fail('desktop_full_service_before_required')
-        with isolated_runtime(installed, service=life['root']) as runtime:
-            evidence = freeze(profile, runtime, manifest['environment_id'], database['thread_ids'])
-            # Qualify the complete write + cold image now, before any original
-            # family/native write. The eventual installer repeats on its copy.
-            with prepared(evidence, runtime):
-                pass
-        proof = runtime_files(installed, life['root'])
+    admission(profile)
+    from .t3code_database import remaining
+    if not remaining(database):
+        fail('desktop_full_service_before_required')
+    proof = runtime_files(installed, life['root'])
+    with isolated_runtime(installed, expected=proof, service=life['root']) as runtime:
+        evidence = freeze(profile, runtime, manifest['environment_id'], database['thread_ids'])
+        # Qualify the complete write + cold image before any original write.
+        with prepared(evidence, runtime):
+            pass
+    admission(profile)
+    if (source_files(profile) != evidence['files']
+            or lifecycle.freeze(manifest) != life['lifecycle']
+            or runtime_files(installed, life['root']) != proof):
+        fail('desktop_planning_source_changed')
+    if not remaining(database):
+        fail('desktop_full_service_before_required')
     value = {'schema_version': 'lam.t3-desktop-full.v1', 'operation_id': 'desktop-' + uuid.uuid4().hex,
              'lifecycle': life, 'service_transaction': database, 'evidence': evidence,
              'runtime_root': str(installed.resolve()), 'runtime_files': proof, 'helpers': helpers_fingerprint()}

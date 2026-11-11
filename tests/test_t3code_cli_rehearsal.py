@@ -55,6 +55,10 @@ def worker(argv):
     transport = CodexAppServer if os.environ.get('LAM_REHEARSAL_CODEX_BINARY') else NativeTransport
     with ExitStack() as stack:
         stack.enter_context(patch('local_agent_manager.office_runtime.processes', return_value=[]))
+        if os.environ.get('LAM_REHEARSAL_T3_RUNTIME'):
+            from local_agent_manager import t3code_desktop_cleanup as desktop
+            stack.enter_context(patch.object(desktop, 'default_runtime',
+                return_value=Path(os.environ['LAM_REHEARSAL_T3_RUNTIME'])))
         if os.environ.get('LAM_REHEARSAL_HANDOFF'):
             from local_agent_manager import t3code_handoff as handoff
             # Inject only host facts, consent and process launch. The child
@@ -70,7 +74,7 @@ def worker(argv):
                         '--handoff-worker', str(spec)], cwd=Path(__file__).resolve().parents[1],
                         env=dict(os.environ), stdout=log, stderr=log,
                         creationflags=subprocess.CREATE_NO_WINDOW)
-                    stack.callback(lambda: child.wait(timeout=180))
+                    stack.callback(lambda: child.wait(timeout=600))
                     return child.pid
                 finally:
                     log.close()
@@ -188,7 +192,7 @@ class ColdCliRehearsal(unittest.TestCase):
 
     def call(self, label, args):
         completed = subprocess.run([sys.executable, '-m', 'tests.test_t3code_cli_rehearsal', '--worker', *args, '--json', '--progress'],
-                                   cwd=Path(__file__).resolve().parents[1], env=self.env, capture_output=True, timeout=180)
+                                   cwd=Path(__file__).resolve().parents[1], env=self.env, capture_output=True, timeout=600)
         (self.evidence/(label+'.json')).write_bytes(completed.stdout)
         (self.evidence/(label+'.jsonl')).write_bytes(completed.stderr)
         self.assertTrue(completed.stdout, completed.stderr.decode(errors='replace'))
@@ -258,8 +262,24 @@ class ColdCliRehearsal(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('LAM_REHEARSAL_CODEX_BINARY'), 'requires copied real Codex app-server')
     def test_handoff_17_frontend_18_native_records_with_retained_diagnostics(self):
         from tests.test_antigravity_cli_references import field, step
+        from tests.test_t3code_desktop_writer import fixture as desktop_fixture, ENV, IDS
+        from local_agent_manager import t3code_desktop_cleanup as desktop
         selected = list(SELECTED)
         manifest = json.loads(self.bindings.read_text())
+        # A real copied Chromium distribution and IndexedDB (including blobs)
+        # belong in the same mixed-store rehearsal, not only Local Storage.
+        runtime_context = desktop.isolated_runtime(desktop.default_runtime())
+        copied_runtime = runtime_context.__enter__()
+        self.addCleanup(runtime_context.__exit__, None, None, None)
+        seed = json.loads(json.dumps(desktop_fixture()).replace(ENV, 'env-1')
+            .replace(IDS[0], ROOTS[0]).replace(IDS[1], CHILDREN[0]))
+        desktop.observe(copied_runtime, self.desktop, 'env-1', [ROOTS[0], CHILDREN[0]],
+                        native=True, mode='seed', seed=seed)
+        copied_binary = copied_runtime / 'T3 Code (Nightly).exe'
+        (copied_runtime / 'electron.exe').rename(copied_binary)
+        manifest['runtime_binaries'].append(str(copied_binary))
+        manifest['desktop_profiles'][0]['runtime_binaries'] = [str(copied_binary)]
+        self.env['LAM_REHEARSAL_T3_RUNTIME'] = str(copied_runtime)
         with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
             for i in range(9):
                 tid, nid = f'additional-child-{i}', f'bbbbbbbb-bbbb-4bbb-8bbb-{i:012d}'
@@ -350,7 +370,8 @@ class ColdCliRehearsal(unittest.TestCase):
         (self.evidence / 'preservation.json').write_text(json.dumps(dict(
             target_t3_remaining=0, native_targets_remaining=0, kept_threads=3,
             kept_rows_unchanged=True, kept_files_unchanged=True, real_codex_app_server=True,
-            detached_worker=True, cold_status_and_verify=True, production_writes=0), indent=2))
+            real_chromium_indexeddb=True, detached_worker=True,
+            cold_status_and_verify=True, production_writes=0), indent=2))
 
     def test_real_target_drift_blocks_without_child_journals(self):
         plan = self.plan()

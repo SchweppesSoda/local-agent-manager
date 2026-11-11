@@ -111,6 +111,7 @@ class T3CodeHandoffTests(unittest.TestCase):
             ["delete", "run", "--client", "native", "--record-id", TARGET_NATIVE, "--handoff", "--json"],
             ["delete", "run", "--client", "t3code", "--t3code-only", "--record-id", TARGET_THREAD, "--handoff", "--json"],
             ["delete", "run", "--client", "t3code", "--all-projects", "--handoff", "--json"],
+            ["delete", "run", "--client", "t3code", "--record-id", TARGET_THREAD, "--handoff-app-pid", "41000", "--json"],
         ]
         for argv in cases:
             with self.subTest(argv=argv):
@@ -306,6 +307,28 @@ class T3CodeHandoffTests(unittest.TestCase):
         image, started = _kernel_process_image(os.getpid())
         self.assertTrue(os.path.samefile(image, sys.executable))
         self.assertEqual(started, _kernel_process_start_unix(os.getpid()))
+
+    def test_explicit_desktop_spawner_is_confirmed_without_transient_child(self):
+        from local_agent_manager import t3code_handoff as handoff
+        magpie = self.base/'magpie.exe'
+        magpie.write_bytes(b'fixture never launched')
+        rows = [dict(pid=41000, parent=40000, name='magpie.exe', executable=str(magpie), command='desktop'),
+                dict(pid=41001, parent=41000, name='magpie-bun.exe', executable=str(self.base/'bun.exe'), command='server'),
+                dict(pid=40000, parent=0, name='uTools.exe', executable=str(self.base/'uTools.exe'), command='launcher')]
+        with (patch.object(handoff, 'list_processes', return_value=rows),
+              patch.object(handoff, '_kernel_process_start_unix', return_value=100.0)):
+            def qualify(pids):
+                return handoff._qualify_lifecycle_targets(t3_root=self.root,
+                    manifest={'runtime_binaries': []}, target_stores=[], record_ids=[TARGET_THREAD],
+                    expanded_thread_ids=[TARGET_THREAD], native_record_count=1, extra_app_pids=pids)
+            self.assertEqual(qualify([]), [])
+            targets = qualify([41000, 41000])
+            self.assertEqual([(t['pid'],t['software'],t['reopen']) for t in targets], [(41000,'Magpie',True)])
+            self.assertEqual(targets[0]['lifecycle_target'].pid, 41000)
+            self.assertIn('明确列入', targets[0]['affected_tasks'][0])
+            for invalid in (41001,40000,99999,-1):
+                with self.subTest(pid=invalid), self.assertRaises(handoff.HandoffError):
+                    qualify([invalid])
 
     def test_desktop_boundary_does_not_include_application_launcher(self):
         from local_agent_manager import t3code_handoff as handoff
