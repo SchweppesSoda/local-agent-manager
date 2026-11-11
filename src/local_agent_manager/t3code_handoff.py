@@ -278,9 +278,17 @@ def _inspect_store_journals(coordinator: Any, roots: Sequence[Path]) -> list[dic
 
 
 def _climb_desktop_owner(pid: int, by_pid: Mapping[int, Mapping[str, Any]]) -> Mapping[str, Any]:
-    current = by_pid[pid]
+    original = current = by_pid[pid]
     visited = {pid}
+    # A launcher is an ancestor, not the owner of an Agent's storage. Stop at
+    # the closest known desktop family and only coalesce that app's processes.
+    # With no known desktop, keep the selected runtime itself as the boundary.
+    owner = None
     while True:
+        family = _desktop_family(current)
+        if family:
+            owner = current
+            break
         parent_id = int(current.get("parent") or 0)
         parent = by_pid.get(parent_id)
         if parent is None or parent_id in visited:
@@ -290,7 +298,29 @@ def _climb_desktop_owner(pid: int, by_pid: Mapping[int, Mapping[str, Any]]) -> M
             break
         visited.add(parent_id)
         current = parent
-    return current
+    if owner is None:
+        return original
+    while True:
+        parent_id = int(owner.get('parent') or 0)
+        parent = by_pid.get(parent_id)
+        if (parent is None or parent_id in visited or _desktop_family(parent) != family
+                or not parent.get('executable') or not owner.get('executable')
+                or canonical_path(parent['executable']) != canonical_path(owner['executable'])):
+            return owner
+        visited.add(parent_id)
+        owner = parent
+
+
+def _desktop_family(row: Mapping[str, Any]) -> str | None:
+    name = str(row.get('name') or '').casefold()
+    if name == 'magpie-bun.exe':
+        return None  # Shared CLI runtime, not the Magpie desktop application.
+    if name in {'cindy.exe', 'chatgpt.exe'}:
+        return name
+    for prefix in ('t3 code', 'paseo', 'magpie'):
+        if name.startswith(prefix):
+            return prefix
+    return None
 
 
 def _software_profile(row: Mapping[str, Any], *, t3_root: Path, target_homes: Mapping[str, str]) -> dict[str, Any]:
@@ -353,7 +383,7 @@ def _qualify_lifecycle_targets(
     by_pid = {int(row["pid"]): dict(row) for row in census if isinstance(row.get("pid"), int) and row["pid"] > 0}
     for pid, row in by_pid.items():
         name = str(row.get('name') or '').casefold()
-        desktop = name in {'cindy.exe', 'chatgpt.exe'} or name.startswith(('t3 code', 'paseo', 'magpie'))
+        desktop = _desktop_family(row) is not None
         if desktop and not row.get('executable'):
             identity = _kernel_process_image(pid)
             if identity is not None and Path(identity[0]).name.casefold() == name:

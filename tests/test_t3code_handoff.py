@@ -278,6 +278,31 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertTrue(os.path.samefile(image, sys.executable))
         self.assertEqual(started, _kernel_process_start_unix(os.getpid()))
 
+    def test_desktop_boundary_does_not_include_application_launcher(self):
+        from local_agent_manager import t3code_handoff as handoff
+        launcher = self.base/'uTools.exe'
+        launcher.write_bytes(b'fixture launcher never executed')
+        census = [
+            dict(pid=40100, parent=0, name='uTools.exe', executable=str(launcher), command='launcher'),
+            dict(pid=40200, parent=40100, name=self.t3_exe.name, executable=str(self.t3_exe), command='desktop'),
+            dict(pid=40201, parent=40200, name=self.t3_exe.name, executable=str(self.t3_exe), command='--type=renderer'),
+            dict(pid=40300, parent=40201, name='agy.exe', executable=str(self.base/'agy.exe'), command='acp'),
+            dict(pid=40400, parent=40100, name='agy.exe', executable=str(self.base/'agy.exe'), command='acp'),
+            dict(pid=40500, parent=40100, name='magpie-bun.exe', executable=str(self.base/'magpie-bun.exe'), command='server'),
+            dict(pid=40600, parent=40500, name='agy.exe', executable=str(self.base/'agy.exe'), command='acp'),
+        ]
+        by_pid = {r['pid']: r for r in census}
+        for pid in (40200, 40201, 40300):
+            self.assertEqual(handoff._climb_desktop_owner(pid, by_pid)['pid'], 40200)
+        self.assertEqual(handoff._climb_desktop_owner(40400, by_pid)['pid'], 40400)
+        self.assertEqual(handoff._climb_desktop_owner(40600, by_pid)['pid'], 40600)
+        with (patch.object(handoff, 'list_processes', return_value=census[:4]),
+              patch.object(handoff, '_kernel_process_start_unix', return_value=100.0)):
+            targets = handoff._qualify_lifecycle_targets(t3_root=self.root,
+                manifest={'runtime_binaries': [str(self.t3_exe)]}, target_stores=[],
+                record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1)
+        self.assertEqual([(t['pid'], t['software']) for t in targets], [(40200, 'T3 Code Desktop')])
+
     def test_worker_orchestrates_cleanup_reopen_and_single_notification(self) -> None:
         handoff_dir = self.localappdata / "local-agent-manager/handoffs/test-worker-1"
         handoff_dir.mkdir(parents=True)
