@@ -68,6 +68,54 @@ class ScheduleCleanupTests(unittest.TestCase):
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute('SELECT run_id FROM schedule_session_latest_runs').fetchall(), [('run-2',)])
 
+    def test_trigger_source_generation_round_trips_through_protocol(self):
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute('ALTER TABLE schedule_runs ADD COLUMN trigger_source TEXT')
+            db.execute("UPDATE schedule_runs SET trigger_source='manual' WHERE id='run-0'")
+            db.execute("UPDATE schedule_runs SET trigger_source='scheduled' WHERE id='run-3'")
+            db.commit()
+        path = self.root / 'trigger-source-plan.json'
+        adapter = self.adapter()
+        plan = self.coordinator().plan_operation(client='cindy', engines=('codex',),
+            record_ids=('schedule-run:run-0',), adapters=(adapter,), plan_path=path)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        evidence = plan['actions'][0]['impact']['external_action_payload']['schedule_run_evidence']
+        self.assertEqual(evidence['row']['trigger_source'], 'manual')
+        result = self.coordinator().apply_operation(plan_path=path, clients_closed=True,
+                                                   adapters=(adapter,))
+        self.assertEqual(result['goal_status'], 'complete', result)
+        for method in ('status_operation', 'verify_operation'):
+            result = getattr(self.coordinator(), method)(plan_path=path, adapters=(adapter,))
+            self.assertEqual(result['goal_status'], 'complete', result)
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute('SELECT id,trigger_source FROM schedule_runs ORDER BY id').fetchall(),
+                             [('run-1', None), ('run-2', None), ('run-3', 'scheduled')])
+
+    def test_trigger_source_drift_is_guarded(self):
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute('ALTER TABLE schedule_runs ADD COLUMN trigger_source TEXT')
+            db.commit()
+        evidence = self.evidence()
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("UPDATE schedule_runs SET trigger_source='manual' WHERE id='run-3'")
+            db.commit()
+        with self.assertRaisesRegex(ScheduleCleanupError, 'changed'):
+            execute(evidence, client_inspector=lambda _: ())
+        self.assertEqual(len(self.run_ids()), 4)
+
+    def test_unqualified_schedule_columns_remain_blocked(self):
+        for definition in ('trigger_source INTEGER', 'trigger_source TEXT NOT NULL DEFAULT \'manual\'',
+                           'unknown_source TEXT'):
+            with self.subTest(definition=definition):
+                with closing(sqlite3.connect(self.database)) as db:
+                    db.execute('ALTER TABLE schedule_runs ADD COLUMN ' + definition)
+                    db.commit()
+                with self.assertRaisesRegex(ScheduleCleanupError, 'column'):
+                    self.evidence()
+                with closing(sqlite3.connect(self.database)) as db:
+                    db.execute('ALTER TABLE schedule_runs DROP COLUMN ' + definition.split()[0])
+                    db.commit()
+
     def test_null_session_runs_supported(self):
         with closing(sqlite3.connect(self.database)) as db:
             db.execute("UPDATE schedule_runs SET session_id=NULL WHERE id='run-0'")

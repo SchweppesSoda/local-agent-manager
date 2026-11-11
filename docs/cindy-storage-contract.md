@@ -94,6 +94,13 @@ Session deletion validates its trigger contract while freezing evidence and
 again before execution. A guard failure before mutation does not restore a
 backup over an unchanged database.
 
+Schedule-run deletion supports the original run schema and the generation with
+the nullable `trigger_source TEXT` column observed on 2026-11-11. The complete
+schedule trigger and dependency checks apply to both generations. When present,
+`trigger_source` participates in the frozen row metadata and before/after hashes,
+including drift checks for unselected runs. Existing plans for the original schema
+retain their original metadata representation.
+
 ## Regression evidence
 
 `tests/fixtures/cindy/fts_*.sql` contains attributed SQL excerpts from the pinned

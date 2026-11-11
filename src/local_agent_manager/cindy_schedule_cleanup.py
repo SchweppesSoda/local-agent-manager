@@ -34,8 +34,8 @@ META = ("id", "schedule_id", "session_id", "fired_at", "finished_at", "status",
         "cost_attribution", "cost_amount", "estimated_value_amount",
         "cost_currency", "cost_is_approximate")
 
-# Installed Cindy schema observed 2026-09-29. Match complete definitions, not
-# trigger names. Unknown versions fail closed and remain inventory-only.
+# Installed Cindy schemas observed 2026-09-29 and 2026-11-11. Match complete
+# definitions, not trigger names. Unknown versions remain inventory-only.
 TRIGGERS = {
     "schedule_session_latest_run_insert": """CREATE TRIGGER schedule_session_latest_run_insert
     AFTER INSERT ON schedule_runs WHEN NEW.session_id IS NOT NULL BEGIN
@@ -90,7 +90,13 @@ def _schema(db):
     for table, expected in (("schedule_runs", RUN_COLUMNS),
                             ("schedule_session_latest_runs", {"session_id", "run_id", "fired_at"})):
         columns = db.execute(f'PRAGMA table_info("{table}")').fetchall()
-        if {r[1] for r in columns} != expected:
+        column_names = {r[1] for r in columns}
+        if table == "schedule_runs" and "trigger_source" in column_names:
+            trigger_source = next(r for r in columns if r[1] == "trigger_source")
+            if (trigger_source[2].lower(), *trigger_source[3:]) != ("text", 0, None, 0):
+                raise ScheduleCleanupError("Unsupported schedule trigger_source column")
+            expected = expected | {"trigger_source"}
+        if column_names != expected:
             raise ScheduleCleanupError("Unsupported Cindy schedule columns: " + table)
         primary = "id" if table == "schedule_runs" else "session_id"
         if [(r[1], r[2].lower()) for r in columns if r[5]] != [(primary, "text")]:
@@ -121,8 +127,11 @@ def _schema(db):
 
 
 def _rows(db):
-    return {r[0]: dict(zip(META, r)) for r in
-            db.execute('SELECT ' + ','.join(META) + ' FROM schedule_runs ORDER BY id')}
+    columns = META
+    if any(r[1] == "trigger_source" for r in db.execute('PRAGMA table_info(schedule_runs)')):
+        columns += ("trigger_source",)
+    return {r[0]: dict(zip(columns, r)) for r in
+            db.execute('SELECT ' + ','.join(columns) + ' FROM schedule_runs ORDER BY id')}
 
 
 def _links(db):
