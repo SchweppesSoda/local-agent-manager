@@ -651,15 +651,44 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 [Commands](#commands)，不另设直接删表命令。
 
 当前桌面版本还会从 `IndexedDB/t3code_app_0.indexeddb.leveldb` 的
-`t3code:connection-runtime` 恢复侧栏 shell 和完整 thread projection，正文还可能
-存于配套 `.indexeddb.blob`。现有 Local Storage writer 未覆盖此格式。绑定 profile
-中任一 IndexedDB family 存在时，新计划、执行和旧计划的 status/verify 均以
-`t3code_desktop_indexeddb_unqualified` 阻挡。即使服务记录已空、Local Storage
-目标为零、旧 journal 曾 complete，也不能据此宣称桌面完整删除。此门禁按 family
-存在判定，尚不能区分该 family 中目标是否已空。保留全部内容，等待精确目标、共享
-shell、外部 blob 和未选记录的保护协议取得支持后另建计划。不得通过清空缓存、重放
-原 apply 或删去绑定 profile 绕过。最终验收还须在客户端恢复后核实实际列表和正文，
-并与服务端结果、未选项及草稿保留结果共同记录。
+`t3code:connection-runtime` 恢复侧栏 shell 和完整 thread projection，正文可能
+存于配套 `.indexeddb.blob`。完整清理的准入会在私有副本中精确检查同环境目标。
+已支持且目标为空的 family 可通过，目标残留返回 `t3code_desktop_indexeddb_residual`，
+未知格式返回 `t3code_desktop_indexeddb_unqualified`。旧计划的 mutation scope 保持其
+冻结内容，发现新副本时必须另建独立收尾计划。
+
+对于服务记录已删除的副本，使用独立模块入口。它只安装两个已验证的 IndexedDB
+origin families，并冻结原计划 ID 闭包、profile、环境、生命周期、安装运行时和逻辑结果。
+以下命令在已关闭客户端后执行，`plan` 的新 hash 需要审查后传入 `apply`。
+
+```powershell
+python -m local_agent_manager.t3code_desktop_cleanup plan --source-plan original.json --profile 'C:/Bound/DesktopProfile' --plan residual.json --clients-closed
+python -m local_agent_manager.t3code_desktop_cleanup apply --plan residual.json --authorized-plan-sha256 '<new hash>' --clients-closed
+python -m local_agent_manager.t3code_desktop_cleanup status --plan residual.json
+python -m local_agent_manager.t3code_desktop_cleanup verify --plan residual.json --clients-closed
+```
+
+当前运行时资格为已安装的 T3 Electron 44.10.1 / Chromium 152.0.7977.169。
+可用 `plan --runtime-root` 显式指定安装目录。原安装保持原样，只复制纯 Electron
+分发文件到临时目录，替换临时 app 入口并隔离 HOME/APPDATA/userData/session，
+在 kill-on-close Job 内执行，禁用应用导入、服务启动和 session 网络。
+Chromium 在完整私有家族中执行 strict transaction，删除精确 thread keys、过滤 shell
+数组及删除仅属于目标的 query。共享 query 响应引用和未知 schema 阻挡。
+其他环境同 ID、全部未选数据、catalog/config/vcs、auth/favicon 均保留。
+随后完整逻辑重建清除历史 WAL/table 字节，仅按全 owner 图复制存活 blob，
+并用真实 Chromium 冷重开核对完整逻辑结果及未选 raw data 记录。
+
+独立 journal 位于 profile 的 `.local-agent-record-janitor/desktop-cleanups/<operation>`。
+永久 root mutex、运行文件独占租约和原 server-owner SQLite lock 在安装期间共同持有。
+新 journal 的 durable after image 先落盘，再改原 family。原 apply/native 删除不重放，
+旧 plan/journal/audit 不改写。中断后 `apply` 拒绝重放，`status` 为 unknown。
+`verify` 仅验证。确需补完已开始的安装时，使用 `recover --plan residual.json
+--authorized-plan-sha256 '<same new hash>' --clients-closed`，它仅安装已封存且冷验证过的
+同一 after image，要求当前文件属于精确 before/after 子集，或与封存 after 对应文件的未写完前缀完全相同，拒绝新文件或其他变更。
+成功核验后释放 after image，保留 metadata receipt。不能验证的中断保留原址证据。
+
+最终验收须在客户端恢复后核实实际列表、直接路由正文和离线重开结果，并核对服务端、
+未选项、草稿及附件。独立收尾的完成回执不改写旧操作的历史状态。
 
 Pi 的 T3 原生句柄是绝对 JSONL 路径。绑定同时核对 session 根、文件头 UUID 与精确文件身份，
 同 UUID 的其他文件独立处理。自动发现读取 `PI_CODING_AGENT_DIR` 和
