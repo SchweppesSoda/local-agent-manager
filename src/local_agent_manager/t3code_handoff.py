@@ -440,35 +440,44 @@ def _python_interpreter() -> str:
     return str(candidate)
 
 
+_DETACHED_PROCS: list[subprocess.Popen[Any]] = []
+
+
 def _spawn_detached_worker(spec_path: Path) -> int:
-    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    worker_script = Path(__file__).resolve()
-    cmd_line = subprocess.list2cmdline([_python_interpreter(), "-B", str(worker_script), "--worker", str(spec_path)])
-    ps_script = (
-        "$ErrorActionPreference='Stop'; "
-        "$res = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-        "-Arguments @{ CommandLine = $env:LAM_WORKER_CMD }; "
-        "ConvertTo-Json -Compress @{ ReturnValue = [int]$res.ReturnValue; ProcessId = [int]($res.ProcessId) }"
+    _DETACHED_PROCS[:] = [p for p in _DETACHED_PROCS if p.poll() is None]
+    src_root = str(Path(__file__).resolve().parents[1])
+    entry_code = (
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "from local_agent_manager.t3code_handoff import _worker_cli; "
+        "raise SystemExit(_worker_cli())"
     )
+    argv = [_python_interpreter(), "-B", "-c", entry_code, src_root, "--worker", str(spec_path)]
     env = {k: v for k, v in os.environ.items() if k not in _AMBIENT_PROVIDER_ENV_VARS}
-    env["LAM_WORKER_CMD"] = cmd_line
-    completed = subprocess.run(
-        [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    log_path = spec_path.parent / "worker.log"
+    base_flags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     )
-    if completed.returncode != 0:
-        raise HandoffError(
-            "worker_spawn_failed",
-            f"无法通过 WMI 启动独立后台清理进程：{completed.stderr.strip() or completed.stdout.strip()}",
-        )
-    payload = json.loads(completed.stdout.strip())
-    if payload.get("ReturnValue") != 0 or int(payload.get("ProcessId") or 0) <= 0:
-        raise HandoffError("worker_spawn_failed", f"Win32_Process.Create 返回异常：{payload}")
-    return int(payload["ProcessId"])
+    breakaway_flag = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+    last_err: OSError | None = None
+    with log_path.open("ab") as log_handle:
+        for flags in (base_flags | breakaway_flag, base_flags):
+            try:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=str(spec_path.parent),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    close_fds=True,
+                    creationflags=flags,
+                )
+                _DETACHED_PROCS.append(proc)
+                return int(proc.pid)
+            except OSError as exc:
+                last_err = exc
+    raise HandoffError("worker_spawn_failed", f"无法启动独立后台清理进程：{last_err}")
 
 
 _EVENT_LABELS: dict[str, str] = {
@@ -493,8 +502,10 @@ def _follow_worker_events(
 ) -> Mapping[str, Any] | None:
     seen_lines = 0
     deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        finished = False
+
+    def _drain_events() -> bool:
+        nonlocal seen_lines
+        saw_finish = False
         if events_path.is_file():
             lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()
             for raw in lines[seen_lines:]:
@@ -508,11 +519,28 @@ def _follow_worker_events(
                     stderr.write(f"[异常] {row.get('error')}\n")
                     stderr.flush()
                 elif ev == "worker_finished":
-                    finished = True
+                    saw_finish = True
+        return saw_finish
+
+    while time.monotonic() < deadline:
+        finished = _drain_events()
         if finished and receipt_path.is_file():
             return strict_json_load(receipt_path)
-        if worker_pid > 0 and _kernel_process_start_unix(worker_pid) is None and receipt_path.is_file():
-            return strict_json_load(receipt_path)
+        if worker_pid > 0 and _kernel_process_start_unix(worker_pid) is None:
+            time.sleep(0.1)
+            _drain_events()
+            if receipt_path.is_file():
+                return strict_json_load(receipt_path)
+            log_path = events_path.parent / "worker.log"
+            detail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-400:] if log_path.is_file() else ""
+            msg = f"独立清理进程 (PID {worker_pid}) 未生成回执即退出" + (f"：{detail}" if detail else "")
+            stderr.write(f"[异常] {msg}\n")
+            stderr.flush()
+            return {
+                "goal_status": "blocked",
+                "goal_satisfied": False,
+                "errors": [{"code": "worker_exited_without_receipt", "message": msg}],
+            }
         time.sleep(0.3)
     return strict_json_load(receipt_path) if receipt_path.is_file() else None
 

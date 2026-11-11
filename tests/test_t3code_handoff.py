@@ -436,6 +436,49 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertIn("[完成] 最终状态：complete", stderr_text)
         self.assertIn("complete", out.getvalue())
 
+    def test_real_spawned_worker_boots_and_writes_receipt_without_mocks(self) -> None:
+        from local_agent_manager.t3code_handoff import _follow_worker_events, _spawn_detached_worker
+
+        handoff_dir = self.localappdata / "local-agent-manager/handoffs/real-spawn-test"
+        handoff_dir.mkdir(parents=True)
+        receipt_path = handoff_dir / "receipt.json"
+        spec_path = handoff_dir / "spec.json"
+        write_new_json(
+            spec_path,
+            {
+                "schema_version": HANDOFF_SPEC_SCHEMA,
+                "handoff_id": "real-spawn-test",
+                "created_at": "2026-11-11T08:00:00+00:00",
+                "t3code_root": str(self.root),
+                "t3code_install": str(self.install),
+                "record_ids": [TARGET_THREAD],
+                "expanded_thread_ids": [TARGET_THREAD, CHILD_THREAD],
+                "native_record_count": 2,
+                "notify_thread_id": None,
+                "timeout": 5.0,
+                "quiesce_timeout": 2.0,
+                "handoff_dir": str(handoff_dir),
+                "receipt_path": str(receipt_path),
+                "cli_forwards": ["--t3code-bindings", str(handoff_dir / "missing-bindings.json")],
+                "recoverable_preflight_children": [],
+                "confirmed_targets": [],
+            },
+        )
+        err = StringIO()
+        with patch.dict(os.environ, {"PYTHONPATH": ""}, clear=False):
+            worker_pid = _spawn_detached_worker(spec_path)
+            final = _follow_worker_events(
+                events_path=handoff_dir / "events.jsonl",
+                receipt_path=receipt_path,
+                worker_pid=worker_pid,
+                stderr=err,
+                timeout_seconds=20.0,
+            )
+        self.assertIsNotNone(final)
+        self.assertTrue(receipt_path.is_file(), (handoff_dir / "worker.log").read_text(encoding="utf-8", errors="replace"))
+        self.assertIn("[执行 1/7]", err.getvalue())
+        self.assertIn("[执行 2/7]", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
