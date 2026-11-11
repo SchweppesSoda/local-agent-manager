@@ -585,8 +585,12 @@ local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --cl
 子任务的 provider 按子线程归属核验。
 
 已知共享 provider session 保留其全局行及未选线程的绑定，只清理选中线程的绑定。
-该路径要求共享 ID、instance、driver、status 和 payload 相符，且全局行的当前 owner
-位于选区之外。未知共享格式、owner 位于选区、恢复引用及真实跨线程 transfer 继续阻挡。
+该路径要求共享 ID、instance、driver、status 和 payload 相符。若当前 owner 位于选区，
+仅对已停止或错误、已知 ProviderSession payload 的实例级共享登记，将可空的
+`thread_id` 清为 NULL，保留连接 payload、未选绑定及 provider thread；不猜测新 owner。
+该列是最后一次事件归属，不是原生会话 ID。owner 更新、选区事件和旧镜像删除一同
+模拟、冻结、按精确行数写入，并检查整个逻辑 after hash。未知字段、恢复引用、忙碌
+连接及真实跨线程 transfer 继续阻挡。
 当前其他对话中的用户 thread mention，以及 `t3-code.t3_thread_read` 的已知输入/输出
 审计内容属于各自对话的内容。其引用文本继续保留，原线程清理按指定记录边界执行。
 已知消息正文、命令执行文本和子任务 prompt 中的 ID 文字也按对话内容保留。
@@ -653,9 +657,14 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 当前桌面版本还会从 `IndexedDB/t3code_app_0.indexeddb.leveldb` 的
 `t3code:connection-runtime` 恢复侧栏 shell 和完整 thread projection，正文可能
 存于配套 `.indexeddb.blob`。完整清理的准入会在私有副本中精确检查同环境目标。
-已支持且目标为空的 family 可通过，目标残留返回 `t3code_desktop_indexeddb_residual`，
-未知格式返回 `t3code_desktop_indexeddb_unqualified`。旧计划的 mutation scope 保持其
-冻结内容，发现新副本时必须另建独立收尾计划。
+新完整计划将已资格化 Chromium 精确 writer 的子计划纳入父计划 hash，提前预演事务、
+完整逻辑重建和冷重开。子计划绑定同一服务 before/after 事务、环境、ID、profile、
+runtime 与 helper hash；自身持久 journal 仍只准入一次安装。服务/原生、Local Storage、
+IndexedDB+blob 和附件保护必须在第一笔原生写入前全部通过资格检查。
+旧计划仍沿用 absence 门禁：目标残留返回 `t3code_desktop_indexeddb_residual`，未知格式
+返回 `t3code_desktop_indexeddb_unqualified`。旧计划的 mutation scope 不自动扩大。
+完整计划中断后先 status/verify；不得重跑 apply。IndexedDB 封存 image 的显式 recover
+只恢复同一新子计划的安装，不能重放服务或原生删除，也不自动使父计划完成。
 
 对于服务记录已删除的副本，使用独立模块入口。它只安装两个已验证的 IndexedDB
 origin families，并冻结原计划 ID 闭包、profile、环境、生命周期、安装运行时和逻辑结果。

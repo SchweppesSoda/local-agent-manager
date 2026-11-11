@@ -287,7 +287,7 @@ class T3CodeTests(unittest.TestCase):
         self.assertEqual(tuple(self.db.execute(f'SELECT * FROM {V2}provider_sessions WHERE provider_session_id=?', (sid,)).fetchone()), before)
         self.assertEqual(self.db.execute(f'SELECT thread_id FROM {V2}provider_session_bindings').fetchall(), [('keeper',)])
 
-    def test_shared_session_owning_selected_thread_or_restoring_its_native_id_still_blocks(self):
+    def test_shared_session_owner_is_detached_but_native_restore_still_blocks(self):
         add_thread(self.db, 'selected', native='native-selected')
         add_thread(self.db, 'keeper')
         sid = 'provider-session:provider-instance:codex:shared'
@@ -297,13 +297,36 @@ class T3CodeTests(unittest.TestCase):
         for tid in ('selected', 'keeper'):
             insert(self.db, V2+'provider_session_bindings', provider_session_id=sid, thread_id=tid)
         self.db.commit()
-        with self.assertRaisesRegex(ValueError, 'shared_provider_session'):
-            database.freeze(self.home, ['selected'])
+        evidence = database.freeze(self.home, ['selected'])
+        self.assertEqual(evidence['shared_session_owner_updates'], [
+            {'provider_session_id': sid, 'before_thread_id': 'selected', 'after_thread_id': None, 'affected_rows': 1}])
         payload['unexpectedRestore'] = 'native-selected'
         self.db.execute(f'UPDATE {V2}provider_sessions SET thread_id=?,payload_json=?', ('keeper', json.dumps(payload)))
         self.db.commit()
         with self.assertRaisesRegex(ValueError, 'shared_provider_session_restore_reference'):
             database.freeze(self.home, ['selected'])
+
+    def test_shared_owner_provider_thread_topology_and_event_mirrors(self):
+        add_thread(self.db, 'selected', native='native-selected')
+        add_thread(self.db, 'keeper', native='native-keeper')
+        sid = 'provider-session:provider-instance:codex:shared'
+        payload = json.dumps({'id': sid, 'providerInstanceId': 'codex', 'driver': 'codex', 'status': 'stopped'})
+        insert(self.db, V2+'provider_sessions', provider_session_id=sid, thread_id='selected',
+               provider='codex', provider_instance_id='codex', status='stopped', payload_json=payload)
+        self.db.execute(f'UPDATE {V2}provider_threads SET provider_session_id=?', (sid,))
+        for table, owner in [('orchestration_v2_events', 'thread_id'), ('orchestration_events', 'stream_id')]:
+            values = {owner: 'selected', 'event_id': table+'session', 'event_type': 'provider-session.updated', 'payload_json': payload}
+            if owner == 'stream_id': values['aggregate_kind'] = 'thread'
+            insert(self.db, table, **values)
+        self.db.commit()
+        keeper = self.db.execute(f'SELECT * FROM {V2}provider_threads WHERE thread_id="keeper"').fetchone()
+        evidence = database.freeze(self.home, ['selected'])
+        database.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(database.remaining(evidence), 0)
+        self.assertEqual(self.db.execute(f'SELECT thread_id,payload_json FROM {V2}provider_sessions').fetchone(), (None, payload))
+        self.assertEqual(self.db.execute(f'SELECT * FROM {V2}provider_threads WHERE thread_id="keeper"').fetchone(), keeper)
+        for table in ('orchestration_v2_events', 'orchestration_events'):
+            self.assertEqual(self.db.execute(f'SELECT count(*) FROM {table} WHERE event_type="provider-session.updated"').fetchone()[0], 0)
 
     def test_unrelated_retained_session_cannot_hide_a_selected_restore_reference(self):
         add_thread(self.db, 'selected', native='native-selected')

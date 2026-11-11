@@ -31,6 +31,19 @@ CODE = Path(__file__).with_name('leveldb_runtime')
 HELPERS = ('t3code_browser.cjs', 't3code_cache.cjs', 't3code_indexeddb.cjs', 'idb_audit.cjs', 'idb_keys.cjs', 'physical.cjs')
 
 
+@contextmanager
+def held_lifecycle(evidence):
+    current = lifecycle.current_boundary(evidence['root'])
+    if current is not None:
+        if (current['lifecycle'] != evidence['lifecycle']
+                or current['binding_manifest'] != evidence['binding_manifest']):
+            fail('desktop_lifecycle_binding_changed')
+        yield
+    else:
+        with lifecycle.hold(evidence):
+            yield
+
+
 def source_files(root):
     root = Path(root)
     paths = []
@@ -354,8 +367,85 @@ def new_plan(source_path, profile, installed):
     return value
 
 
+def new_full_plan(manifest, database, profile):
+    """Freeze IDB before any native mutation, as part of a NEW full plan.
+
+    Historical residual plans still require service absence. This distinct
+    schema binds the exact service before/after transaction, not an old receipt.
+    """
+    from .record_identity import canonical_path
+    if not any(canonical_path(p['root']) == canonical_path(profile) for p in manifest['desktop_profiles']):
+        fail('desktop_profile_not_bound')
+    life = {'root': manifest['profile_root'], 'binding_manifest': manifest,
+            'lifecycle': lifecycle.freeze(manifest)}
+    installed = default_runtime()
+    with lifecycle.hold(life):
+        admission(profile)
+        from .t3code_database import remaining
+        if not remaining(database):
+            fail('desktop_full_service_before_required')
+        with isolated_runtime(installed, service=life['root']) as runtime:
+            evidence = freeze(profile, runtime, manifest['environment_id'], database['thread_ids'])
+            # Qualify the complete write + cold image now, before any original
+            # family/native write. The eventual installer repeats on its copy.
+            with prepared(evidence, runtime):
+                pass
+        proof = runtime_files(installed, life['root'])
+    value = {'schema_version': 'lam.t3-desktop-full.v1', 'operation_id': 'desktop-' + uuid.uuid4().hex,
+             'lifecycle': life, 'service_transaction': database, 'evidence': evidence,
+             'runtime_root': str(installed.resolve()), 'runtime_files': proof, 'helpers': helpers_fingerprint()}
+    value['plan_sha256'] = plan_sha256(value)
+    return value
+
+
+def service_gate(plan):
+    if plan['schema_version'] == 'lam.t3-desktop-full.v1':
+        from .t3code_database import remaining
+        database = plan['service_transaction']
+        if (database['root'] != plan['lifecycle']['root']
+                or database['thread_ids'] != plan['evidence']['ids']):
+            fail('desktop_service_scope_changed')
+        remaining(database)  # exact frozen before, or verified after; never mutate
+    elif service_absence(plan['lifecycle']['root'], plan['evidence']['ids']) != plan['service_absence']:
+        fail('desktop_service_schema_changed')
+
+
+def require_bound_state(plan, profile, environment, ids):
+    """Allow only a frozen before or cold-verified after for a NEW full plan."""
+    root = validate_plan(plan)
+    if (root.resolve() != Path(profile).resolve() or plan['evidence']['environment'] != environment
+            or plan['evidence']['ids'] != sorted(ids) or plan['schema_version'] != 'lam.t3-desktop-full.v1'):
+        fail('desktop_full_scope_changed')
+    admission(profile, own=plan['operation_id'])
+    current = source_files(profile)
+    if current == plan['evidence']['files']:
+        return
+    state_path = journal_root(profile) / plan['operation_id'] / 'state.json'
+    if state_path.exists():
+        state = strict_json_load(state_path)
+        result = state.get('result', {})
+        if (state.get('phase') == 'complete' and state.get('plan_sha256') == plan['plan_sha256']
+                and result.get('logical_after_sha256') == plan['evidence']['native']['expectedAfterSha256']
+                and contents(current) == [tuple(i) for i in result.get('files', ())]):
+            # This is exact receipt-bound state classification, not a new cold
+            # verification. verify_plan still reopens the complete copy natively.
+            return
+    boundary = lifecycle.current_boundary(plan['lifecycle']['root'])
+    with isolated_runtime(plan['runtime_root'], expected=plan['runtime_files'],
+                          service=boundary['root'] if boundary else None) as runtime:
+        check_after(plan, runtime)
+
+
+def remaining_bound(plan):
+    evidence = plan['evidence']
+    require_bound_state(plan, evidence['root'], evidence['environment'], evidence['ids'])
+    if source_files(evidence['root']) == evidence['files']:
+        return sum(evidence['native']['counts'].values())
+    return 0
+
+
 def validate_plan(plan, authorized=None):
-    if (plan.get('schema_version') != SCHEMA or plan.get('plan_sha256') != plan_sha256(plan)
+    if (plan.get('schema_version') not in {SCHEMA, 'lam.t3-desktop-full.v1'} or plan.get('plan_sha256') != plan_sha256(plan)
             or authorized is not None and authorized != plan['plan_sha256']
             or helpers_fingerprint() != plan['helpers']):
         fail('desktop_plan_or_helpers_changed')
@@ -405,12 +495,11 @@ def apply_plan(plan, authorized, *, clients_closed=False, phase_callback=lambda 
         fail('desktop_clients_closed_required')
     profile = validate_plan(plan, authorized)
     directory = journal_root(profile) / plan['operation_id']
-    with mutation_roots([profile]), lifecycle.hold(plan['lifecycle']):
+    with mutation_roots([profile]), held_lifecycle(plan['lifecycle']):
         admission(profile)
         if directory.exists():
             fail('desktop_attempt_not_replayable')
-        if service_absence(plan['lifecycle']['root'], plan['evidence']['ids']) != plan['service_absence']:
-            fail('desktop_service_schema_changed')
+        service_gate(plan)
         with isolated_runtime(plan['runtime_root'], expected=plan['runtime_files'], service=plan['lifecycle']['root']) as runtime:
             # All transaction/rewrite failures are confined to disposable data.
             with prepared(plan['evidence'], runtime) as (stage, files, proof):
@@ -456,12 +545,12 @@ def verify_plan(plan, *, clients_closed=False, recover=False):
         fail('desktop_clients_closed_required')
     profile = validate_plan(plan)
     directory = journal_root(profile) / plan['operation_id']
-    with mutation_roots([profile]), lifecycle.hold(plan['lifecycle']):
+    with mutation_roots([profile]), held_lifecycle(plan['lifecycle']):
         admission(profile, own=plan['operation_id'])
         state = strict_json_load(directory / 'state.json')
         if state.get('plan_sha256') != plan['plan_sha256']:
             fail('desktop_journal_binding_changed')
-        service_absence(plan['lifecycle']['root'], plan['evidence']['ids'])
+        service_gate(plan)
         with isolated_runtime(plan['runtime_root'], expected=plan['runtime_files'], service=plan['lifecycle']['root']) as runtime:
             seal = directory / 'after'
             if state['phase'] == 'sealing':

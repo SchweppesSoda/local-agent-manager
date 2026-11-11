@@ -140,6 +140,10 @@ def validate(evidence):
         for key, module in (("localstorage", t3code_localstorage),):
             item = desktop[key]
             module._validate(item)
+            indexeddb = item.get('indexeddb')
+            if indexeddb is not None and (indexeddb['service_transaction'] != evidence['files']['database']
+                    or indexeddb['lifecycle']['binding_manifest'] != manifest):
+                files.fail('desktop_service_binding_changed')
             if (canonical_path(item["root"]) != canonical_path(bound["root"])
                     or item["thread_ids"] != evidence["selected_thread_ids"] or item["environment_id"] != manifest["environment_id"]):
                 files.fail("desktop_scope_changed")
@@ -226,6 +230,10 @@ def residuals(document):
         t3code_database.require_wal_truncated(evidence["files"]["database"])
     for desktop in evidence["desktop"]:
         remaining += t3code_localstorage.remaining(desktop["localstorage"])
+        indexeddb = desktop['localstorage'].get('indexeddb')
+        if indexeddb is not None:
+            from .t3code_desktop_cleanup import remaining_bound
+            remaining += remaining_bound(indexeddb)
     if remaining:
         result.append(action_id(evidence))
     return list(dict.fromkeys(result))
@@ -422,7 +430,11 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             "frontend_id": "t3code:" + digest(thread_ids)[:24], "desktop": []}
         for profile in adapter.manifest["desktop_profiles"]:
             root = Path(profile["root"])
-            evidence["desktop"].append({"localstorage": t3code_localstorage.freeze(root, adapter.manifest["environment_id"], thread_ids)})
+            from . import t3code_desktop_cleanup as idb
+            indexeddb = (idb.new_full_plan(adapter.manifest, evidence['files']['database'], root)
+                         if idb.source_files(root) else None)
+            evidence["desktop"].append({"localstorage": t3code_localstorage.freeze(
+                root, adapter.manifest["environment_id"], thread_ids, indexeddb=indexeddb)})
         from .agent_operations import action_binding
         evidence["native_actions"] = [action_binding(a) for a in actions]
         for item in evidence["native_actions"]:
@@ -523,6 +535,12 @@ def execute(evidence, *, phase_callback):
     with ExitStack() as stack:
         prepared = []
         for desktop in evidence["desktop"]:
+            indexeddb = desktop['localstorage'].get('indexeddb')
+            if indexeddb is not None:
+                from . import t3code_desktop_cleanup as idb
+                phase_callback('mutation_started')
+                idb.apply_plan(indexeddb, indexeddb['plan_sha256'], clients_closed=True,
+                               phase_callback=lambda phase: phase_callback('mutation_started'))
             for key, module in (("localstorage", t3code_localstorage),):
                 family = stack.enter_context(module.prepared(desktop[key]))
                 prepared.append((module, desktop[key], family))

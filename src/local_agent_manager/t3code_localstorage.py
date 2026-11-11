@@ -13,7 +13,11 @@ SCHEMA = "larj.t3code-local-storage.v1"
 RELATIVE = "Local Storage/leveldb"
 
 
-def _require_qualified_desktop(root, environment_id, ids):
+def _require_qualified_desktop(root, environment_id, ids, indexeddb=None):
+    if indexeddb is not None:
+        from .t3code_desktop_cleanup import require_bound_state
+        require_bound_state(indexeddb, root, environment_id, ids)
+        return
     from .t3code_desktop_cleanup import require_absent
     require_absent(root, environment_id, ids)
 
@@ -38,13 +42,13 @@ def _validate(evidence):
             or ids != sorted(set(ids)) or not isinstance(evidence.get("environment_id"), str) or not ID.fullmatch(evidence["environment_id"])):
         fail("local_storage_scope_invalid")
     frozen_files.checked_path(Path(evidence["root"]), RELATIVE)
-    _require_qualified_desktop(evidence["root"], evidence["environment_id"], ids)
+    _require_qualified_desktop(evidence["root"], evidence["environment_id"], ids, evidence.get('indexeddb'))
     return Path(evidence["root"])
 
 
-def freeze(root, environment_id, ids):
+def freeze(root, environment_id, ids, *, indexeddb=None):
     root = Path(root)
-    _require_qualified_desktop(root, environment_id, ids)
+    _require_qualified_desktop(root, environment_id, ids, indexeddb)
     require_no_sealed(root)
     if (not isinstance(ids, (list, tuple)) or not ids or any(not isinstance(i, str) or not ID.fullmatch(i) for i in ids)
             or not isinstance(environment_id, str) or not ID.fullmatch(environment_id)):
@@ -52,6 +56,8 @@ def freeze(root, environment_id, ids):
     evidence = {"schema_version": SCHEMA, "root": str(root), "relative": RELATIVE,
         "thread_ids": sorted(set(ids)), "environment_id": environment_id, "files": level._snapshot(root, RELATIVE),
         "runtime": None, "observation": None}
+    if indexeddb is not None:
+        evidence['indexeddb'] = indexeddb
     if evidence["files"]:
         evidence["runtime"] = level.runtime_fingerprint()
         with tempfile.TemporaryDirectory(prefix="larj-t3code-local-") as raw:

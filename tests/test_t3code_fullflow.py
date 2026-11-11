@@ -25,6 +25,9 @@ OTHER = "44444444-4444-4444-8444-444444444444"
 @unittest.skipUnless(os.name == "nt", "Qualified T3 startup lock is Windows-only")
 class T3CodeFullflowTests(unittest.TestCase):
     def setUp(self):
+        from local_agent_manager import t3code_desktop_cleanup as d, office_leveldb as level
+        self.installed_runtime = d.default_runtime()
+        self.leveldb_runtime = level._runtime_directory()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve(strict=True)
@@ -79,6 +82,34 @@ class T3CodeFullflowTests(unittest.TestCase):
         self.assertEqual(database.remaining(cleanup.evidence_from_document(plan)["files"]["database"]), 0)
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
+
+    def test_full_plan_freezes_chromium_before_service_deletion(self):
+        from local_agent_manager import t3code_desktop_cleanup as d
+        from tests.test_t3code_desktop_writer import fixture, ENV, IDS
+        installed = self.installed_runtime
+        if not (installed/'T3 Code (Nightly).exe').exists():
+            self.skipTest('existing qualified Electron required')
+        profile = self.base/'desktop'
+        profile.mkdir()
+        self.manifest['runtime_binaries'] = [str(installed/'T3 Code (Nightly).exe')]
+        seed = json.loads(json.dumps(fixture()).replace(ENV, 'env_test').replace(IDS[0], THREAD))
+        with d.isolated_runtime(installed) as runtime:
+            d.observe(runtime, profile, 'env_test', [THREAD], native=True, mode='seed', seed=seed)
+        self.manifest['desktop_profiles'] = [{'root':str(profile), 'runtime_binaries':self.manifest['runtime_binaries']}]
+        self.adapter = T3CodeBoundAdapter(self.manifest)
+        with patch.object(d, 'default_runtime', return_value=installed), patch.dict(os.environ, {
+                'LARJ_LEVELDB_RUNTIME':str(self.leveldb_runtime)}):
+            plan = self.plan()
+            item = cleanup.evidence_from_document(plan)['desktop'][0]['localstorage']['indexeddb']
+            self.assertEqual(item['schema_version'], 'lam.t3-desktop-full.v1')
+            self.assertEqual(item['evidence']['native']['counts']['thread'], 1)
+            self.assertGreater(d.remaining_bound(item), 0)
+            result = self.apply(plan)
+            self.assertEqual(result['goal_status'], 'complete', result)
+            self.assertEqual(d.status_plan(item)['attempts'], 1)
+            self.assertEqual(d.remaining_bound(item), 0)
+            result = self.coordinator().verify_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
+            self.assertEqual(result['goal_status'], 'complete', result)
 
     def retired_adapter(self, db):
         db.execute(f"DELETE FROM {V2}provider_threads WHERE thread_id=?", (THREAD,))

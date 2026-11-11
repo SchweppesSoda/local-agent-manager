@@ -51,7 +51,7 @@ def _require_shared_session(db, session_id, selected):
     instance = row['provider_instance_id']
     payload = strict_json(row['payload_json'])
     if (not instance or session_id != 'provider-session:provider-instance:' + instance + ':shared'
-            or row['thread_id'] in selected or not isinstance(payload, dict)
+            or not isinstance(payload, dict)
             or payload.get('id') != session_id or payload.get('providerInstanceId') != instance
             or payload.get('driver') not in {'codex', 'claudeAgent', 'pi', 'antigravity'}
             or row['provider'] not in {instance, payload.get('driver')}
@@ -65,6 +65,17 @@ def _require_shared_session(db, session_id, selected):
             WHERE t.provider_session_id=? AND j.key IN ('nativeThreadId','nativeThreadRef','threadId')
             AND j.type!='null' LIMIT 1''', (session_id,)).fetchone():
         fail('shared_provider_session_restore_reference')
+    if row['thread_id'] in selected:
+        # The installed producer allocates this ID by instance, not thread.
+        # thread_id is a nullable last-event attribution, absent from the
+        # ProviderSession payload. Never invent another thread as its owner.
+        allowed = {'id', 'driver', 'providerInstanceId', 'status', 'cwd', 'model',
+                   'capabilities', 'extensionStatuses', 'createdAt', 'updatedAt', 'lastError'}
+        if row['status'] not in {'stopped', 'error'} or set(payload) - allowed:
+            fail('shared_provider_session_owner_unqualified')
+        return {'provider_session_id': session_id, 'before_thread_id': row['thread_id'],
+                'after_thread_id': None, 'affected_rows': 1}
+    return None
 
 
 def _content_reference(table, column, payload, path, event_type):
@@ -145,6 +156,7 @@ def closure(db, ids, *, native_ids=()):
     sessions = {r['provider_session_id'] for r in bindings if r['thread_id'] in ids}
     sessions.update(r[0] for r in db.execute(f"SELECT provider_session_id FROM {V2}provider_sessions WHERE {where}", ids))
     shared = {r['provider_session_id'] for r in bindings if r['provider_session_id'] in sessions and r['thread_id'] not in ids}
+    owner_updates = []
     if sessions:
         session_ids = tuple(sorted(sessions))
         for table, other_owner in (('provider_sessions', f'thread_id IS NOT NULL AND NOT ({where})'),
@@ -152,7 +164,9 @@ def closure(db, ids, *, native_ids=()):
             shared.update(r[0] for r in db.execute(f'''SELECT provider_session_id FROM {V2}{table}
                 WHERE {_where('provider_session_id',session_ids)} AND ({other_owner})''', session_ids + ids))
         for session_id in sorted(shared):
-            _require_shared_session(db, session_id, ids)
+            update = _require_shared_session(db, session_id, ids)
+            if update:
+                owner_updates.append(update)
     owned_sessions = sessions - shared
     # Unknown non-thread event ownership cannot be absorbed by an ID match.
     for table, column in (("orchestration_events", "stream_id"), ("orchestration_command_receipts", "aggregate_id")):
@@ -223,6 +237,8 @@ def closure(db, ids, *, native_ids=()):
               "native_references": [{"driver": d, "native_id": i} for d, i in sorted(native_refs)]}
     if shared:
         result['preserved_provider_session_ids'] = sorted(shared)
+    if owner_updates:
+        result['shared_session_owner_updates'] = owner_updates
     if native_ids:
         result['protected_native_ids'] = sorted(set(native_ids))
     return result, statements
@@ -230,6 +246,12 @@ def closure(db, ids, *, native_ids=()):
 
 def _transform(db, ids, *, native_ids=()):
     owned, statements = closure(db, ids, native_ids=native_ids)
+    for update in owned.get('shared_session_owner_updates', ()):
+        changed = db.execute(f'''UPDATE {V2}provider_sessions SET thread_id=NULL
+            WHERE provider_session_id=? AND thread_id=?''',
+            (update['provider_session_id'], update['before_thread_id'])).rowcount
+        if changed != update['affected_rows']:
+            fail('affected_row_count_changed')
     for table, predicate, args in statements:
         changed = db.execute(f'DELETE FROM "{table}" WHERE {predicate}', args).rowcount
         if changed != owned["counts"][table]:
