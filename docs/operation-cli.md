@@ -1056,6 +1056,16 @@ probe is bounded and uses a hidden PowerShell window; a timeout or launch error
 is reported as an inability to prove that clients are closed. Apply and verify restore the frozen native
 store when a plan is supplied and reject a conflicting explicit home.
 
+For native x64 Windows Codex CLI processes, the guard can read the process's
+explicit `CODEX_HOME` after matching its image and creation time to the CIM
+snapshot. Two bounded, consistent environment reads are required; only the
+home value is projected, never the full environment. An existing ordinary home
+physically distinct from the selected native home proves a separate store.
+The caller's environment, T3 settings and a standalone installation path alone
+do not provide this proof. Missing home values, unsupported architectures,
+access failures, changed identities and shared/unknown paths remain blocking.
+ChatGPT frontend processes retain their existing closure requirement.
+
 Cindy process attribution supports both per-user `Programs\Cindy` and machine
 `Program Files\Cindy` / `Program Files (x86)\Cindy` installations. Excluding a
 separate Cindy family still requires existing matching executable identities,

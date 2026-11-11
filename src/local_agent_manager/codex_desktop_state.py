@@ -550,7 +550,8 @@ def _running_related_process_records(
         "$names=@('codex.exe','chatgpt.exe','cindy.exe'); "
         "$items=@(Get-CimInstance Win32_Process | "
         "Where-Object { $names -contains $_.Name.ToLowerInvariant() } | "
-        "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine); "
+        "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,"
+        "@{Name='CreationTimeTicks';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().Ticks.ToString()}}}); "
         "$items | ConvertTo-Json -Compress -Depth 3"
     )
     try:
@@ -634,6 +635,15 @@ def _running_related_process_records(
                 "command_line": str(command_line) if command_line else None,
             }
         )
+        if name.casefold() == 'codex.exe' and executable_path and item.get('CreationTimeTicks'):
+            from .windows_process_home import read_codex_home
+            try:
+                records[-1]['codex_home'] = read_codex_home(process_id, executable_path, item['CreationTimeTicks'])
+                records[-1]['codex_home_source'] = 'verified_process_environment'
+            except (OSError, ValueError, UnicodeError):
+                # Unknown roots remain blocking; never substitute this caller's
+                # environment, a configured default or the executable's location.
+                pass
     return tuple(records)
 
 
@@ -728,6 +738,8 @@ def inspect_client_ownership(
         "errors": errors,
         "processes": [{"process_id": item.get("process_id"), "parent_process_id": item.get("parent_process_id"),
             "name": item.get("name"), "executable_path": item.get("executable_path"),
+            **({"codex_home": item['codex_home'], "codex_home_source": item['codex_home_source']}
+               if item.get('codex_home_source') == 'verified_process_environment' else {}),
             "relation": "target_or_unproven" if _integer_or_minus_one(item.get("process_id")) in relevant else "separate_store"}
             for item in items],
     }
@@ -873,6 +885,15 @@ def _relevant_process_ids(
                 # Keep it blocking (fail closed).
                 separate_cindy_process = False
         elif name_key == "codex.exe":
+            if not owner_is_cindy and item.get('codex_home_source') == 'verified_process_environment':
+                try:
+                    from .frozen_files import checked_path
+                    process_home = Path(item['codex_home'])
+                    checked_path(process_home, '.process-home-check')
+                    if _same_existing_path(process_home, home) is False:
+                        continue
+                except (KeyError, OSError, ValueError, RuntimeError, TypeError):
+                    pass
             root_id = cindy_root_by_pid.get(parent_id, -1)
             user_data_dir = valid_cindy_families.get(root_id)
             if user_data_dir is not None:
