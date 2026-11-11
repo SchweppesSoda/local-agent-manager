@@ -1,4 +1,4 @@
-"""T3 Code draft/layout rewrites using pinned LevelDB on private copies only."""
+"""T3 Code draft/layout rewrites with admission for known desktop stores."""
 from contextlib import contextmanager
 import hashlib
 from pathlib import Path
@@ -11,6 +11,21 @@ from . import frozen_files
 
 SCHEMA = "larj.t3code-local-storage.v1"
 RELATIVE = "Local Storage/leveldb"
+
+
+def _require_qualified_desktop(root):
+    # Current T3 also restores sidebar shells and full thread projections from
+    # IndexedDB. Local Storage absence cannot qualify that independent replica.
+    # Until an exact-key/blob-preserving writer is admitted, never certify a
+    # bound profile containing either family, including old completed plans.
+    for suffix in ("leveldb", "blob"):
+        relative = "IndexedDB/t3code_app_0.indexeddb." + suffix
+        path = frozen_files.checked_path(Path(root), relative)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        fail("desktop_indexeddb_unqualified")
 
 
 def _call(path, evidence, *, apply=False):
@@ -33,11 +48,13 @@ def _validate(evidence):
             or ids != sorted(set(ids)) or not isinstance(evidence.get("environment_id"), str) or not ID.fullmatch(evidence["environment_id"])):
         fail("local_storage_scope_invalid")
     frozen_files.checked_path(Path(evidence["root"]), RELATIVE)
+    _require_qualified_desktop(evidence["root"])
     return Path(evidence["root"])
 
 
 def freeze(root, environment_id, ids):
     root = Path(root)
+    _require_qualified_desktop(root)
     require_no_sealed(root)
     if (not isinstance(ids, (list, tuple)) or not ids or any(not isinstance(i, str) or not ID.fullmatch(i) for i in ids)
             or not isinstance(environment_id, str) or not ID.fullmatch(environment_id)):

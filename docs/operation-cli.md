@@ -650,6 +650,17 @@ local-agent-record-janitor delete plan --client t3code --t3code-bindings binding
 `operation status`、`operation verify` 对同一计划做冷验证。命令参数沿用本文
 [Commands](#commands)，不另设直接删表命令。
 
+当前桌面版本还会从 `IndexedDB/t3code_app_0.indexeddb.leveldb` 的
+`t3code:connection-runtime` 恢复侧栏 shell 和完整 thread projection，正文还可能
+存于配套 `.indexeddb.blob`。现有 Local Storage writer 未覆盖此格式。绑定 profile
+中任一 IndexedDB family 存在时，新计划、执行和旧计划的 status/verify 均以
+`t3code_desktop_indexeddb_unqualified` 阻挡。即使服务记录已空、Local Storage
+目标为零、旧 journal 曾 complete，也不能据此宣称桌面完整删除。此门禁按 family
+存在判定，尚不能区分该 family 中目标是否已空。保留全部内容，等待精确目标、共享
+shell、外部 blob 和未选记录的保护协议取得支持后另建计划。不得通过清空缓存、重放
+原 apply 或删去绑定 profile 绕过。最终验收还须在客户端恢复后核实实际列表和正文，
+并与服务端结果、未选项及草稿保留结果共同记录。
+
 Pi 的 T3 原生句柄是绝对 JSONL 路径。绑定同时核对 session 根、文件头 UUID 与精确文件身份，
 同 UUID 的其他文件独立处理。自动发现读取 `PI_CODING_AGENT_DIR` 和
 `PI_CODING_AGENT_SESSION_DIR`，配置有额外 Pi 启动参数时要求显式绑定。

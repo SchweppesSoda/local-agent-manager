@@ -707,9 +707,11 @@ class OperationCoordinator:
         )
         live = self._live.get(str(operation_id or ""))
         if live is not None:
+            has_t3_desktop = any(a.get("kind") == "delete_t3code_frontend"
+                                 for a in live.document.get("actions", ()))
             result = (
                 self._status_for_document(live.document)
-                if self._blocked_without_mutation(live.document) else dict(live.result)
+                if self._blocked_without_mutation(live.document) or has_t3_desktop else dict(live.result)
                 if live.result is not None
                 else self._status_for_document(live.document)
             )
@@ -5981,6 +5983,15 @@ class OperationCoordinator:
             goal_status = "completed_with_residuals"
         elif statuses and statuses <= {"complete"}:
             goal_status = "complete"
+            from . import t3code_cleanup, t3code_localstorage
+            try:
+                evidence = t3code_cleanup.evidence_from_document(document)
+                if evidence is not None:
+                    for desktop in evidence["desktop"]:
+                        t3code_localstorage._validate(desktop["localstorage"])
+            except Exception as exc:
+                goal_status = "unknown"
+                blockers.append(self._blocker("terminal_scan_incomplete", str(exc)))
             from .antigravity_cli_joint import reservation_blockers
             joint_blockers = reservation_blockers(document)
             if joint_blockers:

@@ -343,6 +343,41 @@ class T3CodeFullflowTests(unittest.TestCase):
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
 
+    def test_server_empty_desktop_replica_blocks_cold_status_and_verify(self):
+        profile = self.base / "desktop"
+        profile.mkdir()
+        self.manifest["desktop_profiles"] = [
+            {"root": str(profile), "runtime_binaries": [str(self.binary)]}
+        ]
+        self.adapter = T3CodeBoundAdapter(self.manifest)
+        plan = self.plan()
+        operation = self.coordinator()
+        result = operation.apply_operation(operation_id=plan["operation_id"], plan_path=self.plan_path,
+            plan_sha256=plan["plan_sha256"], clients_closed=True)
+        self.assertEqual(result["goal_status"], "complete", result)
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            self.assertEqual(db.execute(f"SELECT count(*) FROM {V2}threads WHERE thread_id=?", (THREAD,)).fetchone()[0], 0)
+            self.assertEqual(db.execute(f"SELECT count(*) FROM {V2}threads WHERE thread_id=?", (KEEP,)).fetchone()[0], 1)
+        # An omitted persistent family appears after the journal completed.
+        # Historical complete receipts must not bypass cold discovery.
+        family = profile / "IndexedDB/t3code_app_0.indexeddb.leveldb"
+        family.mkdir(parents=True)
+        retained = family / "retained"
+        retained.write_bytes(b"unselected offline list, body and draft")
+        before = retained.read_bytes()
+        plan_before = self.plan_path.read_bytes()
+        result = operation.status_operation(operation_id=plan["operation_id"])
+        self.assertFalse(result["goal_satisfied"], result)
+        self.assertIn("desktop_indexeddb_unqualified", str(result))
+        for method in ("status_operation", "verify_operation"):
+            with self.subTest(method=method):
+                result = getattr(self.coordinator(), method)(operation_id=plan["operation_id"], plan_path=self.plan_path)
+                self.assertFalse(result["goal_satisfied"], result)
+                self.assertNotEqual(result["goal_status"], "complete", result)
+                self.assertIn("desktop_indexeddb_unqualified", str(result))
+        self.assertEqual(retained.read_bytes(), before)
+        self.assertEqual(self.plan_path.read_bytes(), plan_before)
+
     def test_frozen_native_scope_cannot_be_expanded(self):
         add_native_record(self.home, NATIVE)
         evidence = cleanup.evidence_from_document(self.plan())
