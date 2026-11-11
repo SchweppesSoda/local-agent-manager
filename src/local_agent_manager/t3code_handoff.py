@@ -801,6 +801,7 @@ def start_t3code_handoff(
             "created_at": utc_now(),
             "t3code_root": str(t3_root),
             "t3code_install": str(_bundled_install()),
+            "runtime_binaries": [str(p) for p in manifest.get("runtime_binaries", ())],
             "record_ids": record_ids,
             "expanded_thread_ids": expanded_thread_ids,
             "native_record_count": native_record_count,
@@ -1004,7 +1005,6 @@ def _close_confirmed_target(target: Mapping[str, Any]) -> dict[str, Any]:
     if not tree:
         return {"software": target["software"], "pid": root_pid, "was_running": False, "closed_pids": []}
 
-    close_cutoff = time.time() + 2.0
     _request_graceful_close(root_pid)
     grace_deadline = time.monotonic() + 6.0
     while time.monotonic() < grace_deadline:
@@ -1016,14 +1016,20 @@ def _close_confirmed_target(target: Mapping[str, Any]) -> dict[str, Any]:
             break
         time.sleep(0.25)
 
-    # Refresh once in case children spawned just before root exit.
-    for row in list_processes():
-        pid = row.get("pid")
-        parent = row.get("parent")
-        if isinstance(pid, int) and pid > 0 and pid not in tree and parent in tree and pid != os.getpid():
-            started = _kernel_process_start_unix(pid)
-            if started is not None and started <= close_cutoff:
-                tree[pid] = started
+    # Refresh transitive descendants in case shutdown helpers spawned before exit.
+    close_cutoff = time.time() + 1.0
+    census = list_processes()
+    changed = True
+    while changed:
+        before = len(tree)
+        for row in census:
+            pid = row.get("pid")
+            parent = row.get("parent")
+            if isinstance(pid, int) and pid > 0 and pid not in tree and parent in tree and pid != os.getpid():
+                started = _kernel_process_start_unix(pid)
+                if started is not None and started <= close_cutoff:
+                    tree[pid] = started
+        changed = len(tree) != before
 
     for pid, started in sorted(tree.items(), reverse=True):
         cur = _kernel_process_start_unix(pid)
@@ -1202,22 +1208,26 @@ def run_handoff_worker(spec_path: Path) -> int:
 
             from .cleanup_service import CleanupService
             from .operation_coordinator import OperationCoordinator
-            from .windows_held_files import HeldFiles
+            from .windows_held_files import exclusive_fd
 
-            with ExitStack() as lease_stack:
-                held = lease_stack.enter_context(HeldFiles())
-                held_paths: set[str] = set()
-                for target in ordered_targets:
-                    if not target.get("hold_executable"):
-                        continue
-                    exe_path = Path(str(target["executable"]))
-                    exe_key = canonical_path(exe_path)
-                    if exe_key in held_paths or not exe_path.is_file():
-                        continue
-                    proof, _ = frozen_files.read_file(exe_path.parent, exe_path.name)
-                    held.acquire(exe_path.parent, proof)
-                    held_paths.add(exe_key)
+            # Wait briefly for Windows kernel/AV image handles on runtime binaries to release;
+            # each downstream step (antigravity_cli_operations / t3code_lifecycle)
+            # acquires its own scoped HeldFiles leases during delete apply.
+            probe_bins = {Path(p) for p in spec.get("runtime_binaries", ()) if p}
+            probe_bins.add(t3_install / _RUNTIME_FILES[0])
+            for bin_path in sorted(probe_bins, key=str):
+                if not bin_path.is_file():
+                    continue
+                rel_deadline = time.monotonic() + 8.0
+                while time.monotonic() < rel_deadline:
+                    try:
+                        test_fd = exclusive_fd(bin_path)
+                        os.close(test_fd)
+                        break
+                    except OSError:
+                        time.sleep(0.25)
 
+            if True:
                 for item in spec.get("recoverable_preflight_children", ()):
                     _, child_res = _run_cli_json([
                         "operation",
@@ -1325,6 +1335,9 @@ def run_handoff_worker(spec_path: Path) -> int:
                     receipt["goal_status"] = str(verify_res.get("goal_status") or apply_res.get("goal_status") or "unknown")
                     receipt["goal_satisfied"] = False
         except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
             if receipt["goal_status"] == "unknown" and receipt["apply"] is None:
                 receipt["goal_status"] = "blocked"
             receipt["errors"].append({
