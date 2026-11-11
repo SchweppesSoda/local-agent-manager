@@ -71,6 +71,10 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
    manually delete/bypass `apply.lock`, or discard unresolved recovery evidence.
    The explicit joint CLI reservation recovery below is a narrowly qualified
    verification-only product protocol, not permission to reclaim other locks.
+   The [partial T3 recovery route](operation-cli.md#partial-t3-recovery) can
+   settle only its bound completed-cache/unstarted-native interruption as
+   `completed_with_residuals`. A fresh fully qualified plan owns all remaining
+   writes; the original unknown attempt is never replayed.
    When a parent plan is missing, the supported native v1 child-only
    `operation status/verify` route can use the original child journal; see
    [the operation CLI recovery boundary](operation-cli.md#commands).

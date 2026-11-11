@@ -861,6 +861,34 @@ def _relevant_process_ids(
             continue
         valid_cindy_families[root_id] = user_data_dirs[0]
 
+    # A desktop's native home is established by its live app-server children,
+    # not by the installation path or the name of another client's directory.
+    # Missing/mixed child evidence keeps the whole desktop family blocking.
+    chatgpt_roots = {}
+    for pid, item in by_pid.items():
+        if str(item.get('name') or '').casefold() != 'chatgpt.exe':
+            continue
+        root, seen = pid, {pid}
+        while (parent := _integer_or_minus_one(by_pid[root].get('parent_process_id'))) in by_pid:
+            if str(by_pid[parent].get('name') or '').casefold() != 'chatgpt.exe':
+                break
+            if parent in seen:
+                root = -1
+                break
+            seen.add(parent)
+            root = parent
+        chatgpt_roots[pid] = root
+    separate_chatgpt = set()
+    for root in set(chatgpt_roots.values()) - {-1}:
+        family = {pid for pid, owner in chatgpt_roots.items() if owner == root}
+        servers = [r for r in items if str(r.get('name') or '').casefold() == 'codex.exe'
+                   and _integer_or_minus_one(r.get('parent_process_id')) in family]
+        if servers and all(r.get('codex_home_source') == 'verified_process_environment'
+                           and isinstance(r.get('codex_home'), str)
+                           and _same_existing_path(Path(r['codex_home']), home) is False
+                           for r in servers):
+            separate_chatgpt.update(family)
+
     relevant: set[int] = set()
     for item in items:
         name = str(item.get("name") or "unknown")
@@ -873,6 +901,8 @@ def _relevant_process_ids(
         separate_cindy_process = False
         process_id = _integer_or_minus_one(item.get("process_id"))
         parent_id = _integer_or_minus_one(item.get("parent_process_id"))
+        if name_key == 'chatgpt.exe' and process_id in separate_chatgpt:
+            continue
         if name_key == "cindy.exe":
             root_id = cindy_root_by_pid.get(process_id, -1)
             user_data_dir = valid_cindy_families.get(root_id)

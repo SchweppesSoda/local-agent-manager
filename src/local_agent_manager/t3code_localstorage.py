@@ -35,15 +35,28 @@ def _call(path, evidence, *, apply=False):
     return level._call(request)
 
 
-def _validate(evidence):
+def _validate_scope(evidence):
     ids = evidence.get("thread_ids")
     if (evidence.get("schema_version") != SCHEMA or evidence.get("relative") != RELATIVE
             or not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not ID.fullmatch(i) for i in ids)
             or ids != sorted(set(ids)) or not isinstance(evidence.get("environment_id"), str) or not ID.fullmatch(evidence["environment_id"])):
         fail("local_storage_scope_invalid")
     frozen_files.checked_path(Path(evidence["root"]), RELATIVE)
-    _require_qualified_desktop(evidence["root"], evidence["environment_id"], ids, evidence.get('indexeddb'))
+    if evidence.get('indexeddb') is not None:
+        from .t3code_desktop_cleanup import validate_plan
+        plan = evidence['indexeddb']
+        root = validate_plan(plan)
+        if (root.resolve() != Path(evidence['root']).resolve()
+                or plan['evidence']['environment'] != evidence['environment_id']
+                or plan['evidence']['ids'] != ids or plan['schema_version'] != 'lam.t3-desktop-full.v1'):
+            fail('desktop_full_scope_changed')
     return Path(evidence["root"])
+
+
+def _validate(evidence):
+    root = _validate_scope(evidence)
+    _require_qualified_desktop(root, evidence['environment_id'], evidence['thread_ids'], evidence.get('indexeddb'))
+    return root
 
 
 def freeze(root, environment_id, ids, *, indexeddb=None):

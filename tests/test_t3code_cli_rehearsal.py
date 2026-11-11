@@ -55,6 +55,34 @@ def worker(argv):
     transport = CodexAppServer if os.environ.get('LAM_REHEARSAL_CODEX_BINARY') else NativeTransport
     with ExitStack() as stack:
         stack.enter_context(patch('local_agent_manager.office_runtime.processes', return_value=[]))
+        if os.environ.get('LAM_REHEARSAL_RECOVERY_CRASH'):
+            from local_agent_manager import t3code_partial_recovery as recovery
+            settle = recovery.settle
+            def lose_recovery_result(*args, **kwargs):
+                with patch.object(OperationStore, 'write_result', side_effect=OSError('synthetic lost recovery receipt')):
+                    try:
+                        settle(*args, **kwargs)
+                    except OSError as exc:
+                        if str(exc) != 'synthetic lost recovery receipt':
+                            raise
+                    else:
+                        raise AssertionError('recovery crash seam was not reached')
+                first = settle(*args, **kwargs)
+                second = settle(*args, **kwargs)
+                assert first['audit_path'] == second['audit_path']
+                return second
+            stack.enter_context(patch.object(recovery, 'settle', side_effect=lose_recovery_result))
+        if os.environ.get('LAM_REHEARSAL_FAULT') == 'late-readonly-wal':
+            from local_agent_manager import antigravity_cli_joint as joint
+            original = joint.execute
+            def readonly_scanner(target, **kwargs):
+                # A separate desktop's read opens a clean WAL-mode database
+                # after planning, exactly as a late background history scan.
+                database = Path(target['root'])/agy.SUMMARY
+                with closing(sqlite3.connect(database.as_uri()+'?mode=ro', uri=True)) as db:
+                    db.execute('SELECT count(*) FROM conversation_summaries').fetchone()
+                return original(target, **kwargs)
+            stack.enter_context(patch.object(joint, 'execute', side_effect=readonly_scanner))
         if os.environ.get('LAM_REHEARSAL_T3_RUNTIME'):
             from local_agent_manager import t3code_desktop_cleanup as desktop
             stack.enter_context(patch.object(desktop, 'default_runtime',
@@ -261,6 +289,13 @@ class ColdCliRehearsal(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('LAM_REHEARSAL_CODEX_BINARY'), 'requires copied real Codex app-server')
     def test_handoff_17_frontend_18_native_records_with_retained_diagnostics(self):
+        self._handoff_rehearsal()
+
+    @unittest.skipUnless(os.environ.get('LAM_REHEARSAL_CODEX_BINARY'), 'requires copied real Codex app-server')
+    def test_partial_wal_interruption_settlement_and_fresh_handoff(self):
+        self._handoff_rehearsal(recover=True)
+
+    def _handoff_rehearsal(self, *, recover=False):
         from tests.test_antigravity_cli_references import field, step
         from tests.test_t3code_desktop_writer import fixture as desktop_fixture, ENV, IDS
         from local_agent_manager import t3code_desktop_cleanup as desktop
@@ -337,6 +372,11 @@ class ColdCliRehearsal(unittest.TestCase):
         self.preserved.extend((html, diagnostic))
         before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.preserved}
         self.bindings.write_text(json.dumps(manifest))
+        if recover:
+            with closing(sqlite3.connect(self.agyroot/agy.SUMMARY)) as db:
+                db.execute('PRAGMA journal_mode=WAL')
+            self.assertFalse(Path(str(self.agyroot/agy.SUMMARY)+'-wal').exists())
+            self.env['LAM_REHEARSAL_FAULT'] = 'late-readonly-wal'
         self.env['LAM_REHEARSAL_HANDOFF'] = '1'
         receipt_path = self.base / 'handoff-receipt.json'
         code, started = self.call('handoff-start', ['delete', 'run', '--client', 't3code',
@@ -345,6 +385,46 @@ class ColdCliRehearsal(unittest.TestCase):
         self.assertEqual(started['expanded_thread_count'], 17)
         self.assertEqual(started['native_record_count'], 18)
         receipt = json.loads(receipt_path.read_text())
+        if recover:
+            self.assertEqual(receipt['goal_status'], 'unknown', receipt)
+            self.assertIn('antigravity_cli_profile_layout_changed', json.dumps(receipt))
+            old_plan = receipt['plan']
+            (self.evidence/'failed-receipt.json').write_bytes(receipt_path.read_bytes())
+            old_document = json.loads(Path(old_plan['plan_path']).read_text())
+            for batch in old_document['child_batches']:
+                store = OperationStore(Path(batch['location']),batch['child_operation_id'])
+                (self.evidence/(batch['mutation_family']+'-plan.json')).write_text(json.dumps(store.read_plan()))
+            (self.evidence/'failed-plan.json').write_text(json.dumps(old_document))
+            self.env.pop('LAM_REHEARSAL_FAULT')
+            for phase in ('status', 'verify'):
+                self.assertEqual(self.call('partial-'+phase, ['operation',phase,
+                    '--operation-id',old_plan['operation_id'],'--plan',old_plan['plan_path']])[1]['goal_status'], 'unknown')
+            # Reopening T3 can restore its desktop cache from the service
+            # rows left by the interruption. Recovery must qualify a fresh
+            # image instead of pretending the original after-image survived.
+            with desktop.isolated_runtime(copied_runtime) as reopened_runtime:
+                desktop.observe(reopened_runtime, self.desktop, 'env-1', [ROOTS[0], CHILDREN[0]],
+                                native=True, mode='seed', seed=seed)
+            with closing(sqlite3.connect(self.agyroot/agy.SUMMARY)) as db:
+                db.execute('UPDATE conversation_summaries SET title=? WHERE conversation_id=?',
+                           ('updated retained summary', AGY_KEEP))
+                db.commit()
+            with patch.dict(os.environ, self.env, clear=True):
+                self._check_partial_recovery_boundaries(old_document)
+            self.env['LAM_REHEARSAL_RECOVERY_CRASH'] = '1'
+            recovered_path = self.base/'recovered-receipt.json'
+            code, resumed = self.call('recover-handoff', ['delete','run','--client','t3code',
+                '--t3code-bindings',str(self.bindings),'--record-id',ROOTS[0],'--handoff',
+                '--recover-plan',old_plan['plan_path'],'--out',str(recovered_path)])
+            self.assertEqual(code, 0, resumed)
+            receipt = json.loads(recovered_path.read_text())
+            (self.evidence/'recovered-receipt.json').write_bytes(recovered_path.read_bytes())
+            self.assertTrue(receipt['partial_recovery']['partial_recovery_settled'], receipt)
+            # The continuation has no SDK delete actions: successful children
+            # are established absent and never sent to app-server again.
+            continued = json.loads(Path(receipt['plan']['plan_path']).read_text())
+            self.assertEqual([b['mutation_family'] for b in continued['child_batches']], [cleanup.KIND])
+            receipt_path = recovered_path
         self.assertTrue(receipt['goal_satisfied'], receipt)
         self.assertEqual(receipt['apply']['goal_status'], 'complete', receipt)
         self.assertEqual(receipt['cold_verify']['goal_status'], 'complete', receipt)
@@ -366,12 +446,71 @@ class ColdCliRehearsal(unittest.TestCase):
         self.assertFalse((self.claude/'projects/synthetic'/(CLAUDE+'.jsonl')).exists())
         with closing(sqlite3.connect(self.agyroot/agy.SUMMARY)) as db:
             self.assertEqual(db.execute('SELECT conversation_id FROM conversation_summaries').fetchall(), [(AGY_KEEP,)])
+            if recover:
+                self.assertEqual(db.execute('SELECT title FROM conversation_summaries').fetchone()[0],
+                                 'updated retained summary')
         local_storage(self.desktop, inspect=True, thread_id=CHILDREN[0])
         (self.evidence / 'preservation.json').write_text(json.dumps(dict(
             target_t3_remaining=0, native_targets_remaining=0, kept_threads=3,
             kept_rows_unchanged=True, kept_files_unchanged=True, real_codex_app_server=True,
             real_chromium_indexeddb=True, detached_worker=True,
             cold_status_and_verify=True, production_writes=0), indent=2))
+
+    def _check_partial_recovery_boundaries(self, original):
+        from local_agent_manager import t3code_partial_recovery as recovery, antigravity_cli_joint as joint
+        from local_agent_manager import t3code_desktop_cleanup as desktop
+        from local_agent_manager.operation_coordinator import OperationCoordinator
+        from local_agent_manager.cleanup_service import CleanupService
+        from local_agent_manager.operation_store import plan_sha256
+        coordinator = OperationCoordinator(CleanupService())
+        info = recovery.inspect(original, coordinator)
+        with self.assertRaisesRegex(RuntimeError, 'parent_binding_invalid'):
+            recovery.inspect(original, coordinator, approved_hash='wrong')
+        native, _ = joint.reservation(original, info['evidence'], joint.targets(info['evidence'])[0])
+        idb = info['evidence']['desktop'][0]['localstorage']['indexeddb']
+        checkpoint = desktop.journal_root(desktop.validate_plan(idb))/idb['operation_id']/'state.json'
+        for path, updates, reason in (
+            (native.state_path, {'mutation_started': True}, 'native_writer_started_or_unknown'),
+            (checkpoint, {'phase': 'installing'}, 'desktop_install_incomplete'),
+            (checkpoint, {'pid': os.getpid()}, 'writer_alive_or_pid_reused'),
+            (info['store'].state_path, {'next_event_sequence': 9999}, 'checkpoint_invalid'),
+        ):
+            # Fault injection is confined to this synthetic store and restored
+            # before the actual public recovery/continuation rehearsal.
+            with self.subTest(reason=reason):
+                raw = path.read_bytes()
+                try:
+                    value = json.loads(raw); value.update(updates)
+                    path.write_text(json.dumps(value))
+                    with self.assertRaisesRegex(RuntimeError, reason):
+                        recovery.inspect(original, coordinator)
+                finally:
+                    path.write_bytes(raw)
+        remaining_path = self.base/'boundary-remaining.json'
+        code, result = self.call('recovery-boundary-plan', ['delete','plan','--client','t3code',
+            '--t3code-bindings',str(self.bindings),'--record-id',ROOTS[0],'--out',str(remaining_path)])
+        self.assertEqual(code, 0, result)
+        current = json.loads(remaining_path.read_text())
+        recovery.qualify_remaining(original, current)
+        with self.assertRaisesRegex(RuntimeError, 'approved_parent_required'):
+            recovery.settle(original, current, coordinator, None)
+        changed = json.loads(json.dumps(current))
+        changed['scope']['record_ids'].append(KEEP)
+        changed['plan_sha256'] = plan_sha256(changed)
+        with self.assertRaisesRegex(RuntimeError, 'remaining_scope_changed'):
+            recovery.qualify_remaining(original, changed)
+        selected = self.agyroot/'conversations'/(TARGET+'.db')
+        stat = selected.stat()
+        raw = selected.read_bytes()
+        try:
+            selected.write_bytes(raw + b'changed')
+            with self.assertRaisesRegex(agy.CleanupError, 'session_state_unknown'):
+                recovery.qualify_remaining(original, current)
+                cleanup.native_remaining(next(t for t in cleanup.evidence_from_document(current)['native_targets']
+                                              if t['engine'] == 'antigravity'))
+        finally:
+            selected.write_bytes(raw)
+            os.utime(selected, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
     def test_real_target_drift_blocks_without_child_journals(self):
         plan = self.plan()

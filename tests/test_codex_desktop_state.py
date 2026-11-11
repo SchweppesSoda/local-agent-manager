@@ -782,6 +782,20 @@ class CodexDesktopStateTests(unittest.TestCase):
             ("Cindy.exe", "codex.exe"),
         )
 
+    def test_chatgpt_family_requires_all_server_homes_to_be_proven_separate(self):
+        root = Path(self.temporary_directory.name)
+        other = root/'other'; other.mkdir()
+        desktop = dict(process_id=101,parent_process_id=1,name='ChatGPT.exe')
+        renderer = dict(process_id=102,parent_process_id=101,name='ChatGPT.exe')
+        server = dict(process_id=103,parent_process_id=101,name='codex.exe',
+                      codex_home=str(other),codex_home_source='verified_process_environment')
+        self.assertEqual(_relevant_client_names(self.codex_home,[desktop,renderer,server]), ())
+        for extra in ({**server,'process_id':104,'codex_home':str(self.codex_home)},
+                      {**server,'process_id':104,'codex_home_source':'unknown'}):
+            with self.subTest(extra=extra):
+                self.assertIn('ChatGPT.exe',_relevant_client_names(self.codex_home,[desktop,renderer,server,extra]))
+        self.assertIn('ChatGPT.exe',_relevant_client_names(self.codex_home,[desktop,renderer]))
+
     def test_identity_check_failure_keeps_cindy_family_blocking(self) -> None:
         root = Path(self.temporary_directory.name).resolve(strict=True) / "processes"
         records = self._cindy_process_records(root)

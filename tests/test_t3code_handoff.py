@@ -355,6 +355,19 @@ class T3CodeHandoffTests(unittest.TestCase):
                 record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1)
         self.assertEqual([(t['pid'], t['software']) for t in targets], [(40200, 'T3 Code Desktop')])
 
+    def test_confirmed_background_launcher_cannot_restart_until_hold_released(self):
+        import shutil
+        import subprocess
+        from local_agent_manager.t3code_handoff import _hold_background_launchers
+        exe = self.base/'magpie.exe'
+        shutil.copy2(Path(os.environ['SystemRoot'])/'System32/whoami.exe',exe)
+        target = dict(executable=str(exe),hold_background_launcher=True)
+        with _hold_background_launchers([target]):
+            with self.assertRaises(OSError):
+                subprocess.run([str(exe)],capture_output=True,timeout=5)
+        result = subprocess.run([str(exe)],capture_output=True,timeout=5)
+        self.assertEqual(result.returncode,0)
+
     def test_worker_orchestrates_cleanup_reopen_and_single_notification(self) -> None:
         handoff_dir = self.localappdata / "local-agent-manager/handoffs/test-worker-1"
         handoff_dir.mkdir(parents=True)

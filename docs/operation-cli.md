@@ -17,6 +17,9 @@ Antigravity CLI reservation. It never runs an app-server or repeats deletion.
 Ordinary status now includes unresolved reservation occupancy; child completion
 alone does not report the whole operation complete.
 
+For a different T3 interruption where completed native children precede an
+unstarted Antigravity writer, use [partial T3 recovery](#partial-t3-recovery).
+
 ```text
 operation verify --operation-id <original-id> --plan <original-plan.json> --recover-joint-reservations --authorized-plan-sha256 <original-parent-hash> --json --progress
 ```
@@ -610,6 +613,13 @@ IndexedDB 预演在复制的 Chromium 运行时和缓存副本中完成，前后
 明确列入同一次关闭/重开确认，避免仅凭瞬时子进程发现。该选项不扩大记录删除范围，
 只接受当前可核实的 Agent 桌面身份，不接受 shell、uTools 或 `magpie-bun.exe` 共享 runtime；
 仍须通过完整只读计划、原生确认及执行前进程身份复核。
+这类明确加入的后台启动器关闭后，会持有其程序文件的排他句柄直到冷验证结束，
+防止清理中途重启并直接扫描原生数据库；自动重开前释放句柄。
+关闭范围只包括仍有待执行写入的原生存储及 T3。已证明使用另一原生 home 的
+ChatGPT 进程族不因进程名相同而加入关闭范围；证据缺失或混用 home 时仍阻挡。
+交接事件持续记录内部阶段与计数，非 JSON 前台跟踪会等待 worker 结束，
+不再在十分钟后静默结束跟踪。JSON 调用返回 worker 和回执位置，调用方必须
+继续跟踪最终回执中的 `goal_status` 与 `goal_satisfied`。
 无法证明的旧 home、历史句柄、原生格式及共享引用会汇总报告并保留。
 自动发现失败时 plan 仍生成阻挡计划，不会将完整清理自动改成 T3 软删除。
 
@@ -628,6 +638,31 @@ CUA 工具仅接受精确 `{type:"text",text:...}` 显示块的 text，代码输
 将该程序复制到临时目录，用真实 app-server 清理合成 Codex home；其余存储、凭据目录和桌面缓存也位于临时目录。
 测试只注入宿主进程事实、确认和进程启动边界，不模拟计划、文件删除或完成结果。
 还需验证范围变化、保留引用、执行结果丢失与禁止重放；纯编排测试的模拟成功不构成全流程验收。
+
+### Partial T3 recovery
+
+`delete run --client t3code --record-id <original-id> --handoff --recover-plan <original-plan.json>`
+只接续已完成 Codex/Claude 等原生子操作、完成 IndexedDB 安装，但联合 Antigravity CLI
+在开始写入前因 `antigravity_cli_profile_layout_changed` 退出的精确检查点。
+旧操作必须先查询 status/verify；此入口不重放旧 apply，也不适用于其他未知中断。
+预检核对原始计划与子计划、完整事件序列、未启动原生预约、已完成缓存检查点和旧 writer 退出。
+所有旧目标、原生根和选择器仍须匹配。已完成原生目标必须不存在；未启动原生会话文件、
+父子关系及恢复索引必须保持原状态。重开后变化的共享摘要、重新生成的桌面缓存与 SQLite
+边车由完整新计划重新资格化，其未选中行按新快照完整保留。
+本次关闭确认通过后，worker 在排他生命周期边界内验证旧检查点并保留审计，
+将它结算为 `completed_with_residuals`，随后只执行新计划中的剩余动作并冷验证。
+
+底层仅验证入口为：
+
+```text
+operation verify --operation-id <original-operation> --plan <original-plan.json> --recover-t3-partial --authorized-plan-sha256 <original-hash> --remaining-plan <new-plan.json> --json
+```
+
+该命令要求相关客户端已离线，不自行关闭软件。它要求原计划 hash，且不能与
+`--recover-joint-reservations` 合用。活跃或复用的 writer PID、存活子进程、未完成缓存安装、
+原生写入已开始、变更的保留文件及扩大的删除范围均阻挡。恢复回执丢失时可以重新验证
+同一已绑定检查点；旧事件和审计始终保留。结算结果本身不代表全量删除成功，
+最终仍须以新操作的 `complete` 和 `goal_satisfied=true` 为准。
 
 配置中的安装器链接会解析为实际运行文件，并继续验证文件身份和原生 ID 归属。
 自定义 provider instance 在历史 run/attempt 中的名称，需要由同线程的 instance、

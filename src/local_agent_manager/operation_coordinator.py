@@ -775,6 +775,8 @@ class OperationCoordinator:
         adapters: Iterable[Any] | None = None,
         verify_timeout: int = 180,
         recover_joint_reservations: bool = False,
+        recover_t3_partial: bool = False,
+        remaining_plan: Path | None = None,
         authorized_plan_sha256: str | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         **_unused: Any,
@@ -783,6 +785,14 @@ class OperationCoordinator:
         computed: Mapping[str, Any] | None = None
         recoveries = None
         try:
+            if recover_t3_partial:
+                if recover_joint_reservations or remaining_plan is None:
+                    raise OperationCoordinatorError('partial recovery requires one remaining plan')
+                from .t3code_partial_recovery import settle
+                from .operation_store import strict_json_load
+                document = self._load_plan(operation_id, plan_path, None,
+                    operation_home=operation_home, codex_home=codex_home)
+                return settle(document, strict_json_load(remaining_plan), self, authorized_plan_sha256)
             from .child_recovery import query_child_operation
             child_result = query_child_operation(self, plan_path or _find_operation_plan(
                 operation_id, operation_home=operation_home, codex_home=codex_home),

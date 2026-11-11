@@ -12,7 +12,8 @@ T3 thread once.
 from __future__ import annotations
 
 import argparse
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from io import StringIO
 import json
@@ -43,6 +44,7 @@ from .t3code_store import V2, database_path, default_root, identifier, local_roo
 
 HANDOFF_SPEC_SCHEMA = "larj.t3code-handoff-spec.v2"
 HANDOFF_RECEIPT_SCHEMA = "larj.t3code-handoff-receipt.v1"
+_worker_progress = ContextVar('t3_handoff_progress', default=None)
 
 _AMBIENT_PROVIDER_ENV_VARS = (
     "CODEX_HOME",
@@ -245,7 +247,7 @@ def _expand_t3_selection(adapter: T3CodeBoundAdapter, selectors: Sequence[str]) 
     return sorted(thread_ids)
 
 
-def _inspect_store_journals(coordinator: Any, roots: Sequence[Path]) -> list[dict[str, str]]:
+def _inspect_store_journals(coordinator: Any, roots: Sequence[Path], *, partial=None) -> list[dict[str, str]]:
     recoverable: list[dict[str, str]] = []
     seen_dirs: set[str] = set()
     for raw_root in roots:
@@ -261,6 +263,8 @@ def _inspect_store_journals(coordinator: Any, roots: Sequence[Path]) -> list[dic
                 continue
             seen_dirs.add(dir_key)
             store = OperationStore(root, entry.name)
+            if partial is not None and dir_key == canonical_path(partial['store'].directory):
+                continue  # The exact checkpoint was qualified by partial recovery inspection.
             if store.receipt_path.exists() and store._read_receipt() is not None and not store.lock_exists():
                 continue
             store.read_plan()
@@ -512,6 +516,7 @@ def _qualify_lifecycle_targets(
             "affected_tasks": list(lifecycle_target.affected_tasks),
             "reopen": bool(profile["reopen"]),
             "hold_executable": bool(profile["hold_executable"]),
+            "hold_background_launcher": root_pid in explicit_owners,
             "lifecycle_target": lifecycle_target,
         })
     return specs
@@ -573,7 +578,7 @@ _EVENT_LABELS: dict[str, str] = {
     "targets_closed": "[执行 3/7] 客户端已全部退出，正在核验历史操作锁并生成离线清理计划...",
     "preflight_children_settled": "[执行 3/7] 已自动结算历史残留预检锁，正在生成离线清理计划...",
     "plan_ready": "[执行 4/7] 离线清理计划与范围校验通过，正在执行本地完整清理...",
-    "apply_finished": "[执行 5/7] 本地记录与缓存清理完成，正在执行独立冷启动核验 (operation verify)...",
+    "apply_finished": "[执行 5/7] 删除阶段已结束，正在核对执行结果并进行冷验证...",
     "cold_verify_finished": "[执行 6/7] 冷启动核验完成，正在自动重开桌面客户端...",
     "targets_reopened": "[执行 7/7] 桌面客户端已自动重开，正在写入最终回执与会话通知...",
 }
@@ -585,10 +590,10 @@ def _follow_worker_events(
     receipt_path: Path,
     worker_pid: int,
     stderr: Any,
-    timeout_seconds: float = 600.0,
+    timeout_seconds: float | None = None,
 ) -> Mapping[str, Any] | None:
     seen_lines = 0
-    deadline = time.monotonic() + timeout_seconds
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
 
     def _drain_events() -> bool:
         nonlocal seen_lines
@@ -605,11 +610,14 @@ def _follow_worker_events(
                 elif ev == "worker_error":
                     stderr.write(f"[异常] {row.get('error')}\n")
                     stderr.flush()
+                elif ev == 'cli_progress':
+                    stderr.write(f"[执行进度] {row.get('stage')} {row.get('status')} {row.get('counts', '')}\n")
+                    stderr.flush()
                 elif ev == "worker_finished":
                     saw_finish = True
         return saw_finish
 
-    while time.monotonic() < deadline:
+    while deadline is None or time.monotonic() < deadline:
         finished = _drain_events()
         if finished and receipt_path.is_file():
             return strict_json_load(receipt_path)
@@ -698,6 +706,27 @@ def start_t3code_handoff(
             notify_thread_id = identifier(notify_raw.removeprefix("t3code:")) if notify_raw else None
 
             _step("[预检 1/4] 正在发现 T3 会话绑定与级联删除范围...")
+            recovery_document = partial = None
+            recovery_path = getattr(args, 'recover_plan', None)
+            if recovery_path is not None:
+                from .t3code_partial_recovery import inspect as inspect_partial, qualify_remaining
+                recovery_path = Path(recovery_path).resolve()
+                recovery_document = strict_json_load(recovery_path)
+                partial = inspect_partial(recovery_document, coordinator)
+                if (canonical_path(partial['evidence']['root']) != canonical_path(t3_root)
+                        or sorted(partial['evidence']['selectors']) != sorted(record_ids)):
+                    raise HandoffError('recovery_scope_mismatch', '恢复计划与本次目标不一致。')
+                # Completed native records no longer exist for ordinary
+                # discovery to locate. Their exact original bindings remain
+                # evidence, while the new full plan rechecks all live stores.
+                manifest = partial['evidence']['binding_manifest']
+                if (getattr(args, 't3code_bindings', None) is not None
+                        and load_manifest(args.t3code_bindings) != manifest):
+                    raise HandoffError('recovery_bindings_changed', '恢复绑定与原计划不一致。')
+                handoff_dir.mkdir(parents=True, exist_ok=True)
+                binding_path = handoff_dir/'recovery.bindings.json'
+                write_new_json(binding_path, manifest)
+                args = argparse.Namespace(**{**vars(args), 't3code_bindings': binding_path})
             try:
                 manifest = (
                     load_manifest(args.t3code_bindings)
@@ -764,15 +793,22 @@ def start_t3code_handoff(
             recoverable_children = _inspect_store_journals(
                 coordinator,
                 [t3_root, *(Path(raw_root) for _, _, raw_root in target_stores)],
+                partial=partial,
             )
             cli_forwards = forwarded_arguments(args, t3_root)
             _step("[预检 2/4] 正在执行完整只读计划校验；通过后才会请求关闭软件...")
             with tempfile.TemporaryDirectory(prefix="lam-t3-preflight-") as preview_dir:
                 preview = prepare_cleanup(record_ids, cli_forwards, Path(preview_dir) / "plan.json",
                     run_cli=_run_cli_json, coordinator=coordinator)
+                if recovery_document is not None:
+                    qualify_remaining(recovery_document, preview.document)
             if preview.scope['thread_ids'] != sorted(expanded_thread_ids):
                 raise HandoffError('preflight_scope_drift', '完整计划与发现的 T3 级联范围不一致。')
             native_record_count = sum(len(t['ids']) for t in preview.scope['native_targets'])
+            from .t3code_cleanup import evidence_from_document
+            pending = {(t['engine'], canonical_path(t['root'])) for t in evidence_from_document(preview.document)['native_targets']
+                       if t['action_ids'] or t['engine'] == 'antigravity'}
+            target_stores = [s for s in target_stores if (s[0], s[1]) in pending]
             _step("[预检 3/4] 正在核实需关闭并自动重开的桌面客户端进程...")
             target_specs = _qualify_lifecycle_targets(
                 t3_root=t3_root,
@@ -885,6 +921,8 @@ def start_t3code_handoff(
             "cli_forwards": cli_forwards,
             "recoverable_preflight_children": recoverable_children,
             "confirmed_targets": serialized_targets,
+            "recovery_plan": str(recovery_path) if recovery_document is not None else None,
+            "recovery_plan_sha256": recovery_document['plan_sha256'] if recovery_document is not None else None,
         }
         handoff_dir.mkdir(parents=True, exist_ok=True)
         spec_path = handoff_dir / "spec.json"
@@ -1156,14 +1194,63 @@ def _reopen_desktop_target(target: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+@contextmanager
+def _hold_background_launchers(targets):
+    """Keep explicitly confirmed background scanners out until verification.
+
+    Runtime leases only cover provider executables. A launcher can also open
+    native databases itself, creating WAL/SHM without running that provider.
+    Hold only explicit auxiliary launchers; owning clients have their existing
+    storage/runtime gates and must remain inspectable by those gates.
+    """
+    from .windows_held_files import HeldFiles
+    with HeldFiles() as held:
+        for target in targets:
+            if not target.get('hold_background_launcher'):
+                continue
+            path = Path(target['executable'])
+            proof, _ = frozen_files.read_file(path.parent, path.name)
+            held.acquire(path.parent, proof)
+        yield
+
+
 def _run_cli_json(argv: Sequence[str], *, coordinator: Any = None) -> tuple[int, dict[str, Any]]:
     from .cli import main as cli_main
 
-    out, err = StringIO(), StringIO()
-    code = cli_main(list(argv), stdout=out, stderr=err, operation_coordinator=coordinator)
+    class ProgressOutput(StringIO):
+        pending = ''
+
+        def write(self, data):
+            size = super().write(data)
+            self.pending += data
+            lines = self.pending.split('\n')
+            self.pending = lines.pop()
+            for line in lines:
+                try:
+                    value = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(value, dict) and value.get('event') == 'progress':
+                    _append_worker_event(_worker_progress.get(), 'cli_progress',
+                        **{k:value[k] for k in ('stage','status','counts','operation_id','goal_status') if k in value})
+            return size
+    out, err = StringIO(), ProgressOutput() if _worker_progress.get() else StringIO()
+    arguments = list(argv)
+    if _worker_progress.get() and '--progress' not in arguments:
+        arguments.append('--progress')
+    code = cli_main(arguments, stdout=out, stderr=err, operation_coordinator=coordinator)
     raw = out.getvalue().strip()
     payload = json.loads(raw) if raw else {"raw_stderr": err.getvalue()}
     return code, payload
+
+
+@contextmanager
+def _report_worker_progress(path):
+    token = _worker_progress.set(path)
+    try:
+        yield
+    finally:
+        _worker_progress.reset(token)
 
 
 def _send_t3_completion_notification(
@@ -1261,9 +1348,10 @@ def run_handoff_worker(spec_path: Path) -> int:
         "errors": [],
     }
     closed_for_reopen: list[Mapping[str, Any]] = []
+    launcher_holds = ExitStack()
 
     preserve_env = ["CODEX_HOME"] if "--codex-home" in spec.get("cli_forwards", ()) else []
-    with _clean_provider_environ(t3_root, preserve=preserve_env):
+    with _clean_provider_environ(t3_root, preserve=preserve_env), _report_worker_progress(events_path):
         try:
             _append_worker_event(events_path, "worker_started", worker_pid=os.getpid())
             _wait_for_t3_quiescent(t3_root, float(spec.get("quiesce_timeout", 180.0)))
@@ -1280,6 +1368,7 @@ def run_handoff_worker(spec_path: Path) -> int:
                 if closed_info["was_running"] and target.get("reopen"):
                     closed_for_reopen.append(target)
             _append_worker_event(events_path, "targets_closed", count=len(receipt["closed_targets"]))
+            launcher_holds.enter_context(_hold_background_launchers(spec.get('confirmed_targets', ())))
 
             from .cleanup_service import CleanupService
             from .operation_coordinator import OperationCoordinator
@@ -1330,6 +1419,16 @@ def run_handoff_worker(spec_path: Path) -> int:
             prepared = prepare_cleanup(spec['record_ids'], spec.get('cli_forwards', ()),
                 handoff_dir / 'cleanup.plan.json', run_cli=_run_cli_json,
                 coordinator=warm_coordinator, expected_scope=spec['cleanup_scope'], stage='offline')
+            if spec.get('recovery_plan'):
+                old = strict_json_load(Path(spec['recovery_plan']))
+                _, recovered = _run_cli_json(['operation', 'verify', '--operation-id', old['operation_id'],
+                    '--plan', spec['recovery_plan'], '--recover-t3-partial',
+                    '--authorized-plan-sha256', spec['recovery_plan_sha256'],
+                    '--remaining-plan', prepared.document['plan_path'], '--json'], coordinator=warm_coordinator)
+                receipt['partial_recovery'] = recovered
+                if recovered.get('partial_recovery_settled') is not True:
+                    raise HandoffError('partial_recovery_failed', str(recovered.get('blockers', recovered)))
+                _append_worker_event(events_path, 'partial_recovery_settled', operation_id=old['operation_id'])
             execute_cleanup(prepared, spec.get('cli_forwards', ()),
                 timeout=spec.get('timeout', 30.0), run_cli=_run_cli_json, coordinator=warm_coordinator,
                 receipt=receipt, event=lambda name, **fields: _append_worker_event(events_path, name, **fields))
@@ -1348,6 +1447,7 @@ def run_handoff_worker(spec_path: Path) -> int:
             })
             _append_worker_event(events_path, "worker_error", error=str(exc))
         finally:
+            launcher_holds.close()
             # Reopen T3 Desktop first so server startup begins immediately, then auxiliary apps.
             reopen_order = sorted(
                 closed_for_reopen,

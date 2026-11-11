@@ -41,6 +41,11 @@ def action_id(evidence):
 
 
 def validate(evidence):
+    """Validate immutable scope, including when classifying historical journals.
+
+    Live desktop state belongs to planning/execution/verification gates. A
+    completed journal must remain classifiable after a client rebuilds caches.
+    """
     if (not isinstance(evidence, dict) or evidence.get("schema_version") != SCHEMA
             or evidence.get("root") != evidence.get("files", {}).get("root")):
         files.fail("closure_invalid")
@@ -139,7 +144,7 @@ def validate(evidence):
     for bound, desktop in zip(manifest["desktop_profiles"], evidence["desktop"]):
         for key, module in (("localstorage", t3code_localstorage),):
             item = desktop[key]
-            module._validate(item)
+            module._validate_scope(item)
             indexeddb = item.get('indexeddb')
             if indexeddb is not None and (indexeddb['service_transaction'] != evidence['files']['database']
                     or indexeddb['lifecycle']['binding_manifest'] != manifest):
@@ -149,9 +154,18 @@ def validate(evidence):
                 files.fail("desktop_scope_changed")
 
 
+validate_scope = validate
+
+
+def _validate_current(evidence):
+    validate(evidence)
+    for desktop in evidence['desktop']:
+        t3code_localstorage._validate(desktop['localstorage'])
+
+
 @contextmanager
 def planning_scope(evidence):
-    validate(evidence)
+    _validate_current(evidence)
     token = _ticket.set((json.loads(json.dumps(evidence)), False))
     try:
         yield
@@ -214,7 +228,7 @@ def bound_adapters(document, supplied=None, *, readonly_recovery=False):
 
 def residuals(document):
     evidence = evidence_from_document(document)
-    validate(evidence)
+    _validate_current(evidence)
     cli_joint.recheck(evidence, 't3code')
     result = []
     for target in evidence["native_targets"]:
@@ -495,7 +509,7 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
     from .operation_coordinator import OperationCoordinator
     from .agent_operations import action_binding
     evidence = evidence_from_document(document)
-    validate(evidence)
+    _validate_current(evidence)
     if clients_closed is not True or document.get("plan_sha256") != plan_sha256(document):
         files.fail("approved_execution_required")
     approved = {a["action_id"]: a for a in document["actions"]}

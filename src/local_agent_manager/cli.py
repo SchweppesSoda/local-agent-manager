@@ -554,6 +554,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--handoff-app-pid", action="append", type=int, default=[], metavar="PID",
         help="配合 --handoff，将已查明会周期启动 provider 的桌面应用 PID 列入本次关闭/重开确认；不能指定 shell 或共享 runtime",
     )
+    delete.add_argument('--recover-plan', type=Path,
+        help='With --handoff, verify a qualified partial T3 attempt then execute a fresh remaining plan.')
     delete.add_argument(
         "--notify-thread-id",
         metavar="THREAD_ID",
@@ -741,6 +743,10 @@ def build_parser() -> argparse.ArgumentParser:
     operation_verify.add_argument("--json", action="store_true")
     operation_verify.add_argument('--recover-joint-reservations', action='store_true',
         help='Explicit offline verification-only recovery of completed joint CLI reservations; never repeats deletion.')
+    operation_verify.add_argument('--recover-t3-partial', action='store_true',
+        help='Settle a completed desktop-cache / unstarted Antigravity interruption without replay.')
+    operation_verify.add_argument('--remaining-plan', type=Path,
+        help='Fresh fully qualified remaining-scope plan for partial T3 recovery.')
     operation_verify.add_argument('--authorized-plan-sha256',
         help='Original frozen parent hash required for joint reservation recovery.')
     operation_verify.add_argument("--herdr-root", action="append", default=[], metavar="PATH",
@@ -1651,6 +1657,8 @@ def _run_operation_backend(
                 "adapters": supplied_adapters,
                 "verify_timeout": int(getattr(args, "verify_timeout", 180) or 0),
                 "recover_joint_reservations": bool(getattr(args, 'recover_joint_reservations', False)),
+                "recover_t3_partial": bool(getattr(args, 'recover_t3_partial', False)),
+                "remaining_plan": getattr(args, 'remaining_plan', None),
                 "authorized_plan_sha256": getattr(args, 'authorized_plan_sha256', None),
             }
             if progress_callback is not None:
@@ -1724,6 +1732,8 @@ def _run_delete_operation(
             raise ValueError("--notify-thread-id 仅能与 delete run --handoff 配合使用")
         if getattr(args, 'handoff_app_pid', None) and not getattr(args, 'handoff', False):
             raise ValueError('--handoff-app-pid 仅能与 delete run --handoff 配合使用')
+        if getattr(args, 'recover_plan', None) and not getattr(args, 'handoff', False):
+            raise ValueError('--recover-plan requires --handoff')
         if getattr(args, "handoff", False):
             if (
                 verb != "run"
