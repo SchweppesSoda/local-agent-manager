@@ -961,7 +961,11 @@ def _reject_reparse_components(path: Path, root: Path) -> None:
 
 
 def _stat_identity(status: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
-    return (status.st_dev, status.st_ino, status.st_mode, status.st_size,
+    # On Windows NTFS, directory st_size reflects FCB index-allocation cache
+    # state (0 before iterdir faults $INDEX_ALLOCATION in, 4096+ after) even
+    # when directory contents and timestamps are completely unchanged.
+    size = 0 if os.name == "nt" and stat.S_ISDIR(status.st_mode) else status.st_size
+    return (status.st_dev, status.st_ino, status.st_mode, size,
             status.st_mtime_ns, status.st_ctime_ns, getattr(status, "st_file_attributes", 0))
 
 

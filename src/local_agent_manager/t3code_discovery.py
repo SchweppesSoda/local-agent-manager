@@ -1,6 +1,7 @@
 """Derive T3 cleanup bindings from configuration and native ID evidence."""
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 import os
 
@@ -9,8 +10,9 @@ from .herdr_bound_adapter import native_catalog
 from .providers.t3 import strict_json
 from .record_identity import canonical_path
 from .path_identity import canonical_existing_path_key
-from .t3code_bound_adapter import SCHEMA, engine, history_references, thread_engine, validate_manifest
-from .t3code_store import default_root, identifier, local_root, read_database
+from .sqlite_utils import connect_readonly
+from .t3code_bound_adapter import SCHEMA, engine, history_references, read_qualified_imports, thread_engine, validate_manifest
+from .t3code_store import T3CodeError, database_path, default_root, identifier, local_root, qualify, read_database
 
 
 class BindingDiscoveryError(ValueError):
@@ -75,7 +77,81 @@ def _catalog_ids(binding):
     return {record.session_id for record in catalog.records}
 
 
-def _native_binding(row, providers, instance, cache):
+def _import_paths_under_root(backend, paths, root):
+    if backend not in {"codex", "claude"} or not paths:
+        return False
+    allowed = {"sessions", "archived_sessions"} if backend == "codex" else {"projects"}
+    n = len(root.parts)
+    for raw_path in paths:
+        raw = Path(raw_path)
+        if ".." in raw.parts:
+            return False
+        candidate = Path(os.path.normpath(raw))
+        if len(candidate.parts) <= n + 1 or candidate.parts[n].casefold() not in allowed:
+            return False
+        if candidate.suffix.casefold() != ".jsonl":
+            return False
+        prefix = Path(*candidate.parts[:n])
+        try:
+            if not prefix.exists() or not os.path.samefile(prefix, root):
+                return False
+        except OSError:
+            return False
+        current = root
+        missing_parent = False
+        for part in candidate.parts[n:-1]:
+            current = current / part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                missing_parent = True
+                break
+            except OSError:
+                return False
+            try:
+                frozen_files._plain(info, directory=True)
+            except (OSError, ValueError):
+                return False
+        if not missing_parent:
+            leaf = current / candidate.parts[-1]
+            try:
+                leaf_info = leaf.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return False
+            else:
+                try:
+                    frozen_files._plain(leaf_info, directory=False)
+                except (OSError, ValueError):
+                    return False
+    return True
+
+
+def _load_import_provenance(root):
+    with closing(connect_readonly(database_path(root))) as db:
+        db.execute("BEGIN")
+        qualify(db)
+        records = read_qualified_imports(db)
+    provenance = {}
+    for item in records:
+        key = (item["thread_id"], item["engine"], item["native_id"])
+        if key in provenance and provenance[key] != item:
+            raise ValueError("legacy_restore_closure_unqualified")
+        provenance[key] = item
+    return provenance
+
+
+def _native_id_proven_in_root(thread_id, backend, instance_id, native_id, ids, root, imports):
+    if native_id in ids:
+        return True
+    provenance = imports.get((thread_id, backend, native_id)) if imports else None
+    if provenance is None or provenance["provider_instance_id"] != instance_id:
+        return False
+    return _import_paths_under_root(backend, provenance["transcript_paths"], root)
+
+
+def _native_binding(row, providers, instance, cache, imports=None):
     driver = row["default_provider"]
     if driver == "pi":
         return _pi_binding(row, providers, instance, cache)
@@ -97,6 +173,7 @@ def _native_binding(row, providers, instance, cache):
                   and item["native_id"] is not None and item["native_strength"] == "strong"}
     if not native_ids and not declared:
         raise ValueError("native_root_unproven")
+    instance_id = row.get("provider_instance_id") or row["default_provider"]
     matches = []
     for raw in homes:
         root = _plain_directory(raw)
@@ -124,7 +201,9 @@ def _native_binding(row, providers, instance, cache):
                 cache[key] = exc
         if isinstance(cache[key], NativeInventoryError):
             raise cache[key]
-        if native_ids <= cache[key]:
+        if all(_native_id_proven_in_root(
+                row["thread_id"], backend, instance_id, nid, cache[key], root, imports)
+                for nid in native_ids):
             matches.append(binding)
     if len(matches) != 1:
         raise ValueError("native_ids_not_in_configured_home")
@@ -216,12 +295,16 @@ def discover_bindings(root=None):
     if not isinstance(instances, dict):
         raise BindingDiscoveryError([{"blocker_code": "t3code_provider_settings_unverified"}])
     data = read_database(root)
+    try:
+        imports = _load_import_provenance(root)
+    except (T3CodeError, ValueError) as exc:
+        raise BindingDiscoveryError([{"blocker_code": str(exc)}]) from exc
     install = _plain_directory(_bundled_install())
     binary = install / _RUNTIME_FILES[0]
     from .t3code_lifecycle import read_binary
     read_binary(root, binary)
     binaries = {str(binary)}
-    bindings, blockers, cache = [], [], {}
+    bindings, blockers, cache, instances_by_thread = [], [], {}, {}
     for thread_id, copies in sorted(data["threads"].items()):
         try:
             if len(copies) != 1 or copies[0]["version"] != "v2":
@@ -240,8 +323,10 @@ def discover_bindings(root=None):
             if driver == "antigravity":
                 binding = _acp_binding(root, row, instance, binaries)
             else:
-                binding = _native_binding({**row, "default_provider": driver}, data["providers"], instance, cache)
+                binding = _native_binding({**row, "default_provider": driver, "provider_instance_id": instance_id},
+                                          data["providers"], instance, cache, imports=imports)
             bindings.append(binding)
+            instances_by_thread[thread_id] = instance_id
         except (OSError, ValueError, RuntimeError) as exc:
             if isinstance(exc, NativeInventoryError):
                 existing = next((b for b in blockers if b.get('details') == exc.details), None)
@@ -283,7 +368,11 @@ def discover_bindings(root=None):
         if binding["engine"] in {"codex", "claude", "pi"}:
             ids = cache[binding["engine"], canonical_path(binding["root"])]
             native_id = canonical_path(local_root(item["native_id"])) if binding["engine"] == "pi" else item["native_id"]
-            if native_id not in ids:
+            proven = (native_id in ids if binding["engine"] == "pi" else _native_id_proven_in_root(
+                item["thread_id"], binding["engine"],
+                item.get("provider_instance_id") or instances_by_thread.get(item["thread_id"]),
+                native_id, ids, Path(binding["root"]), imports))
+            if not proven:
                 raise BindingDiscoveryError([{"blocker_code": "historical_native_root_unproven", "thread_id": item["thread_id"]}])
     if settings_read()[0] != settings_proof:
         raise BindingDiscoveryError([{"blocker_code": "t3code_provider_settings_changed"}])

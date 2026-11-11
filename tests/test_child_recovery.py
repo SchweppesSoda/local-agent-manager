@@ -246,6 +246,53 @@ class ChildRecoveryTests(unittest.TestCase):
         self.assertNotIn("actions", result)
         self.assertIn('"stage":"inventory"', errors.getvalue())
 
+    @unittest.skipUnless(__import__("os").name == "nt", "Windows kernel process start-time verification")
+    def test_verify_recovers_dead_unstarted_preflight_apply_lock_and_refuses_live_owner(self):
+        import os
+        import subprocess
+        import sys
+        from local_agent_record_janitor.operation_store import utc_now
+
+        self.assertEqual(self.verify()["goal_status"], "completed_with_residuals")
+        crashed = write_journal(self.home, "preflight-crashed-1", self.action, started=False)
+        writer_code = (
+            "import json, os, sys; "
+            "from datetime import datetime, timezone; "
+            "p = sys.argv[1]; "
+            "open(p, 'w', encoding='utf-8').write(json.dumps({"
+            "'pid': os.getpid(), 'created_at': datetime.now(timezone.utc).isoformat()"
+            "}) + '\\n')"
+        )
+        subprocess.run([sys.executable, "-B", "-c", writer_code, str(crashed.lock_path)], check=True)
+        self.assertTrue(crashed.lock_exists())
+
+        status = self.coordinator.status_operation(operation_id=crashed.operation_id, codex_home=self.home)
+        self.assertEqual(status["goal_status"], "unknown")
+        self.assertTrue(crashed.lock_exists())
+
+        # Live PID owner must remain blocked/unknown and keep apply.lock intact.
+        live_crashed = write_journal(self.home, "preflight-live-1", self.action, started=False)
+        live_crashed.lock_path.write_text(
+            json.dumps({"pid": os.getpid(), "created_at": utc_now()}) + "\n",
+            encoding="utf-8",
+        )
+        live_verify = self.coordinator.verify_operation(operation_id=live_crashed.operation_id, codex_home=self.home)
+        self.assertEqual(live_verify["goal_status"], "unknown")
+        self.assertTrue(live_crashed.lock_exists())
+        # Remove live_crashed directory so mutation_guard check below isolates crashed recovery.
+        for item in live_crashed.directory.iterdir():
+            item.unlink()
+        live_crashed.directory.rmdir()
+
+        recovered = self.coordinator.verify_operation(operation_id=crashed.operation_id, codex_home=self.home)
+        self.assertEqual(recovered["goal_status"], "completed_with_residuals", recovered)
+        self.assertFalse(recovered["modified"])
+        self.assertFalse(recovered["mutation_started"])
+        self.assertFalse(crashed.lock_exists())
+        self.assertTrue(crashed.result_path.exists())
+        with mutation_guard((MutationScope(self.home, frozenset((self.thread_id,))),)):
+            pass
+
 
 if __name__ == "__main__":
     unittest.main()

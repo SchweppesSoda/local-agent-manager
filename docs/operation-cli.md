@@ -281,7 +281,13 @@ original journal `plan.json` via `--plan`). Standalone recovery is limited to
 self-contained `larj.child-operation-plan.v1` / `delete_conversation` journals.
 It validates the original child hash, store binding, checkpoint and event
 sequence, holds the store and operation locks, and reads the complete native
-catalog plus frozen artifacts and Desktop references. Surviving records produce
+catalog plus frozen artifacts and Desktop references. On Windows, if a child
+journal crashed in `preflight` (`plan_accepted` only, `mutation_started=false`)
+leaving an `apply.lock` whose recorded PID and creation timestamp are kernel-proven
+exited with no surviving descendants, `operation verify` leases `apply.lock`
+through `HeldFiles`, confirms zero missing native targets, appends
+`verification_finished` and `result.json`, and disposes `apply.lock` cleanly;
+`operation status` remains read-only and never modifies `apply.lock`. Surviving records produce
 `completed_with_residuals`; incomplete evidence stays `unknown`. Recovery never
 starts an app-server, repeats deletion, reconstructs a parent plan, or expands
 authorization. The original child plan and journal are retained. A fresh plan
@@ -576,11 +582,17 @@ Codex、Claude、Antigravity 混合 profile 不需要原生绑定，选中 Antig
 local-agent-manager environment t3-cleanup prepare --json
 local-agent-manager delete plan --client t3code --record-id '<完整 T3 ID>' --out plan.json --json
 local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --clients-closed --progress --json
+local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --handoff [--out receipt.json] [--notify-thread-id '<保留的 T3 ID>'] --json
 ```
 
 独立 prepare 命令返回绑定或结构化 blockers，可用 `--out bindings.json` 保存。
 准备和计划均不删除记录、不关闭程序。完整清理执行仍要求相关写入进程退出，并持有
-原有生命周期锁。受当前会话占用时，助手须按已授权范围办理关闭或执行器交接。
+原有生命周期锁。在 Windows 桌面环境下，当 T3 或占用目标原生存储的桌面客户端正在运行时，
+可使用 `delete run --client t3code --record-id ... --handoff`：前台预检先核实级联范围与关联进程，
+弹出默认停在“取消”的 Windows 确认框列出将受影响的软件、PID 与任务；仅在用户点击确认后，
+在 T3 Job 之外启动独立后台清理进程，等待当前活动回合落盘、关闭已确认软件、结算崩溃遗留的未启动
+预检子锁、执行离线计划与完整清理及冷启动 `operation verify`、写出原子回执、重开已关闭桌面端，
+并可向 `--notify-thread-id` 发送单次完成通知。
 无法证明的旧 home、历史句柄、原生格式及共享引用会汇总报告并保留。
 自动发现失败时 plan 仍生成阻挡计划，不会将完整清理自动改成 T3 软删除。
 
@@ -596,7 +608,8 @@ local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --cl
 该列是最后一次事件归属，不是原生会话 ID。owner 更新、选区事件和旧镜像删除一同
 模拟、冻结、按精确行数写入，并检查整个逻辑 after hash。未知字段、恢复引用、忙碌
 连接及真实跨线程 transfer 继续阻挡。
-当前其他对话中的用户 thread mention，以及 `t3-code.t3_thread_read` 的已知输入/输出
+当前其他对话中的用户 thread mention，以及只读线程检索工具（`t3_thread_read`、`t3_thread_list`、
+`t3_thread_search` 及其 Antigravity ACP 同名审计项）的已知输入/输出
 审计内容属于各自对话的内容。其引用文本继续保留，原线程清理按指定记录边界执行。
 已知消息正文、命令执行文本和子任务 prompt 中的 ID 文字也按对话内容保留。
 JSON 恢复字段、未知工具引用和包含目标 ID 的未知键仍作为恢复依赖检查。

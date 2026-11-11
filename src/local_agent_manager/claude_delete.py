@@ -969,7 +969,10 @@ def _manifest_sha(entry: Any) -> str:
 
 def _manifest_stat(entry: Any) -> tuple[int, int, int, int, int, int, int]:
     names = ("stat_dev", "stat_ino", "stat_mode", "stat_size", "stat_mtime_ns", "stat_ctime_ns", "stat_file_attributes")
-    return tuple(_integer(entry, name) for name in names)  # type: ignore[return-value]
+    values = [_integer(entry, name) for name in names]
+    if os.name == "nt" and stat.S_ISDIR(values[2]):
+        values[3] = 0
+    return tuple(values)  # type: ignore[return-value]
 
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
@@ -1054,8 +1057,9 @@ def _is_reparse(info: os.stat_result) -> bool:
 
 
 def _stat_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    size = 0 if os.name == "nt" and stat.S_ISDIR(info.st_mode) else info.st_size
     return (getattr(info, "st_dev", 0), getattr(info, "st_ino", 0), info.st_mode,
-            info.st_size, info.st_mtime_ns, getattr(info, "st_ctime_ns", 0),
+            size, info.st_mtime_ns, getattr(info, "st_ctime_ns", 0),
             getattr(info, "st_file_attributes", 0))
 
 

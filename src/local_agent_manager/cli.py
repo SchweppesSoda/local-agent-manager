@@ -546,6 +546,16 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--t3code-only", action="store_true",
                         help="delete plan/apply/run：按完整 thread ID 调用 T3 自带删除。run --yes 支持多条")
     delete.add_argument(
+        "--handoff",
+        action="store_true",
+        help="delete run --client t3code：弹窗确认待关闭并自动重开的客户端后，分离后台进程在当前 T3 回合落盘后执行完整离线清理、冷核验与自动重开",
+    )
+    delete.add_argument(
+        "--notify-thread-id",
+        metavar="THREAD_ID",
+        help="配合 delete run --client t3code --handoff，在 T3 重开就绪后向指定保留 thread ID 发送一次完成通知",
+    )
+    delete.add_argument(
         "--yes",
         action="store_true",
         help="跳过 TTY 最终确认提示；不能替代目标选择或客户端关闭声明",
@@ -1564,6 +1574,15 @@ def _run_operation_backend(
                 operation_kwargs['antigravity_bin'] = args.antigravity_bin
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
+            if bool(getattr(args, "handoff", False)):
+                from .t3code_handoff import start_t3code_handoff
+                result = start_t3code_handoff(
+                    args,
+                    coordinator=coordinator,
+                    scope=scope or {},
+                    progress_callback=progress_callback,
+                )
+                return _emit_operation_payload(result, json_output=bool(args.json), stdout=stdout, stderr=stderr)
             if (scope or {}).get("t3code_only") or (scope or {}).get("paseo_only"):
                 from .frontend_workflow import run_frontend_batch
                 client = scope["client"]
@@ -1696,6 +1715,20 @@ def _run_delete_operation(
                                   or scope.get("projects") or scope.get("all_projects") or scope.get("engines")):
                 raise ValueError("T3 自动删除需要 --client t3code 和完整 --record-id")
             scope["t3code_only"] = True
+        if getattr(args, "notify_thread_id", None) and not getattr(args, "handoff", False):
+            raise ValueError("--notify-thread-id 仅能与 delete run --handoff 配合使用")
+        if getattr(args, "handoff", False):
+            if (
+                verb != "run"
+                or scope.get("client") != "t3code"
+                or not scope.get("record_ids")
+                or args.t3code_only
+                or args.paseo_only
+                or scope.get("projects")
+                or scope.get("all_projects")
+                or scope.get("engines")
+            ):
+                raise ValueError("--handoff 仅支持 delete run --client t3code --record-id <ID>")
     except ValueError as exc:
         payload = _operation_error_payload(
             command="delete",

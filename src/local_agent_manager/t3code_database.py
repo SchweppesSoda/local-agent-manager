@@ -78,6 +78,19 @@ def _require_shared_session(db, session_id, selected):
     return None
 
 
+_READ_ONLY_THREAD_TOOLS = frozenset({
+    't3-code.t3_thread_read',
+    't3-code.t3_thread_list',
+    't3-code.t3_thread_search',
+    'mcp_t3-code_t3_thread_read',
+    'mcp_t3-code_t3_thread_list',
+    'mcp_t3-code_t3_thread_search',
+    'Run mcp_t3-code_t3_thread_read',
+    'Run mcp_t3-code_t3_thread_list',
+    'Run mcp_t3-code_t3_thread_search',
+})
+
+
 def _content_reference(table, column, payload, path, event_type):
     """Classify known dialogue text, mentions and read-tool audit locations."""
     if column != 'payload_json' or not isinstance(payload, str) or not isinstance(path, str):
@@ -131,7 +144,7 @@ def _content_reference(table, column, payload, path, event_type):
             record = records[int(match[1])]
             return isinstance(record, dict) and record.get('kind') == 'thread'
     if (table == V2 + 'turn_items' and value.get('type') == 'dynamic_tool'
-            and value.get('toolName') == 't3-code.t3_thread_read'):
+            and value.get('toolName') in _READ_ONLY_THREAD_TOOLS):
         return path.startswith(('$.input.', '$.input[', '$.output.', '$.output['))
     return False
 

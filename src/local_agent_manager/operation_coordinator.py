@@ -1554,6 +1554,12 @@ class OperationCoordinator:
                 if child_residuals
                 else "complete"
             )
+            if store.lock_exists() and raw_batch.get("mutation_family") == "delete_conversation":
+                from .child_recovery import recover_unstarted_preflight_child
+                recover_unstarted_preflight_child(
+                    self, store, expected_residuals=child_residuals
+                )
+                continue
             with store.mutation_lock():
                 current = store.read_result()
                 if current is not None and str(

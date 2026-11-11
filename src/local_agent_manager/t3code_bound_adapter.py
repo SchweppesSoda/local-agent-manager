@@ -136,18 +136,19 @@ def _history_backend(db, item, bindings):
     return binding['engine']
 
 
-def _import_references(db, bindings):
+def read_qualified_imports(db):
     result = []
     imports = rows(db, '''SELECT thread_id,provider_name,provider_instance_id,resume_cursor_json,runtime_payload_json
         FROM provider_session_runtime''')
     fields = {'birthtimeMs', 'device', 'filePath', 'inode', 'mtimeMs', 'provider',
               'providerInstanceId', 'providerSessionId', 'size'}
     for item in imports:
-        binding = bindings.get(item['thread_id'])
+        identifier(item['thread_id'])
+        identifier(item['provider_instance_id'])
         backend = inventory_engine(item['provider_name'])
         cursor = strict_json(item['resume_cursor_json']) if item['resume_cursor_json'] is not None else None
         payload = strict_json(item['runtime_payload_json']) if item['runtime_payload_json'] is not None else None
-        if (binding is None or backend not in {'codex', 'claude'} or binding['engine'] != backend
+        if (backend not in {'codex', 'claude'}
                 or not isinstance(cursor, dict) or not isinstance(payload, dict)
                 or set(payload) != {'cwd', 'importedTranscripts'}):
             fail('legacy_restore_closure_unqualified')
@@ -161,13 +162,14 @@ def _import_references(db, bindings):
         transcripts = payload['importedTranscripts']
         if not isinstance(transcripts, list) or not transcripts or len(transcripts) > MAX_ROWS:
             fail('legacy_restore_closure_unqualified')
+        transcript_paths = []
         for entry in transcripts:
             if (not isinstance(entry, dict) or set(entry) != fields
                     or entry['provider'] != item['provider_name']
                     or entry['providerInstanceId'] != item['provider_instance_id']
                     or entry['providerSessionId'] != native):
                 fail('legacy_restore_closure_unqualified')
-            local_root(entry['filePath'])
+            transcript_paths.append(local_root(entry['filePath']))
             for key in ('birthtimeMs', 'device', 'inode', 'mtimeMs', 'size'):
                 value = entry[key]
                 if key in {'device', 'inode'} and isinstance(value, str) and value.isascii() and value.isdigit():
@@ -175,7 +177,20 @@ def _import_references(db, bindings):
                 if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                     fail('legacy_restore_closure_unqualified')
         result.append({'thread_id': item['thread_id'], 'provider_instance_id': item['provider_instance_id'],
-                       'driver': item['provider_name'], 'native_id': native, 'strength': 'strong', 'legacy_import': True})
+                       'driver': item['provider_name'], 'engine': backend, 'native_id': native,
+                       'transcript_paths': tuple(transcript_paths)})
+    return result
+
+
+def _import_references(db, bindings):
+    result = []
+    for item in read_qualified_imports(db):
+        binding = bindings.get(item['thread_id'])
+        if binding is None or binding['engine'] != item['engine']:
+            fail('legacy_restore_closure_unqualified')
+        result.append({'thread_id': item['thread_id'], 'provider_instance_id': item['provider_instance_id'],
+                       'driver': item['driver'], 'native_id': item['native_id'],
+                       'strength': 'strong', 'legacy_import': True})
     return result
 
 

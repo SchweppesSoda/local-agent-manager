@@ -389,6 +389,77 @@ class T3DiscoveryTests(unittest.TestCase):
         with self.assertRaises(BindingDiscoveryError):
             discover_bindings(self.root)
 
+    def test_deleted_imported_transcript_and_acp_audit_tools_do_not_block_cleanup(self):
+        from local_agent_manager import t3code_database
+
+        imported_thread = "import:codex:99999999-9999-4999-8999-999999999999"
+        missing_native = "99999999-9999-4999-8999-999999999999"
+        observer_thread = "22222222-2222-4222-8222-222222222222"
+        observer_native = "55555555-5555-4555-8555-555555555555"
+        add_native_record(self.home, observer_native)
+        deleted_transcript = self.home / "sessions/2026/11/01/rollout-missing.jsonl"
+        entry = {
+            "birthtimeMs": 1,
+            "device": 1,
+            "filePath": str(deleted_transcript),
+            "inode": "1234567890",
+            "mtimeMs": 1,
+            "provider": "codex",
+            "providerInstanceId": "codex",
+            "providerSessionId": missing_native,
+            "size": 1,
+        }
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            add_thread(db, imported_thread, native=missing_native)
+            insert(
+                db,
+                "provider_session_runtime",
+                thread_id=imported_thread,
+                provider_name="codex",
+                provider_instance_id="codex",
+                adapter_key="import",
+                status="stopped",
+                resume_cursor_json=json.dumps({"threadId": missing_native}),
+                runtime_payload_json=json.dumps({"cwd": str(self.base), "importedTranscripts": [entry]}),
+            )
+            add_thread(db, observer_thread, native=observer_native)
+            acp_read = {
+                "type": "dynamic_tool",
+                "toolName": "Run mcp_t3-code_t3_thread_read",
+                "input": {"threadId": THREAD},
+                "output": {"threadId": THREAD},
+            }
+            search_hit = {
+                "type": "dynamic_tool",
+                "toolName": "t3-code.t3_thread_search",
+                "input": {"query": "fixture"},
+                "output": {"matches": [{"threadId": THREAD}]},
+            }
+            insert(db, V2 + "turn_items", turn_item_id="acp-read", thread_id=observer_thread, payload_json=json.dumps(acp_read))
+            insert(db, V2 + "turn_items", turn_item_id="search-hit", thread_id=observer_thread, payload_json=json.dumps(search_hit))
+            db.commit()
+
+        manifest = discover_bindings(self.root)
+        adapter = T3CodeBoundAdapter(manifest)
+        snapshot = adapter.snapshot_references(refresh=True)
+        self.assertFalse(snapshot.errors)
+        self.assertIn(imported_thread, adapter.legacy_import_ids)
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            db.row_factory = sqlite3.Row
+            owned, _ = t3code_database.closure(db, [THREAD], native_ids=[NATIVE])
+        self.assertEqual(owned["counts"][V2 + "threads"], 1)
+
+        # Non-imported missing native IDs must still block discovery.
+        with closing(sqlite3.connect(self.root / "userdata/statev2.sqlite")) as db:
+            add_thread(db, "non-imported-missing", native="88888888-8888-4888-8888-888888888888")
+            db.commit()
+        with self.assertRaises(BindingDiscoveryError) as raised:
+            discover_bindings(self.root)
+        self.assertEqual(
+            raised.exception.blockers,
+            [{"blocker_code": "native_ids_not_in_configured_home", "thread_id": "non-imported-missing"}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

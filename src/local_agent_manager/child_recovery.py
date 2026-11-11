@@ -6,6 +6,7 @@ reconstructed, no record writer is called, and detailed evidence is retained.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -53,7 +54,13 @@ def query_child_operation(coordinator: Any, path: Path | None, *,
             actions = _native_actions(plan)
             result["counts"] = {"action_count": len(actions), "batch_count": 1}
             if store.lock_exists():
-                raise OperationStoreError("Existing apply.lock keeps the child outcome unknown")
+                if not verify:
+                    raise OperationStoreError("Existing apply.lock keeps the child outcome unknown")
+                recovered = recover_unstarted_preflight_child(
+                    coordinator, store, progress_callback=progress_callback
+                )
+                result.update(recovered)
+                return result
             if not verify:
                 result.update(goal_status=state["goal_status"], goal_satisfied=state["goal_satisfied"])
                 if state["goal_status"] == "unknown":
@@ -103,6 +110,200 @@ def query_child_operation(coordinator: Any, path: Path | None, *,
                       blockers=[{"blocker_code": "child_recovery_unproven", "scope": "child",
                                  "message": str(exc), "retryable": True}])
         return result
+
+
+def _is_unstarted_preflight_checkpoint(
+    store: OperationStore,
+    state: Mapping[str, Any],
+    events: list[Mapping[str, Any]],
+) -> bool:
+    return bool(
+        not store.receipt_path.exists()
+        and store.read_result(maintain=False) is None
+        and state.get("phase") == "preflight"
+        and state.get("current_action_state") == "not_started"
+        and state.get("current_action_ids") == []
+        and state.get("modified") is False
+        and state.get("mutation_started") is False
+        and state.get("goal_status") == "unknown"
+        and state.get("goal_satisfied") is False
+        and len(events) == 1
+        and events[0].get("event") == "plan_accepted"
+    )
+
+
+def is_recoverable_preflight_child(coordinator: Any, store: OperationStore) -> bool:
+    """Read-only check whether a locked child journal is a dead unstarted preflight reservation."""
+    if os.name != "nt" or not store.lock_exists():
+        return False
+    try:
+        plan = store.read_plan()
+        home = Path(plan["target"]["codex_home"])
+        if not home.is_absolute():
+            return False
+        actions = _native_actions(plan)
+        state, events = _read_checkpoint(store, plan)
+        if not _is_unstarted_preflight_checkpoint(store, state, events):
+            return False
+        from . import frozen_files as ff
+        from .environment_config import _unique_object
+        from .joint_cli_recovery import require_process_absent
+        from .office_runtime import processes
+
+        _, raw = ff.read_file(store.directory, "apply.lock", content=True, limit=4096)
+        lock = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        if (
+            not isinstance(lock, dict)
+            or set(lock) != {"pid", "created_at"}
+            or type(lock["pid"]) is not int
+            or not isinstance(lock["created_at"], str)
+        ):
+            return False
+        require_process_absent(lock["pid"], lock["created_at"])
+        census = processes()
+        if any(row["pid"] == lock["pid"] or row["parent"] == lock["pid"] for row in census):
+            return False
+        residuals = _native_residuals(coordinator, plan, home, actions)
+        return residuals == [a["action_id"] for a in actions]
+    except Exception:
+        return False
+
+
+def recover_unstarted_preflight_child(
+    coordinator: Any,
+    store: OperationStore,
+    *,
+    expected_residuals: list[str] | None = None,
+    progress_callback: Any = None,
+) -> dict[str, Any]:
+    """Settle a crashed preflight child lock only when writer exit and full residuals are proven."""
+    if os.name != "nt":
+        raise OperationStoreError("Existing apply.lock keeps the child outcome unknown")
+    plan = store.read_plan()
+    home = Path(plan["target"]["codex_home"])
+    if not home.is_absolute():
+        raise OperationStoreError("Child journal requires an absolute native home")
+    actions = _native_actions(plan)
+    state, events = _read_checkpoint(store, plan)
+    if not _is_unstarted_preflight_checkpoint(store, state, events):
+        raise OperationStoreError("Existing apply.lock keeps the child outcome unknown")
+
+    from . import frozen_files as ff
+    from .environment_config import _unique_object
+    from .joint_cli_recovery import require_process_absent
+    from .office_runtime import processes
+    from .windows_held_files import HeldFiles
+
+    try:
+        proof, _ = ff.read_file(store.directory, "apply.lock")
+    except Exception as exc:
+        raise OperationStoreError(f"Could not inspect child apply.lock: {exc}") from exc
+
+    with HeldFiles() as held:
+        held.acquire(store.directory, proof, delete=True)
+        _, raw = held.read(store.directory, "apply.lock", content=True)
+        try:
+            lock = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise OperationStoreError("Existing apply.lock keeps the child outcome unknown") from exc
+        if (
+            not isinstance(lock, dict)
+            or set(lock) != {"pid", "created_at"}
+            or type(lock["pid"]) is not int
+            or not isinstance(lock["created_at"], str)
+        ):
+            raise OperationStoreError("Existing apply.lock keeps the child outcome unknown")
+        try:
+            process_proof = require_process_absent(lock["pid"], lock["created_at"])
+            census = processes()
+        except Exception as exc:
+            raise OperationStoreError(f"Child apply.lock owner is not proven absent: {exc}") from exc
+        if any(row["pid"] == lock["pid"] or row["parent"] == lock["pid"] for row in census):
+            raise OperationStoreError("Child apply.lock owner or child process is still present")
+
+        locked_state, locked_events = _read_checkpoint(store, plan)
+        if locked_state != state or locked_events != events or not _is_unstarted_preflight_checkpoint(
+            store, locked_state, locked_events
+        ):
+            raise OperationStoreError("Child checkpoint changed before preflight lock recovery")
+
+        coordinator._emit_progress(progress_callback, "inventory", "started", operation_id=store.operation_id)
+        residuals = _native_residuals(coordinator, plan, home, actions)
+        coordinator._emit_progress(
+            progress_callback,
+            "inventory",
+            "completed",
+            operation_id=store.operation_id,
+            counts={"action_count": len(actions), "residual_count": len(residuals)},
+        )
+        action_ids = [a["action_id"] for a in actions]
+        if residuals != action_ids or (expected_residuals is not None and list(expected_residuals) != action_ids):
+            raise OperationStoreError(
+                "Preflight child lock recovery requires every frozen native target to remain present"
+            )
+        goal = "completed_with_residuals"
+        blockers = [{
+            "blocker_code": "residual_records",
+            "scope": "child",
+            "message": "approved child records remain",
+            "retryable": True,
+        }]
+        store.append_event(
+            {
+                "event": "verification_finished",
+                "goal_status": goal,
+                "verified_action_ids": [],
+                "residual_action_ids": residuals,
+                "preflight_lock_recovery": {
+                    "original_lock": lock,
+                    "original_lock_sha256": proof["sha256"],
+                    "writer_exit": process_proof,
+                },
+            },
+            state_updates={
+                "phase": "finished",
+                "goal_status": goal,
+                "goal_satisfied": False,
+                "current_action_state": "verified",
+            },
+        )
+        counts = {"action_count": len(actions), "batch_count": 1, "residual_count": len(residuals)}
+        durable = {
+            "schema_version": "larj.agent-result.v1",
+            "document_type": "operation_result",
+            "command": "agent",
+            "mode": "agent",
+            "subcommand": "verify",
+            "phase": "finished",
+            "operation_id": store.operation_id,
+            "plan_sha256": plan["plan_sha256"],
+            "goal_status": goal,
+            "goal_satisfied": False,
+            "modified": False,
+            "mutation_started": False,
+            "blockers": blockers,
+            "counts": counts,
+            "action_ids": action_ids,
+            "verified_action_ids": [],
+            "residual_action_ids": residuals,
+            "verification": {"all_satisfied": False, "verified_action_ids": []},
+            "final_scope_verification": {"all_satisfied": False, "scan_complete": True},
+        }
+        store.write_result(durable)
+        held.dispose(store.directory, "apply.lock", before=proof)
+
+    if store.lock_exists():
+        raise OperationStoreError("Child apply.lock remained after handle disposition")
+    return {
+        "goal_status": goal,
+        "goal_satisfied": False,
+        "modified": False,
+        "mutation_started": False,
+        "counts": counts,
+        "blockers": blockers,
+        "residual_action_ids": residuals,
+        "preflight_lock_recovered": True,
+    }
 
 
 def _read_checkpoint(store: OperationStore, plan: Mapping[str, Any]) -> tuple[dict, list]:
