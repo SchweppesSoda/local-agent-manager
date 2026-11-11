@@ -58,6 +58,79 @@ class ArtifactMaintenanceTests(unittest.TestCase):
         self.assertEqual(result['changes'], [])
         self.assertTrue((self.root / 'shared').exists())
 
+    def test_codex_msix_discovers_nested_cache_and_preserves_browser_state(self):
+        profile = self.root / 'Roaming/Codex/web/Codex/Default'
+        cache = profile / 'Cache/Cache_Data'
+        cache.mkdir(parents=True)
+        (cache / 'index').write_bytes(struct.pack('<II', 0xC103CAC3, 0x30000))
+        (cache / 'data_0').write_bytes(b'cache')
+        (profile / 'Cookies').write_bytes(b'preserve')
+        result = rules.inspect_profile('codex-desktop', self.root, categories=['caches'], freeze=True)
+        self.assertEqual([c['evidence']['path'] for c in result['changes']],
+                         ['Roaming/Codex/web/Codex/Default/Cache/Cache_Data'])
+        self.assertTrue((profile / 'Cookies').exists())
+        (cache / 'notes.txt').write_bytes(b'user file')
+        self.assertEqual(rules.inspect_profile('codex-desktop', self.root,
+                         categories=['caches'], freeze=True)['changes'], [])
+
+    def test_codex_cache_access_denial_is_not_reported_as_unknown_format(self):
+        self.cache()
+        with patch.object(rules, '_cache', side_effect=PermissionError('locked')):
+            result = rules.inspect_profile('codex-desktop', self.root, categories=['caches'], freeze=True)
+        self.assertEqual(result['changes'], [])
+        self.assertEqual(result['observations'][0]['reason'], 'file_in_use_or_access_denied')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows package layout')
+    def test_codex_package_discovery_uses_common_localcache_root(self):
+        package = self.root / 'Packages/OpenAI.Codex_test/LocalCache'
+        package.mkdir(parents=True)
+        with patch.object(rules, 'default_local_appdata', return_value=self.root):
+            profiles = rules.default_profiles(['codex-desktop'])
+        self.assertIn(str(package), [p['root'] for p in profiles])
+        self.assertNotIn(str(package / 'Roaming/Codex'), [p['root'] for p in profiles])
+
+    def codex_log(self, day='2020/01/01', body=b'2020-01-01T04:38:39.050Z warning [git] diagnostic\n'):
+        path = self.root / 'Local/Codex/Logs' / day / 'codex-desktop-5b705aa4-9643-4437-ac08-c4c294e5c2cc-40704-t0-i1-043833-0.log'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        os.utime(path, ns=(self.old, self.old))
+        return path
+
+    def test_codex_dated_diagnostics_require_date_header_name_and_retention(self):
+        old = self.codex_log()
+        recent = self.codex_log('2099/01/01', b'2099-01-01T00:00:00.000Z info [app] diagnostic\n')
+        invalid = self.codex_log('2020/99/01')
+        mismatch = self.codex_log('2020/01/02')
+        transcript = old.parent / 'session.jsonl'
+        transcript.write_bytes(b'preserve')
+        arbitrary = old.parent / '2020-01-01.log'
+        arbitrary.write_bytes(b'2020-01-01 00:00:00 INFO transcript\n')
+        os.utime(arbitrary, ns=(self.old, self.old))
+        result = rules.inspect_profile('codex-desktop', self.root, categories=['logs'],
+                                       cutoff_ns=time.time_ns(), freeze=True)
+        self.assertEqual([c['evidence']['path'] for c in result['changes']], [old.relative_to(self.root).as_posix()])
+        self.assertTrue(all(p.exists() for p in (recent, invalid, mismatch, transcript, arbitrary)))
+
+    def test_codex_dated_logs_preserve_recent_mtime_and_unrecognized_headers(self):
+        old = self.codex_log()
+        os.utime(old, None)
+        bad = self.codex_log('2020/01/02', b'conversation contents\n')
+        result = rules.inspect_profile('codex-desktop', self.root, categories=['logs'],
+                                       cutoff_ns=time.time_ns() - 14 * 86400 * 10**9, freeze=True)
+        self.assertEqual(result['changes'], [])
+        self.assertTrue(bad.exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file exclusion contract')
+    def test_codex_nested_artifact_apply_verifies_only_qualified_files_removed(self):
+        old = self.codex_log()
+        kept = old.parent / 'session.jsonl'
+        kept.write_bytes(b'preserve')
+        plan = maintenance.plan('codex-desktop', self.root, categories=['logs'])
+        result = self.execute(plan)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertFalse(old.exists())
+        self.assertEqual(kept.read_bytes(), b'preserve')
+
     def test_antigravity_resume_cache_is_retained(self):
         cache = self.root / 'cache'
         cache.mkdir()

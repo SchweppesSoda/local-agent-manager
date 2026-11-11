@@ -107,6 +107,22 @@ WorkBuddy, Orca, Herdr and QwenWork. A missing candidate reports its observation
 scope. Custom, portable and additional account profiles require an explicit root.
 The offline artifact writer currently supports Windows file exclusion.
 
+Official Windows Codex MSIX profiles are discovered at the package's `LocalCache`
+root. Cache discovery includes `Roaming/Codex/web/Codex` and its `Default`
+profile; an explicit older `Roaming/Codex` root also supports `web/Codex`.
+Only the registered cache directories and verified blockfile members qualify,
+never cookies, browser local storage, artifact sessions or arbitrary descendants.
+Access-denied or sharing-violation observations report
+`file_in_use_or_access_denied`; they do not establish an unsupported format.
+
+Codex diagnostics in `Local/Codex/Logs/YYYY/MM/DD` are inspected separately.
+Only ordinary files with the qualified `codex-desktop-<UUID>-<PID>-t<N>-i<N>-<HHMMSS>-<N>.log`
+name, a matching dated diagnostic header, and both directory date and mtime
+past retention qualify. Unknown subdirectories, session files and mismatched
+headers remain retained. Explicit `Local/Codex` roots support the same dated
+layout under `logs`. Reports expose file metadata only. The usual frozen
+manifest, client closure, file leases and verification rules still apply.
+
 ```powershell
 local-agent-manager maintenance inventory --client cindy --json
 local-agent-manager maintenance plan --client cindy --root '<physical profile root>' --category caches --category logs --plan maintenance.json --json

@@ -26,6 +26,7 @@ DESKTOP = frozenset(CLIENTS) - {'codex', 'claude', 'pi', 'antigravity-cli'}
 _LOG = re.compile(r'(?:agent-\d{4}-\d{2}-\d{2}\.ndjson|[A-Za-z][A-Za-z0-9_-]*\.log\.\d+|[A-Za-z][A-Za-z0-9_-]*[.-]\d{4}-\d{2}-\d{2}\.log|\d{4}-\d{2}-\d{2}\.log)\Z')
 _CINDY_BACKUP = re.compile(r'(cindy-[A-Za-z0-9_-]+\.db)\.bak\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\Z')
 _CODEX_TEMP = re.compile(r'\.\.codex-global-state\.json\.bak\.tmp-(\d{13})-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
+_CODEX_LOG = re.compile(r'codex-desktop-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-\d+-t\d+-i\d+-\d{6}-\d+\.log\Z')
 
 
 def root_path(value):
@@ -72,7 +73,7 @@ def default_profiles(clients, *, include_runtime_roots=False):
             names = list(islice(packages.iterdir(), ff.MAX_ENTRIES + 1))
             if len(names) > ff.MAX_ENTRIES:
                 raise ff.FrozenFilesError('maintenance_package_discovery_budget')
-            roots['codex-desktop'].extend(p / 'LocalCache/Roaming/Codex' for p in names
+            roots['codex-desktop'].extend(p / 'LocalCache' for p in names
                                           if p.name.casefold().startswith('openai.codex_'))
     return [{'client': client, 'root': str(path)} for client in clients
             for path in dict.fromkeys(roots[client])]
@@ -187,7 +188,47 @@ def _diagnostic(root, relative, client):
                 and type(value['tz']) is int and -1440 <= value['tz'] <= 1440)
     # Common electron-log/tracing diagnostic headers. An extension alone
     # never qualifies a transcript or an arbitrary user file for removal.
+    if client == 'codex-desktop' and _CODEX_LOG.fullmatch(Path(relative).name):
+        day = '-'.join(relative.split('/')[-4:-1]).encode('ascii')
+        return bool(re.match(re.escape(day) + rb'T[0-9:.]+Z (?:trace|debug|info|warning|error) \[[A-Za-z0-9_.-]+\] ', first))
     return bool(re.match(rb'\[?\d{4}-\d{2}-\d{2}[ T][0-9:.+Z-]+\]?\s+\[?(?:TRACE|DEBUG|INFO|WARN|ERROR|trace|debug|info|warn|error)\]?(?:\s|:)', first))
+
+
+def _dated_codex_logs(root, directory):
+    """Only traverse the product's YYYY/MM/DD diagnostics layout, never sessions."""
+    pending = [(directory, 0)]
+    visited = 0
+    while pending:
+        parent, depth = pending.pop()
+        for name in _names(root, parent):
+            visited += 1
+            if visited > ff.MAX_ENTRIES:
+                raise ff.FrozenFilesError('maintenance_entry_budget')
+            relative = parent + '/' + name
+            info = ff.checked_path(root, relative).lstat()
+            if stat.S_ISDIR(info.st_mode):
+                ff._plain(info, directory=True)
+                if depth < 3 and re.fullmatch(r'\d{4}' if depth == 0 else r'\d{2}', name):
+                    pending.append((relative, depth + 1))
+                else:
+                    yield relative, info, False
+            else:
+                ff._plain(info)
+                parts = relative[len(directory) + 1:].split('/')
+                dated = False
+                if depth == 3 and _CODEX_LOG.fullmatch(name):
+                    try:
+                        datetime.strptime('/'.join(parts[:3]), '%Y/%m/%d')
+                        dated = True
+                    except ValueError:
+                        pass
+                yield relative, info, dated
+
+
+def _qualification_reason(error, category):
+    if isinstance(error, PermissionError) or getattr(error, 'winerror', None) in {5, 32, 33}:
+        return 'file_in_use_or_access_denied'
+    return category + '_format_or_access_unverified'
 
 
 def _migration_proof(root, source):
@@ -307,8 +348,16 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         observations.append(row)
 
     if client in DESKTOP and 'caches' in categories:
-        http = 'Cache/Cache_Data' if (root / 'Cache/Cache_Data').exists() else 'Cache'
-        for relative in (http, 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache', 'ShaderCache'):
+        prefixes = ['']
+        if client == 'codex-desktop':
+            prefixes += ['Default/', 'web/Codex/', 'web/Codex/Default/',
+                         'Roaming/Codex/web/Codex/', 'Roaming/Codex/web/Codex/Default/']
+        relatives = []
+        for prefix in prefixes:
+            http = prefix + ('Cache/Cache_Data' if (root / (prefix + 'Cache/Cache_Data')).exists() else 'Cache')
+            relatives.extend([http, *(prefix + name for name in
+                ('GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache', 'ShaderCache'))])
+        for relative in relatives:
             path = ff.checked_path(root, relative)
             if not path.exists():
                 continue
@@ -316,25 +365,31 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                 index = _cache(root, relative)
                 if index:
                     candidate(relative, 'caches', 'qualified_chromium_blockfile_cache', expected_files=[index])
-            except (OSError, ValueError, RuntimeError):
-                observations.append(_row(root, relative, 'caches', 'unqualified', 'cache_format_or_access_unverified'))
+            except (OSError, ValueError, RuntimeError) as error:
+                observations.append(_row(root, relative, 'caches', 'unqualified', _qualification_reason(error, 'cache')))
 
     if 'logs' in categories:
-        for directory in ('logs', 'log', 'userdata/logs'):
-            for name in _names(root, directory):
-                relative = directory + '/' + name
-                info = ff.checked_path(root, relative).lstat()
+        directories = ['logs', 'log', 'userdata/logs']
+        if client == 'codex-desktop':
+            directories.append('Local/Codex/Logs')
+        for directory in directories:
+            entries = (_dated_codex_logs(root, directory) if client == 'codex-desktop' else
+                       ((directory + '/' + name, ff.checked_path(root, directory + '/' + name).lstat(), False)
+                        for name in _names(root, directory)))
+            for relative, info, dated_codex in entries:
+                name = Path(relative).name
+                date_name = '-'.join(relative.split('/')[-4:-1]) if dated_codex else name
                 if stat.S_ISDIR(info.st_mode):
                     # Session/terminal transcripts retain their owning record authority.
                     observations.append(_row(root, relative, 'logs', 'retain', 'nested_or_session_diagnostics'))
-                elif _LOG.fullmatch(name) and info.st_mtime_ns < cutoff_ns and _past_log_date(name, cutoff_ns):
+                elif ((_LOG.fullmatch(name) and relative == directory + '/' + name) or dated_codex) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):
                     try:
                         if _diagnostic(root, relative, client):
                             candidate(relative, 'logs', 'closed_rotated_diagnostics_past_explicit_retention')
                         else:
                             observations.append(_row(root, relative, 'logs', 'unqualified', 'diagnostic_format_unverified'))
-                    except (OSError, ValueError, RuntimeError):
-                        observations.append(_row(root, relative, 'logs', 'unqualified', 'diagnostic_format_or_access_unverified'))
+                    except (OSError, ValueError, RuntimeError) as error:
+                        observations.append(_row(root, relative, 'logs', 'unqualified', _qualification_reason(error, 'diagnostic')))
                 else:
                     observations.append(_row(root, relative, 'logs', 'retain', 'current_recent_or_unrecognized_log'))
 
