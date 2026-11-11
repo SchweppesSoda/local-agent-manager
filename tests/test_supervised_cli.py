@@ -4,10 +4,54 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
-from local_agent_manager.supervised_cli import wait_with_diagnostics, WriterStillRunning
+from local_agent_manager.supervised_cli import wait_with_diagnostics, WriterStillRunning, periodic_stacks
+import io
+import threading
+import time
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_handler_ownership_and_metadata_only_failure_sample(self):
+        from local_agent_manager.supervised_cli import main
+        for already_enabled in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory)/'stacks'
+                secret_fixture_local = 'do-not-dump-frame-locals'
+                with patch.object(sys, 'argv', ['fixture', str(path), '120']), \
+                        patch('local_agent_manager.entrypoint.main', return_value=1), \
+                        patch('faulthandler.is_enabled', return_value=already_enabled), \
+                        patch('faulthandler.enable') as enable, patch('faulthandler.disable') as disable:
+                    self.assertEqual(main(), 1)
+                self.assertEqual(enable.call_count, int(not already_enabled))
+                self.assertEqual(disable.call_count, int(not already_enabled))
+                self.assertNotIn(secret_fixture_local, path.read_text())
+
+    def test_sampler_never_uses_unsafe_c_watchdog_and_stops_before_sink_closes(self):
+        stream = io.StringIO()
+        with patch('faulthandler.dump_traceback_later', side_effect=AssertionError('unsafe watchdog')), \
+                patch('faulthandler.dump_traceback', side_effect=AssertionError('unsafe traversal')):
+            with periodic_stacks(stream, .001) as dump:
+                dump('explicit sample')
+                time.sleep(.02)
+        size = len(stream.getvalue())
+        time.sleep(.01)
+        self.assertEqual(len(stream.getvalue()), size)
+        self.assertIn('explicit sample', stream.getvalue())
+        self.assertIn('GIL-protected', stream.getvalue())
+        self.assertFalse(any(t.name == 'lam-stack-sampler' for t in threading.enumerate()))
+
+    def test_sampler_rejects_nonfinite_and_nonpositive_intervals(self):
+        for interval in (0, -1, float('nan'), float('inf')):
+            with self.assertRaises(ValueError), periodic_stacks(io.StringIO(), interval):
+                pass
+
+    def test_failed_stack_sink_does_not_change_work_result(self):
+        stream = Mock()
+        stream.write.side_effect = OSError('sink failed')
+        with periodic_stacks(stream, .001) as dump:
+            dump()
+            time.sleep(.01)
+
     def test_immediate_failure_dumps_stack_before_periodic_interval(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'stacks'

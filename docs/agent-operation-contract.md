@@ -50,6 +50,16 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
    authorization, proceed without a second confirmation. Exact frontend-reference
    and relation writes require supported schemas, immutable row evidence,
    exact affected-row counts and post-write verification.
+   Cleanup authorization is not lifecycle authorization. Before closing or
+   restarting any Agent, show the user a dialog listing the exact software and
+   affected tasks and obtain explicit confirmation for the current run and
+   lifecycle identities. Without that confirmation, do not arm or close.
+   The `lifecycle_confirmation.LifecycleGate` support entry enforces in-memory,
+   expiring consent, exact scope/run/identity matching and single-use actions;
+   it does not itself operate clients. New callers must supply fresh identities
+   immediately before dispatch and retain normal startup fences/exit checks.
+   Old frozen controllers and on-disk arm receipts do not satisfy this gate:
+   preserve them as evidence, never replay or edit them to manufacture consent.
 4. Cindy retained chat-row deletion requires explicit Cindy session IDs via
    `--record-id`; native SDK IDs do not authorize it. Project/all-projects
    cleanup retains its soft-deleted-only default.

@@ -100,7 +100,12 @@ Long external controllers must not impose a short total wall-clock kill deadline
 on a multi-stage mutator. The diagnostic wrapper
 `python -m local_agent_manager.supervised_cli <stack-log> <interval-seconds> <CLI args...>`
 runs normal CLI dispatch and records Python thread stacks periodically and
-immediately on terminal failure. Binding discovery groups a failed native root
+immediately on terminal failure. Periodic sampling uses Python's GIL-protected
+frame API, not `faulthandler.dump_traceback_later`: the latter can itself crash
+while traversing a changing frame chain on CPython 3.12. A C call holding the
+GIL may delay samples; the external waiter still reports elapsed/idle time.
+Only code locations are recorded, never frame locals or record content.
+Binding discovery groups a failed native root
 once, with its affected thread IDs and catalog source metadata. Claude and
 Cindy failures retain exception types, OS/SQLite error codes, source paths and
 stack locations and controlled policy reasons without arbitrary exception text,

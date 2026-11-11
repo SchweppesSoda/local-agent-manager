@@ -1,14 +1,70 @@
 """Wait for a CLI without killing an ambiguous writer on a wall-clock limit.
 
 Idle observations are diagnostic, not success/failure or permission to replay.
-A separate child entry emits periodic Python stacks even when its main thread
-is blocked. RPC/lock-specific safety deadlines remain owned by their adapters.
+A separate child entry samples Python stacks when the GIL is available.
+RPC/lock-specific safety deadlines remain owned by their adapters.
 """
 import faulthandler
+from contextlib import contextmanager
+import math
 from pathlib import Path
 import subprocess
 import sys
 import time
+import threading
+
+
+@contextmanager
+def periodic_stacks(stream, interval):
+    """Sample through Python's GIL-protected frame API, never the C watchdog.
+
+    CPython 3.12's dump_traceback_later walks another thread's changing frame
+    chain without the GIL and can itself fault. Keep strong frame/code references
+    through the public Python API; copy metadata before doing any output I/O.
+    A C call holding the GIL can delay this sampler. The external process waiter
+    remains responsible for reporting elapsed/progress-idle time in that case.
+    """
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError('positive finite diagnostic interval required')
+    stop = threading.Event()
+    lock = threading.Lock()
+
+    def dump(label='Python stacks'):
+        # Diagnostics cannot replace a writer's result or interrupt its work.
+        try:
+            with lock:
+                rows = [label + '\n']
+                frames = sys._current_frames()
+                try:
+                    for ident, frame in list(frames.items())[:100]:
+                        rows.append(f'Thread 0x{ident:x} (most recent call first):\n')
+                        for _ in range(100):
+                            if frame is None:
+                                break
+                            code = frame.f_code
+                            rows.append(f'  File {code.co_filename!r}, line {frame.f_lineno} in {code.co_name}\n')
+                            frame = frame.f_back
+                        else:
+                            rows.append('  ...\n')
+                finally:
+                    frames.clear()
+                    frame = code = None
+                stream.write(''.join(rows))
+                stream.flush()
+        except Exception:
+            pass
+
+    def sample():
+        while not stop.wait(interval):
+            dump(f'Timeout ({interval:g} seconds); GIL-protected Python sample')
+
+    sampler = threading.Thread(target=sample, name='lam-stack-sampler', daemon=True)
+    sampler.start()
+    try:
+        yield dump
+    finally:
+        stop.set()
+        sampler.join()
 
 
 class WriterStillRunning(RuntimeError):
@@ -64,20 +120,25 @@ def main():
     # generation, mutation policy or alternative recovery logic lives here.
     stack_path, interval, *arguments = sys.argv[1:]
     with Path(stack_path).open('a', encoding='utf-8') as stacks:
-        faulthandler.enable(file=stacks)
-        faulthandler.dump_traceback_later(float(interval), repeat=True, file=stacks)
+        # Fatal diagnostics are still useful, but are not a periodic sampler.
+        # Do not redirect an already enabled handler whose sink we do not own.
+        owns_handler = not faulthandler.is_enabled()
+        if owns_handler:
+            faulthandler.enable(file=stacks)
         try:
-            from .entrypoint import main as cli_main
-            code = cli_main(arguments)
-            if code:
-                # Terminal failures often precede the periodic sample.
-                faulthandler.dump_traceback(file=stacks, all_threads=True)
-            return code
-        except BaseException:
-            faulthandler.dump_traceback(file=stacks, all_threads=True)
-            raise
+            with periodic_stacks(stacks, float(interval)) as dump:
+                try:
+                    from .entrypoint import main as cli_main
+                    code = cli_main(arguments)
+                    if code:
+                        dump('Terminal CLI failure')
+                    return code
+                except BaseException:
+                    dump('Terminal CLI exception')
+                    raise
         finally:
-            faulthandler.cancel_dump_traceback_later()
+            if owns_handler:
+                faulthandler.disable()
 
 
 if __name__ == '__main__':
