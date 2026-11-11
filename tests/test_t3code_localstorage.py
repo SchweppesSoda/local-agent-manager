@@ -87,6 +87,24 @@ class T3CodeLocalStorageTests(unittest.TestCase):
             storage.freeze(self.root, "env-1", ["thread-1"])
         self.assertEqual(level._snapshot(self.root, storage.RELATIVE), before)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows LevelDB lock file')
+    def test_online_snapshot_keeps_original_lock_held(self):
+        import msvcrt
+        local_storage(self.root)
+        before = level._snapshot(self.root, storage.RELATIVE)
+        path = self.root/storage.RELATIVE/'LOCK'
+        with path.open('r+b', buffering=0) as held:
+            msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                evidence = storage.freeze(self.root, 'env-1', ['thread-1'])
+                self.assertGreater(storage.remaining(evidence), 0)
+                self.assertEqual(before, level._snapshot(self.root, storage.RELATIVE))
+                with path.open('r+b', buffering=0) as other:
+                    with self.assertRaises(OSError):
+                        msvcrt.locking(other.fileno(), msvcrt.LK_NBLCK, 1)
+            finally:
+                msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+
     def test_long_registered_subagent_id_cold_rewrite_and_generic_identity_boundary(self):
         thread_id = ('thread:delegated-task:command%3Amcp%3A0cd9d9a2-a87c-4766-9bf5-2b45fb226bdc'
                      '%3Adelegate-task%3A285c9ef7-f9f0-438a-b461-40bf6482cad8')

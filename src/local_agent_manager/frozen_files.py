@@ -92,7 +92,10 @@ def read_file(root: Path, relative: str, *, content=False, limit=MAX_BYTES):
         if _revision(opened) != _revision(before):
             raise FrozenFilesError("client_file_replaced")
         digest, size, chunks = hashlib.sha256(), 0, []
-        while True:
+        # Empty lock files can have a Windows byte-range lock beyond EOF.
+        # Their opened identity and zero length prove the empty content; an
+        # unnecessary ReadFile would hit that lock. Keep both revision checks.
+        while before.st_size > 0:
             data = os.read(fd, min(1024 * 1024, limit - size + 1))
             if not data:
                 break

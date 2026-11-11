@@ -39,6 +39,30 @@ class FrozenFilesTests(unittest.TestCase):
         files.apply_remove(self.root, frozen)
         self.assertTrue(files.satisfied(self.root, frozen))
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows byte-range locks')
+    def test_empty_locked_file_can_be_fingerprinted_without_reading_locked_bytes(self):
+        import hashlib
+        import msvcrt
+        for name, body in (('LOCK', b''), ('not-empty', b'x')):
+            path = self.write(name, body)
+            with path.open('r+b', buffering=0) as held:
+                msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+                try:
+                    if body:
+                        with self.assertRaises(PermissionError):
+                            files.read_file(self.root, name, content=True)
+                    else:
+                        proof, raw = files.read_file(self.root, name, content=True)
+                        self.assertEqual(raw, b'')
+                        self.assertEqual(proof['size'], 0)
+                        self.assertEqual(proof['sha256'], hashlib.sha256(b'').hexdigest())
+                    with path.open('r+b', buffering=0) as other:
+                        with self.assertRaises(OSError):
+                            msvcrt.locking(other.fileno(), msvcrt.LK_NBLCK, 1)
+                finally:
+                    msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+            self.assertEqual(path.read_bytes(), body)
+
     def test_modified_or_added_member_refuses_before_any_unlink(self):
         selected = self.write("selected/one.jsonl")
         frozen = files.freeze_remove(self.root, "selected")
