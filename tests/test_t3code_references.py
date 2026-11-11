@@ -36,6 +36,23 @@ class ReferencePolicyTests(unittest.TestCase):
             {'version': 1, 'kind': 'thread', 'threadId': TARGET, 'contextId': 'thread_' + TARGET,
              'label': TARGET, 'title': TARGET}]}}, event='message.updated')
 
+    def test_tool_message_text_does_not_hide_delivery_or_unknown_output(self):
+        for prefix in ('t3-code.', 'mcp_t3-code_', 'Run mcp_t3-code_'):
+            self.check({'type': 'dynamic_tool', 'toolName': prefix + 't3_thread_send',
+                        'input': {'threadId': 'kept', 'message': 'PRIVATE_CONTENT ' + TARGET}})
+            self.check({'type': 'dynamic_tool', 'toolName': prefix + 't3_thread_send',
+                        'input': {'threadId': TARGET, 'message': 'plain text'}}, blocked=True)
+        self.check({'type': 'dynamic_tool', 'toolName': 'cua_repl.js',
+                    'output': [{'type': 'text', 'text': 'PRIVATE_CONTENT ' + TARGET}]})
+        for tool, field in (
+                ('cua_repl.js', {'output': [{'type': 'text', 'text': TARGET, 'resume': 'unknown'}]}),
+                ('cua_repl.js', {'output': [{'type': 'resource', 'text': TARGET}]}),
+                ('cua_repl.js', {'input': {'code': TARGET}}),
+                ('unknown.tool', {'output': [{'type': 'text', 'text': TARGET}]}),
+                ('t3-code.t3_thread_send', {'output': {'threadId': TARGET}})):
+            with self.subTest(tool=tool, field=field):
+                self.check({'type': 'dynamic_tool', 'toolName': tool, **field}, blocked=True)
+
     def test_structural_unknown_and_key_references_remain_protected(self):
         for payload in ({'type': 'reasoning', 'nativeItemRef': {'resume': TARGET}},
                         {'type': 'file_change', 'fileName': 'conversation://' + TARGET},

@@ -282,7 +282,11 @@ class ColdCliRehearsal(unittest.TestCase):
                     'contextId': 'thread_' + ROOTS[0], 'label': 'mention', 'title': 'retained mention'}]}), KEEP))
             audit = [dict(type='reasoning', text='Diagnose ' + TARGET),
                      dict(type='file_change', fileName='repair.py', diffStr='+ inspect ' + TARGET),
-                     dict(type='command_execution', input='inspect ' + TARGET, output=TARGET)]
+                     dict(type='command_execution', input='inspect ' + TARGET, output=TARGET),
+                     dict(type='dynamic_tool', toolName='cua_repl.js',
+                          output=[{'type': 'text', 'text': 'Displayed ' + TARGET}]),
+                     dict(type='dynamic_tool', toolName='t3-code.t3_thread_send',
+                          input={'threadId': KEEP, 'message': 'Diagnose ' + TARGET}, output={'threadId': KEEP})]
             for i, payload in enumerate(audit):
                 insert(db, V2 + 'turn_items', turn_item_id=f'retained-{i}', thread_id=KEEP,
                        type=payload['type'], payload_json=json.dumps(payload))

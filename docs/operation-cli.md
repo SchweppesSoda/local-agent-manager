@@ -612,6 +612,9 @@ T3 的发现、数据库清理和跨客户端保护共用 `t3code_references` �
 扫描统一检查嵌入或 JSON 转义的目标 ID，冲突报告表、列和有界 JSON 路径，不报告匹配内容。
 文件差异与思考文本字段依据安装包 `server.asar` 内的 `OrchestrationV2TurnItem` 定义核实；
 未知类型不沿用相似字段名的豁免。
+动态工具的 `input/output` 在 T3 schema 中是未知类型，不能整体当作正文。
+已知线程发送工具仅将 `input.message` 视为消息正文，收件 `threadId` 与结果句柄继续保护；
+CUA 工具仅接受精确 `{type:"text",text:...}` 显示块的 text，代码输入、额外字段和未知工具仍阻挡。
 
 隔离验收使用合成混合存储，并通过公共 CLI、独立 worker 和冷 status/verify 执行。
 `tests.test_t3code_cli_rehearsal` 中的 handoff 验收要求显式设置 `LAM_REHEARSAL_CODEX_BINARY`，
