@@ -266,7 +266,10 @@ def freeze(root, ids, *, native_ids=()):
     identity = list(frozen_files._identity(path.stat()))
     with closing(connect_readonly(path)) as source:
         source.execute("BEGIN")
-        deadline = time.monotonic() + 20
+        # quick_check also walks the complete FTS shadow families. A cold
+        # qualified store is bounded by MAX_DATABASE_BYTES, not a 20-second
+        # warm-cache assumption. This remains a read-only planning deadline.
+        deadline = time.monotonic() + 120
         source.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         _check(source)
         owned, _ = closure(source, ids, native_ids=native_ids)
