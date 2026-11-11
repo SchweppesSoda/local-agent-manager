@@ -31,6 +31,50 @@ mapping is a blocker for that memory scope, not permission to choose a similar
 directory. See [Cindy's scope storage](https://github.com/makecindy/cindy/blob/b6b668550e2cd276e047e666640ea3d727dac027/packages/maker-core/src/memory/storage.ts)
 and [worktree mapping](https://github.com/makecindy/cindy/blob/b6b668550e2cd276e047e666640ea3d727dac027/packages/maker-core/src/memory/scope-resolver.ts).
 
+## Cindy's Claude executable and config directory
+
+When asked for Cindy's equivalent of T3's **CLAUDE_CONFIG_DIR path**, answer
+with the effective Claude user-data root first. The executable path is a
+separate setting. In the locally inspected packaged Cindy build, the default
+is `%USERPROFILE%\.claude`, shared with standalone Claude Code when neither
+uses a profile override. Do not infer an isolated home from Cindy's separately
+managed executable or from an existing `CindyGlobal\claude-home` folder.
+
+The config root holds `settings.json`, native transcripts under `projects/`,
+user `skills/` and `agents/`, and version-dependent plugin, cache, debug and
+file-history data. Some global state can live outside it (for example the
+default `~/.claude.json`). It is not the executable directory, Cindy's frontend
+conversation database, or Cindy's owner-scoped `maker-memory` directory.
+Selecting this root in T3 selects Claude data; it does not by itself import
+Cindy's frontend history or activate Cindy Maker Memory.
+
+### Verified local snapshot: 2026-11-11, Windows user fangjun
+
+| Resource | Observed path / result |
+| --- | --- |
+| Standalone CLI, selected by the current shell | `C:\Users\fangjun\.local\bin\claude.exe`; `--version` returned `2.1.322` |
+| Cindy-managed CLI, matching this build's bundled runtime manifest | `C:\Users\fangjun\AppData\Roaming\CindyGlobal\claude-code\2.1.321\claude.exe`; `--version` returned `2.1.321` |
+| Default Claude config root | `C:\Users\fangjun\.claude` |
+| This workspace's native project transcripts | `C:\Users\fangjun\.claude\projects\D--Users-fangjun-Documents-zmmc-work` |
+| Legacy / skill projection directory | `C:\Users\fangjun\AppData\Roaming\CindyGlobal\claude-home`; only `skills/` was observed, not a native transcript store |
+| Cindy project memory parent | `C:\Users\fangjun\AppData\Roaming\CindyGlobal\owners\a9f3c557f2601bd56616\maker-memory` |
+
+Evidence: installed `C:\Program Files\Cindy\resources\app.asar`, build source
+commit `c0252b6d594ce8cd1ee6da900fbadfb70c5c8c23` (built 2026-11-10), its
+Claude binary provisioning and environment construction, directory metadata,
+and direct version probes. No Claude process was running during inspection:
+the Cindy executable selection above is build evidence, not a live-process
+observation. Nondefault native subscription profiles may explicitly set
+`CLAUDE_CONFIG_DIR` to another directory; resolve the chosen account before
+claiming its effective root or binding another client to it.
+
+Re-verify after client/runtime upgrades, account or environment changes.
+`environment inventory --client cindy --json` currently reports
+`claude-home` as a **candidate** with `selection: unknown`; this alone cannot
+override the actual launch/profile evidence. Likewise, do not choose a runtime
+merely because its version folder is newest. Inspect the selected launch path,
+and distinguish a dated build/default finding from a running session's path.
+
 ## Select the runtime and native home
 
 Use `environment claude-connect prepare/apply` with explicit paths. The plan
