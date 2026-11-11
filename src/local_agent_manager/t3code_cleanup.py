@@ -393,6 +393,19 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             if engine == "pi" and chosen:
                 exact_paths = {a.impact.external_action_payload["path"] for a in chosen}
         action_contexts.update({str(a.action_id): context for a in chosen})
+        covered = {i for a in chosen for i in (a.target.thread_id, *a.impact.affected_thread_ids,
+                                               *a.impact.descendant_thread_ids)}
+        uncovered = ids - covered
+        if engine == 'codex' and any(r.thread_id in uncovered and (r.artifact_present or r.legacy_indexed)
+                                     for r in catalog.records):
+            # An unavailable selected candidate must not disappear merely
+            # because a peer from this store has a supported writer. Refuse
+            # before ANY native batch can mutate the otherwise ready plan.
+            files.fail('native_writer_missing')
+        if engine not in ('codex', 'antigravity') and uncovered and native_remaining({
+                'engine':engine,'root':canonical_path(root),'ids':sorted(uncovered),
+                'paths':[],'binding':binding}):
+            files.fail('native_writer_missing')
         actions.extend(chosen)
         native_contexts.append(context)
         target = {"engine": engine, "root": canonical_path(root), "ids": sorted(ids), "paths": sorted(exact_paths),

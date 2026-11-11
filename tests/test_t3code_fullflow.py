@@ -202,6 +202,23 @@ class T3CodeFullflowTests(unittest.TestCase):
         self.assertEqual(result['goal_status'], 'blocked', result)
         self.assertFalse(result['mutation_started'])
 
+    def test_unavailable_native_peer_blocks_plan_before_any_batch(self):
+        child='55555555-5555-4555-8555-555555555555'
+        broken='66666666-6666-4666-8666-666666666666'
+        healthy_path=add_native_record(self.home,NATIVE)
+        add_native_record(self.home,broken)
+        with closing(sqlite3.connect(self.home/'state_5.sqlite')) as db:
+            db.execute('UPDATE threads SET rollout_path=? WHERE id=?',(str(healthy_path),broken));db.commit()
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db,child,native=broken)
+            db.execute(f"UPDATE {V2}threads SET payload_json=json_set(payload_json,'$.lineage.parentThreadId',?) WHERE thread_id=?",(THREAD,child));db.commit()
+        self.manifest['native_stores'].append({'thread_id':child,'engine':'codex','root':str(self.home)})
+        self.adapter=T3CodeBoundAdapter(self.manifest)
+        plan=self.coordinator().plan_operation(client='t3code',record_ids=(THREAD,),adapters=(self.adapter,),plan_path=self.plan_path)
+        self.assertEqual(plan['goal_status'],'blocked',plan)
+        self.assertFalse(plan['mutation_started'])
+        self.assertIn('native_writer_missing',str(plan['blockers']))
+
     def test_absent_and_partial_child_journals_have_distinct_cold_status(self):
         from local_agent_record_janitor.operation_store import OperationStore
         plan = self.plan()
