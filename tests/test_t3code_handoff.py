@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 
 from local_agent_manager.cli import main
-from local_agent_manager.operation_store import strict_json_load, write_new_json
+from local_agent_manager.record_identity import canonical_path
+from local_agent_manager.operation_store import strict_json_load, write_new_json, plan_sha256
 from local_agent_manager.t3code_handoff import (
     HANDOFF_RECEIPT_SCHEMA,
     HANDOFF_SPEC_SCHEMA,
@@ -69,6 +70,10 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.install.mkdir()
         self.t3_exe = self.install / "T3 Code (Nightly).exe"
         self.t3_exe.write_bytes(b"fixture-t3-exe")
+        (self.install / 'resources').mkdir()
+        for name in ('app.asar', 'server.asar'):
+            (self.install / 'resources' / name).write_bytes(b'fixture archive')
+        (self.root / 'userdata/server-owner.sqlite').touch()
         self.codex_exe = self.base / "codex.exe"
         self.codex_exe.write_bytes(b"fixture-codex-exe")
         settings = {
@@ -82,11 +87,16 @@ class T3CodeHandoffTests(unittest.TestCase):
         (self.root / "userdata/settings.json").write_text(json.dumps(settings), encoding="utf-8")
 
         for patcher in (
+            patch('pathlib.Path.home', return_value=self.base / 'profile'),
+            patch('local_agent_manager.office_runtime.processes', return_value=[]),
             patch("local_agent_manager.t3code_server_delete._bundled_install", return_value=self.install),
             patch("local_agent_manager.t3code_handoff._bundled_install", return_value=self.install),
             patch.dict(
                 os.environ,
                 {
+                    "USERPROFILE": str(self.base / "profile"),
+                    "HOME": str(self.base / "profile"),
+                    "CODEX_HOME": str(self.home),
                     "APPDATA": str(self.appdata),
                     "LOCALAPPDATA": str(self.localappdata),
                     "T3CODE_HOME": str(self.root),
@@ -156,6 +166,25 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertEqual(code, 3)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["blockers"][0]["blocker_code"], "interactive_desktop_unavailable")
+
+    def test_full_plan_blocker_is_reported_before_confirmation_or_close(self):
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?',
+                (json.dumps({'savedResume': 'conversation://' + TARGET_NATIVE}), KEEP_THREAD))
+            db.commit()
+        with (patch('local_agent_manager.t3code_handoff.windows_confirmation') as prompt,
+              patch('local_agent_manager.t3code_handoff._qualify_lifecycle_targets') as census,
+              patch('local_agent_manager.t3code_handoff._spawn_detached_worker') as spawn):
+            output = StringIO()
+            code = main(['delete', 'run', '--client', 't3code', '--record-id', TARGET_THREAD,
+                         '--handoff', '--json'], stdout=output, stderr=StringIO())
+        self.assertEqual(code, 3, output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())['blockers'][0]['blocker_code'], 'preflight_plan_blocked')
+        prompt.assert_not_called()
+        census.assert_not_called()
+        spawn.assert_not_called()
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            self.assertEqual(db.execute(f'SELECT count(*) FROM {V2}threads').fetchone()[0], 3)
 
     def test_cancel_declines_without_creating_handoff_files_and_confirm_starts_worker(self) -> None:
         fake_targets = [
@@ -315,6 +344,7 @@ class T3CodeHandoffTests(unittest.TestCase):
             spec_path,
             {
                 "schema_version": HANDOFF_SPEC_SCHEMA,
+                "cleanup_scope": {"root": canonical_path(self.root), "thread_ids": sorted([TARGET_THREAD, CHILD_THREAD]), "native_targets": []},
                 "handoff_id": "test-worker-1",
                 "created_at": "2026-11-11T08:00:00+00:00",
                 "t3code_root": str(self.root),
@@ -368,30 +398,17 @@ class T3CodeHandoffTests(unittest.TestCase):
             if argv[:2] == ["delete", "plan"]:
                 call_order.append("plan")
                 plan_out = Path(argv[argv.index("--out") + 1])
-                write_new_json(
-                    plan_out,
-                    {
-                        "actions": [
-                            {
-                                "kind": "delete_t3code_frontend",
-                                "impact": {
-                                    "external_action_payload": {
-                                        "t3code_evidence": {
-                                            "schema_version": "larj.t3code-cleanup.v1",
-                                            "selected_thread_ids": expanded,
-                                        }
-                                    }
-                                },
-                            }
-                        ]
-                    },
-                )
-                return 0, {
-                    "operation_id": "op-clean-1",
-                    "plan_path": str(plan_out),
-                    "plan_sha256": "a" * 64,
-                    "goal_status": "ready",
+                document = {
+                    "operation_id": "op-clean-1", "plan_path": str(plan_out),
+                    "goal_status": "ready", "blockers": [],
+                    "actions": [{"kind": "delete_t3code_frontend", "impact": {
+                        "external_action_payload": {"t3code_evidence": {
+                            "schema_version": "larj.t3code-cleanup.v1", "root": str(self.root),
+                            "native_targets": [], "selected_thread_ids": expanded}}}}],
                 }
+                document['plan_sha256'] = plan_sha256(document)
+                write_new_json(plan_out, document)
+                return 0, document
             if argv[:2] == ["delete", "apply"]:
                 call_order.append("apply")
                 return 0, {"operation_id": "op-clean-1", "goal_status": "complete", "goal_satisfied": True}
@@ -506,6 +523,7 @@ class T3CodeHandoffTests(unittest.TestCase):
             spec_path,
             {
                 "schema_version": HANDOFF_SPEC_SCHEMA,
+                "cleanup_scope": {"root": canonical_path(self.root), "thread_ids": sorted([TARGET_THREAD, CHILD_THREAD]), "native_targets": []},
                 "handoff_id": "real-spawn-test",
                 "created_at": "2026-11-11T08:00:00+00:00",
                 "t3code_root": str(self.root),

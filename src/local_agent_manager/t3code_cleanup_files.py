@@ -59,10 +59,11 @@ def _require_known_database_family(root):
 def _preserve_other_attachments(root, directory, ids):
     """Protect proven uploads of other threads without authorizing their removal."""
     from .t3code_store import database_path, V2, rows
-    from .t3code_database import THREAD_TABLES, _where, _content_reference
+    from .t3code_database import THREAD_TABLES, _where
+    from .t3code_references import content_reference
     with closing(connect_readonly(database_path(root))) as db:
         db.execute('BEGIN')
-        db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
+        db.create_function('lam_content_reference', 5, content_reference, deterministic=True)
         # Selected attachment-bearing payloads still require an attachment
         # deletion contract. Check history as well as the current messages.
         for table in (*THREAD_TABLES, 'orchestration_events'):

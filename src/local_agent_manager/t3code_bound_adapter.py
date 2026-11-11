@@ -256,7 +256,8 @@ def _qualify_legacy_events(db):
     # Qualify field names in SQLite. Private historical bodies are neither
     # exported nor materialized as a Python list of every event.
     fields = rows(db, '''SELECT DISTINCT event_type,j.key FROM orchestration_events AS t,
-        json_each(t.payload_json) AS j WHERE aggregate_kind='thread' ''')
+        json_each(t.payload_json) AS j WHERE aggregate_kind='thread'
+        AND NOT lam_content_reference('orchestration_events','payload_json',t.payload_json,j.fullkey,t.event_type) ''')
     for row in fields:
         if row['key'] not in _LEGACY_EVENT_FIELDS[row['event_type']].split():
             fail('legacy_restore_closure_unqualified')
@@ -282,8 +283,9 @@ def history_references(root, bindings):
         from .t3code_store import qualify
         qualify(db)
         result = []
-        from .t3code_database import THREAD_TABLES, _content_reference
-        db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
+        from .t3code_database import THREAD_TABLES
+        from .t3code_references import content_reference
+        db.create_function('lam_content_reference', 5, content_reference, deterministic=True)
         _qualify_legacy_events(db)
         result.extend(_transfer_references(db))
         # A replayable native handle can also occur in a run, handoff or

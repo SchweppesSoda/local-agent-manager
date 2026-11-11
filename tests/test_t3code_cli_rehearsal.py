@@ -5,7 +5,7 @@ Codex uses the CLI's supported transport seam by default; an opt-in absolute
 LAM_REHEARSAL_CODEX_BINARY runs the installed app-server instead. No prompts,
 credentials, model requests or external network are needed.
 """
-from contextlib import closing
+from contextlib import closing, ExitStack
 import hashlib
 import json
 import os
@@ -53,7 +53,30 @@ def worker(argv):
                 db.execute('DELETE FROM threads WHERE id=?', (record_id,)); db.commit()
             path.unlink()
     transport = CodexAppServer if os.environ.get('LAM_REHEARSAL_CODEX_BINARY') else NativeTransport
-    with patch('local_agent_manager.office_runtime.processes', return_value=[]):
+    with ExitStack() as stack:
+        stack.enter_context(patch('local_agent_manager.office_runtime.processes', return_value=[]))
+        if os.environ.get('LAM_REHEARSAL_HANDOFF'):
+            from local_agent_manager import t3code_handoff as handoff
+            # Inject only host facts, consent and process launch. The child
+            # executes the real worker/CLI/writers on isolated physical stores.
+            stack.enter_context(patch.object(handoff, 'list_processes', return_value=[]))
+            stack.enter_context(patch.object(handoff, '_running_related_process_records', return_value=[]))
+            stack.enter_context(patch.object(handoff, '_bundled_install', return_value=Path(os.environ['T3CODE_HOME']).parent))
+            stack.enter_context(patch.object(handoff, 'windows_confirmation', return_value=True))
+            def launch(spec):
+                log = (spec.parent / 'fixture-worker.log').open('wb')
+                try:
+                    child = subprocess.Popen([sys.executable, '-B', '-m', 'tests.test_t3code_cli_rehearsal', '--worker',
+                        '--handoff-worker', str(spec)], cwd=Path(__file__).resolve().parents[1],
+                        env=dict(os.environ), stdout=log, stderr=log,
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+                    stack.callback(lambda: child.wait(timeout=180))
+                    return child.pid
+                finally:
+                    log.close()
+            stack.enter_context(patch.object(handoff, '_spawn_detached_worker', side_effect=launch))
+            if argv and argv[0] == '--handoff-worker':
+                return handoff.run_handoff_worker(Path(argv[1]))
         if os.environ.get('LAM_REHEARSAL_FAULT') == 'lost-frontend-result':
             original = cleanup.execute
             def lose_result(*args, **kwargs):
@@ -88,6 +111,10 @@ class ColdCliRehearsal(unittest.TestCase):
         self.frontend = self.base/'frontend.exe'; self.frontend.write_bytes(b'fixture, never executed')
         self.codexbin = Path(os.environ.get('LAM_REHEARSAL_CODEX_BINARY', str(self.frontend)))
         if os.environ.get('LAM_REHEARSAL_CODEX_BINARY'):
+            copied = self.base / 'runtime' / 'codex.exe'
+            copied.parent.mkdir()
+            shutil.copy2(self.codexbin, copied)
+            self.codexbin = copied
             # Initialize this synthetic home with the selected installed
             # runtime before planning, including its current schema migrations.
             from local_agent_manager.codex_app_server import CodexAppServer
@@ -227,6 +254,99 @@ class ColdCliRehearsal(unittest.TestCase):
              'unchanged_files': len(after), 'shared_session_and_keeper_binding_preserved': True, 'audit_preserved': True,
              'fts_cold_reopen_verified': True, 'leveldb_cold_reopen_verified': True,
              'codex_transport': 'installed_app_server' if os.environ.get('LAM_REHEARSAL_CODEX_BINARY') else 'injected_test_transport'}, indent=2))
+
+    @unittest.skipUnless(os.environ.get('LAM_REHEARSAL_CODEX_BINARY'), 'requires copied real Codex app-server')
+    def test_handoff_17_frontend_18_native_records_with_retained_diagnostics(self):
+        from tests.test_antigravity_cli_references import field, step
+        selected = list(SELECTED)
+        manifest = json.loads(self.bindings.read_text())
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            for i in range(9):
+                tid, nid = f'additional-child-{i}', f'bbbbbbbb-bbbb-4bbb-8bbb-{i:012d}'
+                selected.append(tid)
+                self.native_paths.insert(-1, add_native_record(self.home, nid))
+                add_thread(db, tid, native=nid)
+                manifest['native_stores'].append(dict(thread_id=tid, engine='codex',
+                    root=str(self.home), codex_binary=str(self.codexbin)))
+            for tid in selected[1:]:
+                db.execute(f"UPDATE {V2}threads SET payload_json=json_set(payload_json,"
+                    "'$.lineage.parentThreadId',?,'$.lineage.rootThreadId',?,"
+                    "'$.lineage.relationshipToParent','subagent') WHERE thread_id=?", (ROOTS[0], ROOTS[0], tid))
+            for tid in ('keeper-two', 'keeper-deleted'):
+                add_thread(db, tid, native=AGY_KEEP, driver='antigravity')
+                original = next(b for b in manifest['native_stores'] if b['thread_id'] == KEEP)
+                manifest['native_stores'].append({**original, 'thread_id': tid})
+            db.execute(f"UPDATE {V2}threads SET deleted_at='2026-11-09T00:00:00Z' WHERE thread_id='keeper-deleted'")
+            db.execute(f"UPDATE {V2}messages SET payload_json=json_set(payload_json,'$.context',json(?)) WHERE thread_id=?",
+                (json.dumps({'version': 1, 'records': [{'version': 1, 'kind': 'thread', 'threadId': ROOTS[0],
+                    'contextId': 'thread_' + ROOTS[0], 'label': 'mention', 'title': 'retained mention'}]}), KEEP))
+            audit = [dict(type='reasoning', text='Diagnose ' + TARGET),
+                     dict(type='file_change', fileName='repair.py', diffStr='+ inspect ' + TARGET),
+                     dict(type='command_execution', input='inspect ' + TARGET, output=TARGET)]
+            for i, payload in enumerate(audit):
+                insert(db, V2 + 'turn_items', turn_item_id=f'retained-{i}', thread_id=KEEP,
+                       type=payload['type'], payload_json=json.dumps(payload))
+                for table in ('orchestration_events', 'orchestration_v2_events'):
+                    owner = dict(stream_id=KEEP, aggregate_kind='thread', stream_version=i+1) if table == 'orchestration_events' else dict(thread_id=KEEP)
+                    insert(db, table, event_id=f'audit-{i}', event_type='turn-item.updated',
+                           payload_json=json.dumps(payload), **owner)
+            attachment = KEEP + '-44444444-4444-4444-8444-444444444444-html'
+            render = dict(id='html', threadId=KEEP, type='dynamic_tool', status='completed',
+                          toolName='t3-code.html_render', output={'htmlRender': {
+                              'attachmentId': attachment, 'title': 'kept', 'height': 250}})
+            insert(db, V2+'turn_items', turn_item_id='html', thread_id=KEEP, type='dynamic_tool',
+                   status='completed', payload_json=json.dumps(render))
+            db.commit()
+            preserved_rows = {table: db.execute(f'SELECT * FROM {V2}{table} WHERE thread_id IN (?,?,?) ORDER BY rowid',
+                (KEEP, 'keeper-two', 'keeper-deleted')).fetchall() for table in ('threads', 'messages', 'turn_items')}
+        self.native_paths.insert(-1, add_native_record(self.home, 'cccccccc-cccc-4ccc-8ccc-000000000001', parent=CODEX[0]))
+        html = self.root / 'userdata/attachments' / (attachment + '.html')
+        html.write_bytes(b'<html>keep this artifact</html>')
+        diagnostic = self.agyroot / 'brain' / AGY_KEEP / '.system_generated/steps/1/output.txt'
+        diagnostic.parent.mkdir(parents=True)
+        diagnostic.write_text(TARGET)
+        row = step(15, field(20, field(3, TARGET.encode())))
+        with closing(sqlite3.connect(self.agyroot / 'conversations' / (AGY_KEEP + '.db'))) as db:
+            db.execute('INSERT INTO steps(idx,step_type,step_format,step_payload) VALUES(1,15,0,?)', (row['step_payload'],))
+            db.execute('INSERT INTO gen_metadata(idx,data) VALUES(1,?)', (field(1, field(2, TARGET.encode())),))
+            db.commit()
+        self.preserved.extend((html, diagnostic))
+        before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.preserved}
+        self.bindings.write_text(json.dumps(manifest))
+        self.env['LAM_REHEARSAL_HANDOFF'] = '1'
+        receipt_path = self.base / 'handoff-receipt.json'
+        code, started = self.call('handoff-start', ['delete', 'run', '--client', 't3code',
+            '--t3code-bindings', str(self.bindings), '--record-id', ROOTS[0], '--handoff', '--out', str(receipt_path)])
+        self.assertEqual(code, 0, started)
+        self.assertEqual(started['expanded_thread_count'], 17)
+        self.assertEqual(started['native_record_count'], 18)
+        receipt = json.loads(receipt_path.read_text())
+        self.assertTrue(receipt['goal_satisfied'], receipt)
+        self.assertEqual(receipt['apply']['goal_status'], 'complete', receipt)
+        self.assertEqual(receipt['cold_verify']['goal_status'], 'complete', receipt)
+        self.assertEqual(receipt['closed_targets'], [])
+        (self.evidence / 'handoff-receipt.json').write_bytes(receipt_path.read_bytes())
+        plan = receipt['plan']
+        for phase in ('status', 'verify'):
+            code, result = self.call('handoff-cold-' + phase, ['operation', phase,
+                '--operation-id', plan['operation_id'], '--plan', plan['plan_path']])
+            self.assertEqual(code, 0, result)
+            self.assertTrue(result['goal_satisfied'], result)
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            self.assertEqual({r[0] for r in db.execute(f'SELECT thread_id FROM {V2}threads')},
+                             {KEEP, 'keeper-two', 'keeper-deleted'})
+            for table, expected in preserved_rows.items():
+                self.assertEqual(db.execute(f'SELECT * FROM {V2}{table} ORDER BY rowid').fetchall(), expected)
+        self.assertEqual({str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.preserved}, before)
+        self.assertFalse(any(p.exists() for p in self.native_paths[:-1]))
+        self.assertFalse((self.claude/'projects/synthetic'/(CLAUDE+'.jsonl')).exists())
+        with closing(sqlite3.connect(self.agyroot/agy.SUMMARY)) as db:
+            self.assertEqual(db.execute('SELECT conversation_id FROM conversation_summaries').fetchall(), [(AGY_KEEP,)])
+        local_storage(self.desktop, inspect=True, thread_id=CHILDREN[0])
+        (self.evidence / 'preservation.json').write_text(json.dumps(dict(
+            target_t3_remaining=0, native_targets_remaining=0, kept_threads=3,
+            kept_rows_unchanged=True, kept_files_unchanged=True, real_codex_app_server=True,
+            detached_worker=True, cold_status_and_verify=True, production_writes=0), indent=2))
 
     def test_real_target_drift_blocks_without_child_journals(self):
         plan = self.plan()

@@ -1,7 +1,7 @@
 """Interactive popup-confirmed detached T3 Code full local cleanup handoff.
 
-Foreground preflight discovers exact T3 + bound native targets while T3 is open,
-identifies running desktop clients that must be closed and reopened, and shows
+Foreground preflight builds the complete read-only cleanup plan while T3 is open,
+then identifies desktop clients that must be closed and reopened, and shows
 an explicit Windows confirmation dialog (default Cancel). On confirmation, a
 detached WMI worker outside T3's Job object waits for active T3 runs to save,
 closes only the confirmed apps, settles any dead unstarted preflight child lock
@@ -12,7 +12,7 @@ T3 thread once.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from io import StringIO
 import json
@@ -36,12 +36,12 @@ from .record_identity import canonical_path
 from .sqlite_utils import connect_readonly
 from .state_paths import control_directory
 from .t3code_bound_adapter import T3CodeBoundAdapter, load_manifest
-from .t3code_cleanup import evidence_from_document
+from .t3code_cleanup_flow import (CleanupFlowError, execute_cleanup, forwarded_arguments, prepare_cleanup)
 from .t3code_discovery import BindingDiscoveryError, discover_bindings
 from .t3code_server_delete import _ENTRY as _T3_SERVER_ENTRY, _RUNTIME_FILES, _bundled_install, _locator
 from .t3code_store import V2, database_path, default_root, identifier, local_root
 
-HANDOFF_SPEC_SCHEMA = "larj.t3code-handoff-spec.v1"
+HANDOFF_SPEC_SCHEMA = "larj.t3code-handoff-spec.v2"
 HANDOFF_RECEIPT_SCHEMA = "larj.t3code-handoff-receipt.v1"
 
 _AMBIENT_PROVIDER_ENV_VARS = (
@@ -710,7 +710,6 @@ def start_t3code_handoff(
             with closing(connect_readonly(database_path(t3_root))) as db:
                 db.execute("BEGIN")
                 t3code_database._check(db)
-                t3code_database.closure(db, expanded_thread_ids)
                 placeholders = ",".join("?" for _ in expanded_thread_ids)
                 status_placeholders = ",".join("?" for _ in _TERMINAL_RUN_STATUSES)
                 active_target = db.execute(
@@ -752,6 +751,14 @@ def start_t3code_handoff(
                 coordinator,
                 [t3_root, *(Path(raw_root) for _, _, raw_root in target_stores)],
             )
+            cli_forwards = forwarded_arguments(args, t3_root)
+            _step("[预检 2/4] 正在执行完整只读计划校验；通过后才会请求关闭软件...")
+            with tempfile.TemporaryDirectory(prefix="lam-t3-preflight-") as preview_dir:
+                preview = prepare_cleanup(record_ids, cli_forwards, Path(preview_dir) / "plan.json",
+                    run_cli=_run_cli_json, coordinator=coordinator)
+            if preview.scope['thread_ids'] != sorted(expanded_thread_ids):
+                raise HandoffError('preflight_scope_drift', '完整计划与发现的 T3 级联范围不一致。')
+            native_record_count = sum(len(t['ids']) for t in preview.scope['native_targets'])
             _step("[预检 3/4] 正在核实需关闭并自动重开的桌面客户端进程...")
             target_specs = _qualify_lifecycle_targets(
                 t3_root=t3_root,
@@ -840,30 +847,6 @@ def start_t3code_handoff(
                     }],
                 }
 
-        cli_forwards: list[str] = []
-        if roots:
-            cli_forwards.extend(["--t3code-root", str(t3_root)])
-        if getattr(args, "t3code_bindings", None) is not None:
-            cli_forwards.extend(["--t3code-bindings", str(Path(args.t3code_bindings).resolve())])
-        for flag, attr in (
-            ("--codex-home", "codex_home"),
-            ("--codex-bin", "codex_bin"),
-            ("--antigravity-root", "antigravity_root"),
-            ("--antigravity-bin", "antigravity_bin"),
-            ("--operation-home", "operation_home"),
-        ):
-            val = getattr(args, attr, None)
-            if val is not None:
-                cli_forwards.extend([flag, str(Path(val).expanduser().resolve())])
-        for flag, attr in (
-            ("--orca-root", "orca_root"),
-            ("--herdr-root", "herdr_root"),
-            ("--workbuddy-root", "workbuddy_root"),
-            ("--paseo-root", "paseo_root"),
-        ):
-            for item in getattr(args, attr, ()) or ():
-                cli_forwards.extend([flag, str(Path(item).expanduser().resolve())])
-
         serialized_targets = [
             {k: v for k, v in item.items() if k != "lifecycle_target"}
             for item in target_specs
@@ -878,6 +861,7 @@ def start_t3code_handoff(
             "record_ids": record_ids,
             "expanded_thread_ids": expanded_thread_ids,
             "native_record_count": native_record_count,
+            "cleanup_scope": preview.scope,
             "notify_thread_id": notify_thread_id,
             "timeout": float(getattr(args, "timeout", 30.0) or 30.0),
             "quiesce_timeout": 180.0,
@@ -947,7 +931,7 @@ def start_t3code_handoff(
                 icon = "[完成]" if result["goal_satisfied"] else "[未完全完成]"
                 _step(f"{icon} 最终状态：{result['goal_status']}；回执已写入 {receipt_path}")
         return result
-    except HandoffError as exc:
+    except (HandoffError, CleanupFlowError) as exc:
         blocker: dict[str, Any] = {
             "blocker_code": exc.code,
             "scope": "handoff_preflight",
@@ -1234,6 +1218,8 @@ def run_handoff_worker(spec_path: Path) -> int:
     if not isinstance(spec, Mapping) or spec.get("schema_version") != HANDOFF_SPEC_SCHEMA:
         raise ValueError("Invalid handoff specification")
 
+    if not isinstance(spec.get('cleanup_scope'), dict):
+        raise ValueError('Handoff lacks successful full-plan preflight scope')
     handoff_id = str(spec["handoff_id"])
     t3_root = Path(str(spec["t3code_root"]))
     t3_install = Path(str(spec["t3code_install"]))
@@ -1253,6 +1239,7 @@ def run_handoff_worker(spec_path: Path) -> int:
         "settled_preflight_children": [],
         "plan": None,
         "apply": None,
+        "mutation_started": False,
         "cold_verify": None,
         "reopened_targets": [],
         "notification": None,
@@ -1300,119 +1287,46 @@ def run_handoff_worker(spec_path: Path) -> int:
                     except OSError:
                         time.sleep(0.25)
 
-            if True:
-                for item in spec.get("recoverable_preflight_children", ()):
-                    _, child_res = _run_cli_json([
-                        "operation",
-                        "verify",
-                        "--operation-id",
-                        str(item["operation_id"]),
-                        "--codex-home",
-                        str(item["codex_home"]),
-                        "--json",
-                    ])
-                    receipt["settled_preflight_children"].append(child_res)
-                    if child_res.get("goal_status") not in {"completed_with_residuals", "complete"}:
-                        raise HandoffError(
-                            "preflight_child_recovery_failed",
-                            f"无法结算残留预检锁 {item['operation_id']}: {child_res.get('blockers')}",
-                        )
-
-                if receipt["settled_preflight_children"]:
-                    _append_worker_event(
-                        events_path,
-                        "preflight_children_settled",
-                        count=len(receipt["settled_preflight_children"]),
-                    )
-
-                plan_path = handoff_dir / "cleanup.plan.json"
-                warm_coordinator = OperationCoordinator(CleanupService())
-                plan_argv = [
-                    "delete",
-                    "plan",
-                    "--client",
-                    "t3code",
-                    *(arg for rid in spec["record_ids"] for arg in ("--record-id", str(rid))),
-                    "--out",
-                    str(plan_path),
-                    *spec.get("cli_forwards", ()),
-                    "--json",
-                ]
-                _, plan_res = _run_cli_json(plan_argv, coordinator=warm_coordinator)
-                receipt["plan"] = {
-                    "operation_id": plan_res.get("operation_id"),
-                    "plan_path": plan_res.get("plan_path"),
-                    "plan_sha256": plan_res.get("plan_sha256"),
-                    "goal_status": plan_res.get("goal_status"),
-                    "blockers": plan_res.get("blockers", []),
-                }
-                if plan_res.get("goal_status") != "ready":
-                    raise HandoffError("offline_plan_blocked", f"离线生成清理计划受阻：{plan_res.get('blockers')}")
-
-                frozen_doc = strict_json_load(plan_path)
-                evidence = evidence_from_document(frozen_doc)
-                if evidence is None or evidence.get("selected_thread_ids") != list(spec["expanded_thread_ids"]):
-                    raise HandoffError(
-                        "offline_scope_drift",
-                        "离线计划级联范围与弹窗确认范围不一致，已中止执行。",
-                    )
-                _append_worker_event(events_path, "plan_ready", operation_id=plan_res["operation_id"])
-
-                apply_argv = [
-                    "delete",
-                    "apply",
-                    "--client",
-                    "t3code",
-                    "--operation-id",
-                    str(plan_res["operation_id"]),
-                    "--plan",
-                    str(plan_path),
-                    "--authorized-plan-sha256",
-                    str(plan_res["plan_sha256"]),
-                    "--clients-closed",
-                    "--timeout",
-                    str(spec.get("timeout", 30.0)),
-                    *spec.get("cli_forwards", ()),
-                    "--json",
-                ]
-                _, apply_res = _run_cli_json(apply_argv, coordinator=warm_coordinator)
-                receipt["apply"] = apply_res
-                _append_worker_event(
-                    events_path,
-                    "apply_finished",
-                    operation_id=plan_res["operation_id"],
-                    goal_status=apply_res.get("goal_status"),
-                )
-
-                verify_argv = [
+            for item in spec.get("recoverable_preflight_children", ()):
+                _, child_res = _run_cli_json([
                     "operation",
                     "verify",
                     "--operation-id",
-                    str(plan_res["operation_id"]),
-                    "--plan",
-                    str(plan_path),
+                    str(item["operation_id"]),
+                    "--codex-home",
+                    str(item["codex_home"]),
                     "--json",
-                ]
-                _, verify_res = _run_cli_json(verify_argv, coordinator=None)
-                receipt["cold_verify"] = verify_res
+                ])
+                receipt["settled_preflight_children"].append(child_res)
+                if child_res.get("goal_status") not in {"completed_with_residuals", "complete"}:
+                    raise HandoffError(
+                        "preflight_child_recovery_failed",
+                        f"无法结算残留预检锁 {item['operation_id']}: {child_res.get('blockers')}",
+                    )
+
+            if receipt["settled_preflight_children"]:
                 _append_worker_event(
                     events_path,
-                    "cold_verify_finished",
-                    operation_id=plan_res["operation_id"],
-                    goal_status=verify_res.get("goal_status"),
+                    "preflight_children_settled",
+                    count=len(receipt["settled_preflight_children"]),
                 )
-                if apply_res.get("goal_status") == "complete" and verify_res.get("goal_status") == "complete":
-                    receipt["goal_status"] = "complete"
-                    receipt["goal_satisfied"] = True
-                else:
-                    receipt["goal_status"] = str(verify_res.get("goal_status") or apply_res.get("goal_status") or "unknown")
-                    receipt["goal_satisfied"] = False
+
+            warm_coordinator = OperationCoordinator(CleanupService())
+            prepared = prepare_cleanup(spec['record_ids'], spec.get('cli_forwards', ()),
+                handoff_dir / 'cleanup.plan.json', run_cli=_run_cli_json,
+                coordinator=warm_coordinator, expected_scope=spec['cleanup_scope'], stage='offline')
+            execute_cleanup(prepared, spec.get('cli_forwards', ()),
+                timeout=spec.get('timeout', 30.0), run_cli=_run_cli_json, coordinator=warm_coordinator,
+                receipt=receipt, event=lambda name, **fields: _append_worker_event(events_path, name, **fields))
         except Exception as exc:
             import traceback
 
             traceback.print_exc()
-            if receipt["goal_status"] == "unknown" and receipt["apply"] is None:
+            if receipt["goal_status"] == "unknown" and not receipt["mutation_started"]:
                 receipt["goal_status"] = "blocked"
+            if isinstance(exc, CleanupFlowError) and isinstance(exc.details, Mapping):
+                receipt['plan'] = {key: exc.details.get(key) for key in
+                    ('operation_id', 'plan_path', 'plan_sha256', 'goal_status', 'blockers')}
             receipt["errors"].append({
                 "code": getattr(exc, "code", type(exc).__name__),
                 "message": str(exc),

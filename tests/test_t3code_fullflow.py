@@ -289,7 +289,7 @@ class T3CodeFullflowTests(unittest.TestCase):
             path.unlink()
 
     def test_unselected_upload_and_extracted_sidecar_are_preserved(self):
-        attachment_id = 'keeper-11111111-1111-4111-8111-111111111111-pptx'
+        attachment_id = 'keeper-77777777-7777-4777-8777-777777777777-pptx'
         payload = {'role': 'user', 'attachments': [{'type': 'file', 'id': attachment_id}]}
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
             add_thread(db, 'keeper')
@@ -308,7 +308,7 @@ class T3CodeFullflowTests(unittest.TestCase):
             files.remaining(evidence)
 
     def test_selected_or_unproven_attachment_files_still_block(self):
-        attachment_id = 'keeper-11111111-1111-4111-8111-111111111111-pptx'
+        attachment_id = 'keeper-77777777-7777-4777-8777-777777777777-pptx'
         payload = {'attachments': [{'type': 'file', 'id': attachment_id}]}
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
             add_thread(db, 'keeper')
@@ -371,7 +371,7 @@ class T3CodeFullflowTests(unittest.TestCase):
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
             add_thread(db, 'keeper')
         for extension in ('', '-png'):
-            attachment_id = 'keeper-11111111-1111-4111-8111-111111111111' + extension
+            attachment_id = 'keeper-77777777-7777-4777-8777-777777777777' + extension
             payload = {'attachments': [{'type': 'image', 'id': attachment_id, 'name': 'photo.png'}]}
             with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
                 db.execute(f'UPDATE {V2}messages SET payload_json=? WHERE thread_id=?', (json.dumps(payload), 'keeper'))
@@ -399,7 +399,7 @@ class T3CodeFullflowTests(unittest.TestCase):
             adapters=(self.adapter,), plan_path=self.plan_path, operation_id='native-descendant-protection')
         self.assertEqual(result['goal_status'], 'blocked', result)
         self.assertIn('t3code_shared_provider_session_restore_reference',
-                      {item['message'] for item in result['blockers']})
+                      {item['blocker_code'] for item in result['blockers']})
 
     def test_database_and_bound_desktop_apply_as_one_operation(self):
         from local_agent_record_janitor import office_leveldb as level

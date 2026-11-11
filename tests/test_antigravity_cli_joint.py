@@ -154,6 +154,9 @@ class JointTests(unittest.TestCase):
                               'input': {'task': 'Review '+TARGET}}, 'turn-item.updated'),
             (V2+'turn_items', {'type': 'subagent', 'prompt': 'Review '+TARGET}, 'turn-item.updated'),
             (V2+'subagents', {'prompt': 'Review '+TARGET}, 'subagent.updated'),
+            (V2+'turn_items', {'type': 'reasoning', 'text': 'Diagnose '+TARGET}, 'turn-item.updated'),
+            (V2+'turn_items', {'type': 'file_change', 'fileName': 'repair.py',
+                'diffStr': '+ inspect '+TARGET, 'oldStr': TARGET, 'newStr': 'audit '+TARGET}, 'turn-item.updated'),
         ]
         with closing(sqlite3.connect(self.t3/'userdata/statev2.sqlite')) as db:
             for index, (table, payload, event_type) in enumerate(payloads):

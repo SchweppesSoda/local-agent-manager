@@ -16,6 +16,7 @@ from . import frozen_files
 from .office_database import logical_hash
 from .sqlite_utils import connect_readonly
 from .providers.t3 import strict_json
+from .t3code_references import content_reference, require_no_references
 from .t3code_store import CONTRACT, RELATIVE, V2, T3CodeError, database_path, fail, identifier, native_handle, qualify, rows
 
 SCHEMA = "larj.t3code-database.v1"
@@ -78,77 +79,6 @@ def _require_shared_session(db, session_id, selected):
     return None
 
 
-_READ_ONLY_THREAD_TOOLS = frozenset({
-    't3-code.t3_thread_read',
-    't3-code.t3_thread_list',
-    't3-code.t3_thread_search',
-    'mcp_t3-code_t3_thread_read',
-    'mcp_t3-code_t3_thread_list',
-    'mcp_t3-code_t3_thread_search',
-    'Run mcp_t3-code_t3_thread_read',
-    'Run mcp_t3-code_t3_thread_list',
-    'Run mcp_t3-code_t3_thread_search',
-})
-
-
-def _content_reference(table, column, payload, path, event_type):
-    """Classify known dialogue text, mentions and read-tool audit locations."""
-    if column != 'payload_json' or not isinstance(payload, str) or not isinstance(path, str):
-        return False
-    if table in {'orchestration_v2_events', 'orchestration_events'}:
-        table = {'message.updated': V2 + 'messages', 'turn-item.updated': V2 + 'turn_items',
-                 'context-handoff.updated': V2 + 'context_handoffs',
-                 'subagent.updated': V2 + 'subagents'}.get(event_type)
-    try:
-        value = strict_json(payload)
-    except (ValueError, TypeError):
-        return False
-    if not isinstance(value, dict):
-        return False
-    if table == V2 + 'context_handoffs':
-        if path == '$.summaryText' and isinstance(value.get('summaryText'), str):
-            return True
-        match = re.fullmatch(r'\$\.history\.messages\[([0-9]+)\]\.text', path)
-        history = value.get('history')
-        messages = history.get('messages') if isinstance(history, dict) else None
-        if match and isinstance(messages, list) and int(match[1]) < len(messages):
-            message = messages[int(match[1])]
-            return (isinstance(message, dict) and message.get('role') in {'user', 'assistant'}
-                    and isinstance(message.get('text'), str))
-    if (table == V2 + 'messages' and value.get('role') in {'user', 'assistant'}
-            and path == '$.text' and isinstance(value.get('text'), str)):
-        return True
-    if table == V2 + 'subagents' and path == '$.prompt' and isinstance(value.get('prompt'), str):
-        return True
-    if table == V2 + 'turn_items':
-        kind = value.get('type')
-        if (kind in {'user_message', 'assistant_message'} and path == '$.text'
-                and isinstance(value.get('text'), str)):
-            return True
-        if (kind == 'command_execution' and path in {'$.input', '$.output'}
-                and isinstance(value.get(path[2:]), str)):
-            return True
-        if kind == 'subagent' and path == '$.prompt' and isinstance(value.get('prompt'), str):
-            return True
-        if (kind == 'dynamic_tool' and value.get('toolName') == 't3-code.delegate_task'
-                and path == '$.input.task' and isinstance(value.get('input'), dict)
-                and isinstance(value['input'].get('task'), str)):
-            return True
-    user_message = table == V2 + 'messages' and value.get('role') == 'user'
-    user_item = table == V2 + 'turn_items' and value.get('type') == 'user_message'
-    if user_message or user_item:
-        match = re.fullmatch(r'\$\.context\.records\[([0-9]+)\]\.threadId', path)
-        context = value.get('context')
-        records = context.get('records') if isinstance(context, dict) else None
-        if match and isinstance(records, list) and int(match[1]) < len(records):
-            record = records[int(match[1])]
-            return isinstance(record, dict) and record.get('kind') == 'thread'
-    if (table == V2 + 'turn_items' and value.get('type') == 'dynamic_tool'
-            and value.get('toolName') in _READ_ONLY_THREAD_TOOLS):
-        return path.startswith(('$.input.', '$.input[', '$.output.', '$.output['))
-    return False
-
-
 def closure(db, ids, *, native_ids=()):
     ids = tuple(sorted({identifier(i) for i in ids}))
     if not ids:
@@ -195,7 +125,7 @@ def closure(db, ids, *, native_ids=()):
     ))
     counts = {}
     native_refs = set()
-    db.create_function('lam_content_reference', 5, _content_reference, deterministic=True)
+    db.create_function('lam_content_reference', 5, content_reference, deterministic=True)
     for table, predicate, args in statements:
         counts[table] = db.execute(f'SELECT count(*) FROM "{table}" WHERE {predicate}', args).fetchone()[0]
         columns = [r[1] for r in db.execute(f'PRAGMA table_info("{table}")')]
@@ -222,30 +152,18 @@ def closure(db, ids, *, native_ids=()):
     if active:
         fail("pending_effects")
     protected_ids = tuple(sorted(set(ids) | set(native_ids) | {native_id for _, native_id in native_refs}))
-    # Check both app IDs and frozen native IDs. A retained recovery object
-    # must not hide a dependency under an unfamiliar reference field.
-    for table, predicate, args in statements:
-        if table == V2 + 'provider_sessions':
-            continue
-        columns = [r[1] for r in db.execute(f'PRAGMA table_info("{table}")')]
-        event_type = 't.event_type' if 'event_type' in columns else 'NULL'
-        for column in (c for c in columns if c.endswith('_json')):
-            if db.execute(f'''SELECT 1 FROM "{table}" AS t,json_tree(t."{column}") AS j
-                WHERE NOT ({predicate}) AND j.type='text' AND {_where('j.value',protected_ids)}
-                AND NOT lam_content_reference(?, ?, t."{column}", j.fullkey, {event_type})
-                LIMIT 1''', args + protected_ids + (table, column)).fetchone():
-                fail('unselected_restore_reference')
-    # Every retained session is a protection source, including sessions with
-    # no selected binding. The deletion statements alone do not cover them.
-    retained = '1'
-    retained_args = ()
-    if owned_sessions:
-        retained_args = tuple(sorted(owned_sessions))
-        retained = 'NOT (' + _where('t.provider_session_id', retained_args) + ')'
-    if db.execute(f'''SELECT 1 FROM {V2}provider_sessions AS t,json_tree(t.payload_json) AS j
-            WHERE ({retained}) AND j.type='text' AND {_where('j.value',protected_ids)}
-            LIMIT 1''', retained_args + protected_ids).fetchone():
-        fail('shared_provider_session_restore_reference')
+    # One scanner/policy is shared with the cross-client after-image guard.
+    # Ownership predicates determine which rows survive, never text matches.
+    retained = [(table, 'NOT (' + predicate + ')', args)
+                for table, predicate, args in statements if table != V2 + 'provider_sessions']
+    session_ids = tuple(sorted(owned_sessions))
+    require_no_references(db, protected_ids, rows=retained, json_only=True,
+                          code='t3code_unselected_restore_reference')
+    retained_sessions = [(V2 + 'provider_sessions',
+                     'NOT (' + _where('provider_session_id', session_ids) + ')' if session_ids else '1',
+                     session_ids)]
+    require_no_references(db, protected_ids, rows=retained_sessions, json_only=True,
+                          code='t3code_shared_provider_session_restore_reference')
     result = {"counts": counts, "provider_session_ids": sorted(owned_sessions),
               "native_references": [{"driver": d, "native_id": i} for d, i in sorted(native_refs)]}
     if shared:
