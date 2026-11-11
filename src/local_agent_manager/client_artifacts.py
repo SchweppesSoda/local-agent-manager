@@ -14,6 +14,7 @@ import sqlite3
 import sys
 from itertools import islice
 import time
+import zlib
 
 from local_agent_manager import frozen_files as ff
 from local_agent_manager import runtime_artifacts
@@ -25,7 +26,7 @@ CATEGORIES = ('caches', 'logs', 'backups', 'downloads', 'runtimes')
 DESKTOP = frozenset(CLIENTS) - {'codex', 'claude', 'pi', 'antigravity-cli'}
 _LOG = re.compile(r'(?:agent-\d{4}-\d{2}-\d{2}\.ndjson|[A-Za-z][A-Za-z0-9_-]*\.log\.\d+|[A-Za-z][A-Za-z0-9_-]*[.-]\d{4}-\d{2}-\d{2}\.log|\d{4}-\d{2}-\d{2}\.log)\Z')
 _CINDY_BACKUP = re.compile(r'(cindy-[A-Za-z0-9_-]+\.db)\.bak\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\Z')
-_CODEX_TEMP = re.compile(r'\.\.codex-global-state\.json\.bak\.tmp-(\d{13})-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
+_CODEX_TEMP = re.compile(r'\.\.codex-global-state\.json(?:\.bak)?\.tmp-(\d{13})-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
 _CODEX_LOG = re.compile(r'codex-desktop-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-\d+-t\d+-i\d+-\d{6}-\d+\.log\Z')
 
 
@@ -41,7 +42,8 @@ def default_profiles(clients, *, include_runtime_roots=False):
     if os.name != 'nt':
         roaming = home / 'Library/Application Support' if sys.platform == 'darwin' else Path(os.environ.get('XDG_CONFIG_HOME', home / '.config'))
     roots = {
-        'cindy': [roaming / name for name in CINDY_PROFILE_NAMES],
+        'cindy': [roaming / name for name in CINDY_PROFILE_NAMES] +
+                 ([local / 'com.xd.cindy.updater'] if os.name == 'nt' else []),
         'codex': [home / '.codex', default_codex_home()],
         'codex-desktop': [roaming / 'Codex'],
         'claude': [Path(os.environ.get('CLAUDE_CONFIG_DIR', home / '.claude'))],
@@ -75,8 +77,33 @@ def default_profiles(clients, *, include_runtime_roots=False):
                 raise ff.FrozenFilesError('maintenance_package_discovery_budget')
             roots['codex-desktop'].extend(p / 'LocalCache' for p in names
                                           if p.name.casefold().startswith('openai.codex_'))
-    return [{'client': client, 'root': str(path)} for client in clients
-            for path in dict.fromkeys(roots[client])]
+    profiles = [{'client': client, 'root': str(path)} for client in clients
+                for path in dict.fromkeys(roots[client])]
+    # Cindy's SDK and account homes are separate native stores. Do not present
+    # them as frontend roots or scan them with Cindy database-backup rules.
+    if 'cindy' in clients:
+        for profile in roots['cindy']:
+            try:
+                if not profile.exists():
+                    continue
+                for name in ('codex-home',):
+                    if (profile / name).is_dir():
+                        profiles.append({'client': 'codex', 'root': str(profile / name)})
+                for owner in _names(profile, 'codex-accounts'):
+                    if not re.fullmatch(r'[0-9a-f]{16,64}', owner):
+                        continue
+                    parent = 'codex-accounts/' + owner
+                    for account in _names(profile, parent):
+                        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', account):
+                            continue
+                        relative = parent + '/' + account
+                        path = ff.checked_path(profile, relative)
+                        if path.is_dir() and any((path / marker).is_file() for marker in ('config.toml', 'state_5.sqlite')):
+                            profiles.append({'client': 'codex', 'root': str(path)})
+            except (OSError, ValueError, RuntimeError) as error:
+                profiles.append({'client': 'codex', 'root': str(profile / 'codex-accounts'),
+                                 'discovery_error': _qualification_reason(error, 'account_discovery')})
+    return list({(p['client'], p['root']): p for p in profiles}.values())
 
 
 def _names(root, relative):
@@ -177,6 +204,20 @@ def _diagnostic(root, relative, client):
     if not raw:
         return False
     first = raw.splitlines()[0]
+    if client == 't3code' and re.fullmatch(r'userdata/logs/server\.trace\.ndjson\.[1-9][0-9]*', relative):
+        value = _json(first)
+        return (isinstance(value, dict) and value.get('type') == 'effect-span'
+                and value.get('kind') in {'internal', 'server', 'client', 'producer', 'consumer'}
+                and all(isinstance(value.get(k), str) for k in ('name', 'traceId', 'spanId', 'startTimeUnixNano', 'endTimeUnixNano'))
+                and re.fullmatch(r'[0-9a-f]{32}', value['traceId']) is not None
+                and re.fullmatch(r'[0-9a-f]{16}', value['spanId']) is not None
+                and all(re.fullmatch(r'[0-9]{1,24}', value[k]) for k in ('startTimeUnixNano', 'endTimeUnixNano'))
+                and type(value.get('sampled')) is bool and isinstance(value.get('attributes'), dict)
+                and isinstance(value.get('events'), list) and isinstance(value.get('links'), list)
+                and isinstance(value.get('exit'), dict))
+    if client == 'codex' and relative.startswith('.sandbox/'):
+        day = re.fullmatch(r'\.sandbox/sandbox\.(\d{4}-\d{2}-\d{2})\.log', relative)
+        return bool(day and re.match(rb'\[' + day[1].encode() + rb' [0-9:.]+ codex\.exe\] (?:START|END|ERROR|WARN|INFO):', first))
     if client == 'cindy' and Path(relative).name.startswith('agent-') and relative.endswith('.ndjson'):
         value = _json(first)
         return (isinstance(value, dict)
@@ -229,6 +270,76 @@ def _qualification_reason(error, category):
     if isinstance(error, PermissionError) or getattr(error, 'winerror', None) in {5, 32, 33}:
         return 'file_in_use_or_access_denied'
     return category + '_format_or_access_unverified'
+
+
+def _browser_prefixes(client, root):
+    prefixes = ['', 'EBWebView/'] if client == 'cindy' else ['']
+    if client == 'codex-desktop':
+        for base in ('', 'web/Codex/', 'Roaming/Codex/web/Codex/'):
+            prefixes.extend(base + suffix for suffix in ('', 'Default/', 'codex-browser-app/'))
+    if client == 'cindy':
+        prefixes.append('EBWebView/Default/')
+    # Only one registered Partitions level. Never recursively treat arbitrary
+    # user directories or browser persistent stores as caches.
+    for prefix in list(dict.fromkeys(prefixes)):
+        for name in _names(root, prefix + 'Partitions'):
+            if re.fullmatch(r'[A-Za-z0-9_.-]{1,160}', name):
+                prefixes.append(prefix + 'Partitions/' + name + '/')
+    return list(dict.fromkeys(prefixes))
+
+
+def _simple_code_cache(root, relative):
+    """Chromium Simple v9 index + v5 dense entry files; unknown variants stay."""
+    names = _names(root, relative)
+    if not names:
+        return []
+    if 'index' not in names or any(n not in {'index', 'index-dir'} and
+                                  not re.fullmatch(r'[0-9a-f]{16}_[01]', n) for n in names):
+        raise ValueError('maintenance_simple_cache_unknown_members')
+    proofs = []
+    total = 0
+    for name in names:
+        if name == 'index-dir':
+            if _names(root, relative + '/index-dir') != ['the-real-index']:
+                raise ValueError('maintenance_simple_index_unknown_members')
+            proof, raw = ff.read_file(root, relative + '/index-dir/the-real-index', content=True)
+            if (len(raw) < 36 or struct.unpack_from('<I', raw)[0] != len(raw) - 8
+                    or struct.unpack_from('<I', raw, 4)[0] != zlib.crc32(raw[8:])
+                    or struct.unpack_from('<QI', raw, 8) != (0x656e74657220796f, 9)):
+                raise ValueError('maintenance_simple_index_unverified')
+        else:
+            proof, raw = ff.read_file(root, relative + '/' + name, content=True)
+            if name == 'index':
+                if raw != struct.pack('<QIIII', 0xfcfb6d1ba7725c30, 9, 0, 0, 0):
+                    raise ValueError('maintenance_simple_version_unverified')
+            elif (len(raw) < 48 or struct.unpack_from('<QI', raw) != (0xfcfb6d1ba7725c30, 5)
+                  or not 0 < struct.unpack_from('<I', raw, 12)[0] <= len(raw) - 48
+                  or struct.unpack_from('<Q', raw, len(raw) - 24)[0] != 0xf4fa6f45970d41d8):
+                raise ValueError('maintenance_simple_entry_unverified')
+        total += proof['size']
+        if total > ff.MAX_BYTES:
+            raise ValueError('maintenance_simple_cache_byte_budget')
+        proofs.append(proof)
+    return proofs
+
+
+def _native_catalog(root, relative, kind):
+    proof, raw = ff.read_file(root, relative, content=True)
+    obj = _json(raw)
+    if not isinstance(obj, dict):
+        raise ValueError('maintenance_catalog_schema_unknown')
+    fields = {
+        'codex_apps_server_info': ({'schema_version', 'server_info'}, 'server_info', dict, {1}),
+        'codex_app_directory': ({'schema_version', 'connectors'}, 'connectors', list, {1}),
+        'remote_plugin_catalog': ({'schema_version', 'fetched_at', 'plugins'}, 'plugins', list, {1}),
+        'codex_apps_tools': ({'schema_version', 'tools', 'tool_list_meta', 'discovery_scope'}, 'tools', list, {2, 3, 4}),
+    }
+    allowed, field, expected, versions = fields[kind]
+    if (set(obj) - allowed or type(obj.get('schema_version')) is not int
+            or obj['schema_version'] not in versions or not isinstance(obj.get(field), expected)
+            or kind == 'remote_plugin_catalog' and not isinstance(obj.get('fetched_at'), str)):
+        raise ValueError('maintenance_catalog_schema_unknown')
+    return proof
 
 
 def _migration_proof(root, source):
@@ -348,10 +459,7 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         observations.append(row)
 
     if client in DESKTOP and 'caches' in categories:
-        prefixes = ['']
-        if client == 'codex-desktop':
-            prefixes += ['Default/', 'web/Codex/', 'web/Codex/Default/',
-                         'Roaming/Codex/web/Codex/', 'Roaming/Codex/web/Codex/Default/']
+        prefixes = _browser_prefixes(client, root)
         relatives = []
         for prefix in prefixes:
             http = prefix + ('Cache/Cache_Data' if (root / (prefix + 'Cache/Cache_Data')).exists() else 'Cache')
@@ -367,9 +475,77 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                     candidate(relative, 'caches', 'qualified_chromium_blockfile_cache', expected_files=[index])
             except (OSError, ValueError, RuntimeError) as error:
                 observations.append(_row(root, relative, 'caches', 'unqualified', _qualification_reason(error, 'cache')))
+        for prefix in prefixes:
+            for name in ('js', 'wasm'):
+                relative = prefix + 'Code Cache/' + name
+                if not (root / relative).exists():
+                    continue
+                try:
+                    proofs = _simple_code_cache(root, relative)
+                    if proofs:
+                        candidate(relative, 'caches', 'qualified_chromium_simple_code_cache', expected_files=proofs)
+                except (OSError, ValueError, RuntimeError) as error:
+                    observations.append(_row(root, relative, 'caches', 'unqualified', _qualification_reason(error, 'simple_cache')))
+    if client in DESKTOP and {'downloads', 'logs'} & set(categories):
+        for prefix in _browser_prefixes(client, root):
+            for path, category, reason in (
+                ('Code Cache/electron-preload', 'caches', 'electron_preload_format_unverified'),
+                ('component_crx_cache', 'downloads', 'component_selection_and_rebuild_proof_required'),
+                ('Crashpad', 'logs', 'crash_incident_and_recovery_review_required'),
+            ):
+                relative = prefix + path
+                if category in categories and (root / relative).exists():
+                    observations.append(_row(root, relative, category, 'retain', reason))
+
+    if client == 'codex' and 'caches' in categories:
+        for kind in ('codex_apps_tools', 'codex_apps_server_info', 'codex_app_directory', 'remote_plugin_catalog'):
+            directory = 'cache/' + kind
+            for name in _names(root, directory):
+                relative = directory + '/' + name
+                try:
+                    if not re.fullmatch(r'[0-9a-f]{16,64}\.json', name):
+                        raise ValueError('maintenance_catalog_name_unknown')
+                    proof = _native_catalog(root, relative, kind)
+                    if (root / relative).stat().st_mtime_ns < cutoff_ns:
+                        candidate(relative, 'caches', 'qualified_discovery_catalog_past_retention', expected_files=[proof])
+                    else:
+                        observations.append(_row(root, relative, 'caches', 'retain', 'recent_discovery_catalog'))
+                except (OSError, ValueError, RuntimeError) as error:
+                    observations.append(_row(root, relative, 'caches', 'unqualified', _qualification_reason(error, 'catalog')))
+        for name in _names(root, 'cache'):
+            if name not in {'codex_apps_tools', 'codex_apps_server_info', 'codex_app_directory', 'remote_plugin_catalog'}:
+                observations.append(_row(root, 'cache/' + name, 'caches', 'retain', 'cache_role_unverified_may_contain_selection_or_resume_state'))
+
+    if client == 't3code' and 'caches' in categories:
+        for name in _names(root, 'userdata'):
+            if not re.fullmatch(r'usage-scan-cache-v[0-9]+\.json', name):
+                continue
+            relative = 'userdata/' + name
+            try:
+                proof, raw = ff.read_file(root, relative, content=True)
+                obj = _json(raw)
+                if (name != 'usage-scan-cache-v11.json' or not isinstance(obj, dict)
+                        or set(obj) != {'sources', 'version', 'models', 'sessions', 'files'}
+                        or type(obj['version']) is not int or obj['version'] != 11
+                        or not all(isinstance(obj[k], dict) for k in ('sources', 'files'))
+                        or not all(isinstance(obj[k], list) for k in ('models', 'sessions'))):
+                    raise ValueError('maintenance_usage_cache_schema_unknown')
+                if (root / relative).stat().st_mtime_ns < cutoff_ns:
+                    candidate(relative, 'caches', 'qualified_usage_scan_cache_past_retention', expected_files=[proof])
+                else:
+                    observations.append(_row(root, relative, 'caches', 'retain', 'recent_usage_scan_cache'))
+            except (OSError, ValueError, RuntimeError) as error:
+                observations.append(_row(root, relative, 'caches', 'unqualified', _qualification_reason(error, 'usage_cache')))
+
+    if client == 'paseo' and 'backups' in categories:
+        for relative in ('agents', 'schedules', 'agent-requests', 'creations'):
+            if (root / relative).exists():
+                observations.append(_row(root, relative, 'backups', 'retain', 'paseo_record_and_recovery_state_use_record_workflow'))
 
     if 'logs' in categories:
         directories = ['logs', 'log', 'userdata/logs']
+        if client == 'codex':
+            directories.append('.sandbox')
         if client == 'codex-desktop':
             directories.append('Local/Codex/Logs')
         for directory in directories:
@@ -382,7 +558,9 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                 if stat.S_ISDIR(info.st_mode):
                     # Session/terminal transcripts retain their owning record authority.
                     observations.append(_row(root, relative, 'logs', 'retain', 'nested_or_session_diagnostics'))
-                elif ((_LOG.fullmatch(name) and relative == directory + '/' + name) or dated_codex) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):
+                elif ((_LOG.fullmatch(name) and relative == directory + '/' + name)
+                      or client == 't3code' and re.fullmatch(r'userdata/logs/server\.trace\.ndjson\.[1-9][0-9]*', relative)
+                      or dated_codex) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):
                     try:
                         if _diagnostic(root, relative, client):
                             candidate(relative, 'logs', 'closed_rotated_diagnostics_past_explicit_retention')
@@ -411,7 +589,10 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                 try:
                     proofs = [_json_proof(root, '.codex-global-state.json'),
                               _json_proof(root, '.codex-global-state.json.bak')]
-                    target_proof = _json_proof(root, name)
+                    # A zero-byte interrupted atomic write has no recoverable
+                    # payload, but still requires valid live and fallback slots.
+                    target_proof = (ff.read_file(root, name)[0] if (root / name).stat().st_size == 0
+                                    else _json_proof(root, name))
                     candidate(name, 'backups', 'orphan_atomic_fallback_generation', proofs=proofs, expected_files=[target_proof])
                 except (OSError, ValueError, RuntimeError):
                     observations.append(_row(root, name, 'backups', 'unqualified', 'valid_current_and_fallback_required'))
@@ -472,6 +653,10 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
     for category, relatives, reason in (
         ('downloads', ('agent-binary-downloads', 'updates', 'pending', 'installer.exe', 'current.blockmap'), 'updater_selection_and_install_receipt_required'),
         ('runtimes', ('claude-code', 'codex-package', 'codex', 'pi', 'tools', 'versions', 'managed-runtime', 'browser-runtime'), 'runtime_container_preserved_unit_decisions_require_review'),
+        ('runtimes', ('runtimes', 'plugins/.plugin-appserver'), 'runtime_selection_and_consumer_review_required'),
+        ('downloads', ('.tmp/plugins', '.tmp/bundled-marketplaces'), 'plugin_extraction_references_and_writer_review_required'),
+        ('logs', ('logs_2.sqlite', 'sqlite/logs_2.sqlite'), 'sqlite_diagnostics_require_record_aware_retention'),
+        ('backups', ('.local-agent-record-janitor', '.local-agent-manager'), 'manager_state_use_state_inventory_cleanup_migrate'),
     ):
         if category in categories:
             for relative in relatives:

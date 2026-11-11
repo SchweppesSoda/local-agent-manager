@@ -96,7 +96,8 @@ def _bases(client):
                 ('pi', 'pi', ('pi.exe', 'pi', 'node_modules/@mariozechner/pi-coding-agent/package.json'))]
     if client == 'codex':
         return [('packages/' + role + '/releases', 'codex', ('bin/codex.exe', 'bin/codex', 'codex.exe', 'codex'))
-                for role in ('standalone', 'app-server')]
+                for role in ('standalone', 'app-server', 'app-server-daemon')] + [
+                    ('.sandbox-bin', 'codex-command-runner', ())]
     if client == 'claude':
         return [('versions', 'claude', ('claude.exe', 'claude'))]
     if client == 'codex-desktop':
@@ -124,14 +125,25 @@ def inventory(client, root):
             unqualified.append({'path': base, 'reason': 'runtime_container_unreadable_or_linked'})
             continue
         for name in names:
+            # Installer release units append a target triple, not a SemVer
+            # prerelease (x86_64 contains an underscore). Keep generic version
+            # parsing strict; qualify this install layout locally.
+            target_release = client == 'codex' and re.fullmatch(
+                r'(.+)-(?:x86_64|aarch64)-(?:pc-windows-msvc|unknown-linux-(?:gnu|musl)|apple-darwin)', name)
+            helper = client == 'codex' and base == '.sandbox-bin' and re.fullmatch(
+                r'codex-command-runner-(.+)\.exe', name)
             if not (release_version(name) or re.fullmatch(r'[0-9a-f]{16,64}', name)
+                    or target_release and release_version(target_release[1])
+                    or helper and release_version(helper[1])
                     or engine == 'pi' and re.fullmatch(r'\d+\.\d+\.\d+-[0-9a-f-]{36}', name)):
+                if client == 'codex':
+                    unqualified.append({'path': base + '/' + name, 'reason': 'runtime_unit_name_unrecognized'})
                 continue
             relative = base + '/' + name
             try:
                 path = ff.checked_path(root, relative)
                 info = path.lstat()
-                if client == 'claude' and stat.S_ISREG(info.st_mode):
+                if (client == 'claude' or helper) and stat.S_ISREG(info.st_mode):
                     present = [relative]
                 else:
                     present = []

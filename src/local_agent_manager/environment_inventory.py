@@ -347,7 +347,7 @@ def _codex_desktop(inv: _Inventory, local: Path | None, roaming: Path | None,
     rows.extend(inv.versioned("codex-desktop", "codex", bin_dir, _names("codex"),
                               "codex_desktop_bundle", unversioned=True))
     if program_files is not None:
-        for package in inv.probe.children(program_files / "WindowsApps", "codex_desktop_windowsapps"):
+        for package in inv.probe.children(program_files / "WindowsApps", "codex_desktop_windowsapps", limit=4096):
             if package.name.casefold().startswith("openai.codex_"):
                 for relative in ("app/resources", "resources"):
                     rows.extend(inv.executables("codex-desktop", "codex", package / relative,
@@ -355,7 +355,7 @@ def _codex_desktop(inv: _Inventory, local: Path | None, roaming: Path | None,
     inv.profile("codex-desktop", "codex", _join(roaming, "Codex"),
                 "desktop_bundle_and_profile", rows, store_scope="frontend_profile")
     if local is not None:
-        for package in inv.probe.children(local / "Packages", "codex_desktop_profile"):
+        for package in inv.probe.children(local / "Packages", "codex_desktop_profile", limit=4096):
             if package.name.casefold().startswith("openai.codex_"):
                 inv.binding("codex-desktop", "codex", package, "desktop_package_profile",
                             store_scope="frontend_profile")

@@ -104,13 +104,19 @@ artifacts through the shared operation store and mutation admission. Inventory
 supports explicit profiles and known default or environment roots for Cindy,
 Codex, Codex desktop, Claude, Pi, T3, Paseo, Antigravity CLI and desktop,
 WorkBuddy, Orca, Herdr and QwenWork. A missing candidate reports its observation
-scope. Custom, portable and additional account profiles require an explicit root.
+scope. Cindy discovery includes its SDK `codex-home`, qualified
+`codex-accounts/<owner>/<account>` homes (reported as client `codex`), and the
+Windows updater WebView profile. Custom and other portable profiles require
+an explicit root. Native account homes remain separate from frontend stores;
+their presence never grants authority to delete sessions.
 The offline artifact writer currently supports Windows file exclusion.
 
 Official Windows Codex MSIX profiles are discovered at the package's `LocalCache`
 root. Cache discovery includes `Roaming/Codex/web/Codex` and its `Default`
-profile; an explicit older `Roaming/Codex` root also supports `web/Codex`.
-Only the registered cache directories and verified blockfile members qualify,
+profile, `codex-browser-app`, and each direct named `Partitions` profile;
+an explicit older `Roaming/Codex` root also supports `web/Codex`.
+Cindy/T3/Paseo share direct partition discovery; Cindy also includes `EBWebView`.
+Only registered cache directories and format-qualified members qualify,
 never cookies, browser local storage, artifact sessions or arbitrary descendants.
 Access-denied or sharing-violation observations report
 `file_in_use_or_access_denied`; they do not establish an unsupported format.
@@ -122,6 +128,23 @@ past retention qualify. Unknown subdirectories, session files and mismatched
 headers remain retained. Explicit `Local/Codex` roots support the same dated
 layout under `logs`. Reports expose file metadata only. The usual frozen
 manifest, client closure, file leases and verification rules still apply.
+
+Native Codex `.sandbox/sandbox.YYYY-MM-DD.log` requires a matching dated
+Codex diagnostic header and retention; `.sandbox` itself is never a removal
+target. T3 rotated `server.trace.ndjson.N` requires an Effect span envelope;
+the current trace and terminal transcripts remain retained.
+
+Native discovery catalogs under the four known `cache/` namespaces require
+recognized JSON schemas, hashed filenames and retention. Plugin exclusion
+settings and unknown cache namespaces remain retained. T3 usage scan cache
+v11 similarly requires its exact envelope and retention; later versions are
+reported as unqualified. These rules do not read bodies into reports.
+
+Plugin extraction trees, Chromium component archives, Electron preload caches,
+crash reports, diagnostic SQLite databases and manager state are visible
+retained observations with an explicit qualification/recovery reason. They
+are not automatically disposable. Paseo schedules, agent requests and creation
+receipts belong to the record recovery workflow, including atomic copies.
 
 ```powershell
 local-agent-manager maintenance inventory --client cindy --json
@@ -140,9 +163,9 @@ accompanies actual OS leases on every selected file and recovery dependency.
 
 | Category | Executable qualification |
 |---|---|
-| `caches` | Chromium blockfile caches in registered cache locations, recognized index magic/version and ordinary known members. Other cache formats are reported as unqualified. |
+| `caches` | Chromium blockfile caches; Simple v9 `Code Cache/js` and `wasm` with verified index checksum, v5 entry headers/footers and exact membership; known native discovery/usage cache schemas past retention. Unknown formats remain unqualified. |
 | `logs` | Dated or rotated diagnostics with a qualified Cindy NDJSON or tracing/electron-log header, past retention. Current files and nested session/terminal diagnostics retain their record ownership. |
-| `backups` | Dated Cindy SQLite backups with a recognized migration marker, healthy compatible current database and two healthy newer generations. Codex atomic fallback temporary generations require valid current and fallback JSON slots. Both generation time and mtime must satisfy retention. |
+| `backups` | Dated Cindy SQLite backups with a recognized migration marker, healthy compatible current database and two healthy newer generations. Codex current/fallback atomic temporary generations, including empty interrupted writes, require valid current and fallback JSON slots. Both generation time and mtime must satisfy retention. |
 | `downloads` | Old unselected electron-updater temporary downloads with qualified pending metadata and frozen selected installer/base dependencies. Pending installers, packages and differential bases retain their updater roles. |
 | `runtimes` | Recognized versioned install units, with an AI-authored review of ownership, selection, shared consumers and rollback. The plan freezes selected units, retained replacements and cited selector/configuration evidence. |
 
@@ -153,7 +176,9 @@ and manager rollback evidence retain their owning workflows. `state cleanup`
 handles manager recovery metadata.
 
 Cache qualification follows Chromium's
-[blockfile format](https://github.com/chromium/chromium/blob/main/net/disk_cache/blockfile/disk_format.h).
+[blockfile format](https://github.com/chromium/chromium/blob/main/net/disk_cache/blockfile/disk_format.h)
+and [Simple entry format](https://github.com/chromium/chromium/blob/main/net/disk_cache/simple/simple_entry_format.h)
+with its [index checksum](https://github.com/chromium/chromium/blob/main/net/disk_cache/simple/simple_index_file.cc).
 Temporary download qualification follows electron-updater's
 [download staging](https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/AppUpdater.ts)
 and [temporary-file selection](https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/DownloadedUpdateHelper.ts).
@@ -247,6 +272,11 @@ binding blocks planning.
 Candidate discovery covers Cindy Codex packages/legacy versions, Claude and Pi
 version directories, standalone Codex release directories, Claude native
 versions, Codex desktop versioned bins and T3 platform/version runtime units.
+Codex installer units recognize supported Rust target triples (including
+`x86_64`), both `app-server-daemon` and legacy `app-server` roles, and versioned
+`.sandbox-bin/codex-command-runner-*.exe` units. Unknown names are reported,
+not silently skipped. Active pointers, separate daemon selection and helper
+consumers still require review; discovery is not retirement approval.
 Use the physical install root for Claude (`~/.local/share/claude`) or Codex
 desktop (`<local appdata>/OpenAI/Codex` or `Programs/OpenAI/Codex`). Runtime
 inventory includes these known install-root candidates. Other layouts retain

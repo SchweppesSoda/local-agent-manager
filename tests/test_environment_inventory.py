@@ -391,6 +391,15 @@ class EnvironmentInventoryTests(unittest.TestCase):
         self.assertEqual(result["runtimes"], [])
         self.assertIn("directory_budget_exceeded", {issue["code"] for issue in result["coverage"]["issues"]})
 
+    def test_msix_profile_is_found_among_more_than_128_other_packages(self):
+        for i in range(140):
+            (self.local / 'Packages' / f'OtherVendor_{i:04}').mkdir(parents=True)
+        package = self.local / 'Packages/OpenAI.Codex_test'
+        package.mkdir()
+        result = self.inventory(clients=('codex-desktop',))
+        self.assertIn(str(package), [b['store_path'] for b in result['bindings']])
+        self.assertFalse(any(i['probe'] == 'codex_desktop_profile' for i in result['coverage']['issues']))
+
 
 if __name__ == "__main__":
     unittest.main()

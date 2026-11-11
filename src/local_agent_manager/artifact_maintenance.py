@@ -90,6 +90,8 @@ def _selected_root(client, root, *, categories):
         return rules.root_path(root)
     observed = {}
     for profile in rules.default_profiles((client,), include_runtime_roots='runtimes' in categories):
+        if profile['client'] != client or profile.get('discovery_error'):
+            continue
         try:
             path = rules.root_path(profile['root'])
         except FileNotFoundError:
@@ -370,6 +372,9 @@ def main(argv=None):
             cutoff = time.time_ns() - args.older_than_days * 86400 * 1000000000
             for profile in profiles:
                 try:
+                    if profile.get('discovery_error'):
+                        reports.append({**profile, 'status': 'unqualified', 'reason': profile['discovery_error']})
+                        continue
                     report = rules.inspect_profile(profile['client'], profile['root'],
                         categories=args.category or rules.CATEGORIES, cutoff_ns=cutoff)
                     report.pop('changes')

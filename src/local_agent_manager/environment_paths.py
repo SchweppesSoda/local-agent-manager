@@ -153,14 +153,15 @@ class BoundedPathProbe:
             self.issue(probe, "unproven_redirect_target", path)
         return True, target
 
-    def children(self, path: Path, probe: str) -> tuple[Path, ...]:
+    def children(self, path: Path, probe: str, *, limit: int | None = None) -> tuple[Path, ...]:
         """List one plain directory or report incomplete coverage; never recurse."""
+        limit = MAX_DIRECTORY_ENTRIES if limit is None else limit
         status, before = self.inspect(path, probe, directory=True)
         if status != "present" or before is None:
             return ()
         try:
             with os.scandir(path) as entries:
-                names = list(islice((entry.name for entry in entries), MAX_DIRECTORY_ENTRIES + 1))
+                names = list(islice((entry.name for entry in entries), limit + 1))
             after = path.lstat()
             if is_redirected(after) or (
                 before.st_dev, before.st_ino, before.st_mtime_ns
@@ -170,7 +171,7 @@ class BoundedPathProbe:
         except OSError:
             self.issue(probe, "enumeration_failed", path)
             return ()
-        if len(names) > MAX_DIRECTORY_ENTRIES:
+        if len(names) > limit:
             # Avoid presenting an order-dependent subset as the newest or only entry.
             self.issue(probe, "directory_budget_exceeded", path)
             return ()
