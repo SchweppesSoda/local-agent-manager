@@ -72,6 +72,37 @@ publication and lock disposition. The runtime content reader uses the original
 frontend lifecycle handle. Unknown opaque formats receive no namespace-wide
 exemption.
 
+## Transcript reference classification
+
+The same PE's `trajectory.proto` and `cortex.proto` descriptors establish
+`gemini_coder.Step` and the SQL step discriminator values: user input 14,
+planner response 15, checkpoint 23, system message 101, generic tool 132.
+The stored `step_payload` is the complete Step. Reference checks require its
+type to match the SQL type and step format 0 before using content exemptions.
+This wire-format qualification does not grant deletion ownership and does not
+require an executable version allowlist. Unknown fields retain byte/escaped-ID
+protection; parent/subtrajectory and structural metadata remain blocked.
+
+`antigravity_cli_references.py` distinguishes textual response/thinking and
+checkpoint summaries from subagent snapshots, sender/recipient, agent render
+references and source-trajectory metadata. Tool-call argument exemptions use
+exact known tool names and argument keys. Generic results additionally check
+the Any type URL: RunCommand field 6 is command text; FileEdit field 3 contains
+DiffBlock → UnifiedDiff → line text. The embedded `exa.cortex.core.tools`
+descriptors and `exa.diff_action_pb` descriptors establish these fields; unknown
+Any types remain protected. Generator ChatModelMetadata's system/message
+prompts are historical model input, not restoration handles.
+
+Known `.system_generated` transcript/chunk files, numeric step output files and
+`task-<number>.log` leaves are diagnostic content. Message JSON exempts only a
+string content field after matching its UUID filename and id; all other fields
+remain protection sources. Unknown leaves and ordinary brain artifacts receive
+the strict check. These exemptions never rewrite content or relax file identity,
+namespace, lease, original-byte preservation or current-state stability checks.
+Cold inspection uses the same rules, including search-index body copies of
+separately qualified transcripts. Synthetic tests exercise passive mentions,
+unknown/real references, escaped IDs, malformed payloads and unchanged bytes.
+
 ## Historical boundary
 
 The original strict completion receipts prove the selected child actions and

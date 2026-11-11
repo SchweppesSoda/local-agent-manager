@@ -26,6 +26,7 @@ from .path_identity import is_local_absolute_locator
 from .record_identity import canonical_path
 from .t3code_cleanup_files import _names
 from .windows_held_files import HeldFiles
+from . import antigravity_cli_references as references
 
 SCHEMA = 'lam.antigravity-cli-files.v1'
 SUMMARY = 'conversation_summaries.db'
@@ -280,8 +281,17 @@ def _protect_reference(root, proof, ids, *, reader=None):
         current, raw = reader(root, entry['path'], content=True)
         if current != entry:
             fail('preserved_file_changed')
-        if any(s.encode() in raw or s in entry['path'] for s in ids):
-            fail('unqualified_profile_restore_reference')
+        references.check_artifact(entry['path'], raw, ids, _reject_profile_reference)
+
+
+def _reject_profile_reference(raw, ids):
+    if references.contains_reference(raw, ids):
+        fail('unqualified_profile_restore_reference')
+
+
+def _reject_trajectory_reference(raw, ids):
+    if references.contains_reference(raw, ids):
+        fail('unselected_trajectory_restore_reference')
 
 
 def _log_link(root):
@@ -350,16 +360,19 @@ def _qualify_sessions(root, rows, selected, directories, *, reader=None, referen
                     or db.execute('SELECT 1 FROM steps WHERE has_subtrajectory IS NOT 0 LIMIT 1').fetchone()):
                 fail('opaque_trajectory_relationship')
             if sid not in selected:
-                # Search privately across typed BLOB/TEXT cells. This is only
-                # a blocker, never a positive ownership relationship.
-                for table in ('steps', 'trajectory_metadata_blob', 'executor_metadata', 'gen_metadata', 'battle_mode_infos'):
+                reject = reference_check or _reject_trajectory_reference
+                for row in db.execute('SELECT * FROM steps'):
+                    references.check_step(row, selected, reject)
+                for row in db.execute('SELECT data FROM gen_metadata'):
+                    if row['data'] is not None:
+                        references.check_generation(row['data'], selected, reject)
+                # Structural payloads keep their strict protection. Transcript
+                # exemptions never establish ownership or expand selection.
+                for table in ('trajectory_metadata_blob', 'executor_metadata', 'battle_mode_infos'):
                     for row in db.execute('SELECT * FROM '+table):
                         for cell in row:
                             raw = cell.encode() if isinstance(cell, str) else cell if isinstance(cell, bytes) else b''
-                            if any(s.encode() in raw for s in selected):
-                                fail('unselected_trajectory_restore_reference')
-                            if reference_check is not None:
-                                reference_check(raw, selected)
+                            reject(raw, selected)
 
 
 def freeze(root, ids, *, binary):

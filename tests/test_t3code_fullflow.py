@@ -328,6 +328,43 @@ class T3CodeFullflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'attachment_closure_unqualified'):
             files.freeze(self.root, [THREAD])
 
+    def test_retained_html_render_is_preserved_with_exact_tool_and_owner(self):
+        attachment_id = KEEP+'-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa-html'
+        payload = {'id': 'html-item', 'threadId': KEEP, 'type': 'dynamic_tool',
+                   'status': 'completed', 'toolName': 't3-code.html_render',
+                   'output': {'htmlRender': {'attachmentId': attachment_id, 'title': 'render', 'height': 250}}}
+        directory = self.root/'userdata/attachments'
+        directory.mkdir(parents=True)
+        path = directory/(attachment_id+'.html')
+        path.write_bytes(b'<html>retained render</html>')
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db, V2+'turn_items', turn_item_id='html-item', thread_id=KEEP,
+                   type='dynamic_tool', status='completed', payload_json=json.dumps(payload))
+            db.commit()
+        files.freeze(self.root, [THREAD])
+        invalid = [
+            {**payload, 'threadId': OTHER},
+            {**payload, 'toolName': 'unknown.html_render'},
+            {**payload, 'status': 'running'},
+            {**payload, 'output': {**payload['output'], 'isError': True}},
+            {**payload, 'output': {'htmlRender': {**payload['output']['htmlRender'], 'restore': 'unknown'}}},
+        ]
+        for index, item in enumerate(invalid):
+            with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+                db.execute(f'UPDATE {V2}turn_items SET payload_json=? WHERE turn_item_id=?',
+                           (json.dumps(item), 'html-item'))
+                db.commit()
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'attachment_closure_unqualified'):
+                files.freeze(self.root, [THREAD])
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f'UPDATE {V2}turn_items SET payload_json=? WHERE turn_item_id=?',
+                       (json.dumps(payload), 'html-item'))
+            db.commit()
+        evidence = files.freeze(self.root, [THREAD])
+        files.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(files.remaining(evidence), 0)
+        self.assertEqual(path.read_bytes(), b'<html>retained render</html>')
+
     def test_image_attachment_preservation_rejects_unknown_siblings_and_text_sidecars(self):
         directory = self.root/'userdata/attachments'
         directory.mkdir(parents=True)

@@ -1366,10 +1366,11 @@ def run_handoff_worker(spec_path: Path) -> int:
             if notify_thread_id and any(t.get("software") == "T3 Code Desktop" for t in closed_for_reopen):
                 op_id = (receipt.get("plan") or {}).get("operation_id") or handoff_id
                 status_label = receipt["goal_status"]
+                outcome = "清理已完成" if receipt["goal_satisfied"] else "清理未完成"
                 msg = (
-                    f"[local-agent-manager] T3 离线清理与重开已完成："
+                    f"[local-agent-manager] T3 离线流程已结束，{outcome}："
                     f"operation_id={op_id}，goal_status={status_label}，"
-                    f"级联清理 {len(spec['expanded_thread_ids'])} 条 T3 记录。"
+                    f"本次目标范围为 {len(spec['expanded_thread_ids'])} 条 T3 记录。"
                     f"回执文件：{receipt_path}"
                 )
                 try:

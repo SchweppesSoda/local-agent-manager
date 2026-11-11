@@ -28,7 +28,7 @@ def _reject_reference(raw, ids):
             pass
         else:
             decoded = json.dumps(value, ensure_ascii=False).encode()
-    if any(s.encode() in raw or s.encode() in decoded for s in ids):
+    if native.references.contains_reference(raw, ids) or native.references.contains_reference(decoded, ids):
         native.fail('current_restore_reference')
 
 
@@ -96,7 +96,10 @@ class CurrentNative:
                 if not set(fts_ids) <= present:
                     native.fail('current_search_orphan_or_target')
                 for row in db.execute('SELECT * FROM conversations_fts'):
-                    for cell in row:
+                    for key in row.keys():
+                        if key in {'user_body', 'agent_body'}:
+                            continue  # Search copies of separately qualified transcripts.
+                        cell = row[key]
                         if isinstance(cell, (str, bytes)):
                             _reject_reference(cell.encode() if isinstance(cell, str) else cell, ids)
             summary_hash = logical_hash(db)
@@ -210,7 +213,8 @@ class CurrentNative:
                         *(native.SUMMARY+s for s in native.SIDECARS[1:])}:
                 continue
             for proof in tree['files']:
-                _reject_reference(self.read(root, proof['path'], content=True)[1], ids)
+                native.references.check_artifact(proof['path'],
+                    self.read(root, proof['path'], content=True)[1], ids, _reject_reference)
         result = {'schema_version': 'lam.antigravity-cli-current.v1',
             'original_verified_after_sha256': e['summary_after'], 'logical_sha256': summary_hash,
             'summary_schema_sha256': e['summary_schema_sha256'], 'fts_ids': fts_ids,

@@ -614,6 +614,12 @@ local-agent-manager delete run --client t3code --record-id '<完整 T3 ID>' --ha
 已知消息正文、命令执行文本和子任务 prompt 中的 ID 文字也按对话内容保留。
 JSON 恢复字段、未知工具引用和包含目标 ID 的未知键仍作为恢复依赖检查。
 
+其他会话已完成的 `t3-code.html_render` 产物可按已知 `output.htmlRender` 引用
+原样保留；要求 item 的线程身份一致、附件 ID 的线程前缀匹配，并只接受对应的
+`-html.html` 文件。该格式来自 T3 `HtmlRender.publish` 与
+`threadHtmlRenderAttachmentIds` 的存储契约。未知工具、失败输出、未知附件或
+选中会话的附件仍阻挡；此支持只补充保留范围，不授予附件删除权限。
+
 V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核验。已知 Codex／Claude
 导入 cursor 和 transcript 元数据作为只读保护源，按引擎和原生 ID 保护历史来源，
 即使当前 provider home 已改变。直接选择这些导入记录进行完整删除仍会阻挡。
@@ -879,6 +885,15 @@ workspace、设置、凭据、skills、运行文件及诊断日志保留。
 未知注释字段、非空 presence 文件及已打开的锁文件均不绕过。
 日志可能包含历史诊断文本；本功能不承诺全盘敏感文本擦除、云端删除、其他 OS 用户
 或未知复制目录清理。
+
+未选会话中的普通消息、检查点摘要、已知本地工具参数和输出、模型输入快照属于
+保留会话的内容。引用检查按已核实的 protobuf 字段区分这些文字与恢复关系，
+不会因为诊断文字提到目标 ID 就扩大删除范围。未知工具/参数键/字段、子轨迹、
+父关系、结构元数据及真实发送方/接收方仍保护目标。计划与恢复核验共用同一规则。
+`brain/<保留会话>/.system_generated` 只豁免已知 transcript、步骤输出、任务日志
+的精确路径；消息 JSON 只豁免正文，发送方、接收方和未知字段仍检查。其他产物
+继续严格检查，所有保留文件仍参与原字节、身份和文件集合核验。
+字段来源及边界见 [CLI 格式证据](antigravity-implicit-recovery.md#transcript-reference-classification)。
 
 默认、环境指定及额外 `--t3code-root`/`--paseo-root` 均作为保护来源；显式根不取消
 默认保护。T3 所有合格数据库历史单元、Paseo agent/atomic/schedule/creation/receipt

@@ -228,7 +228,7 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
         mutations = (
             ('summary-parent', 'UPDATE conversation_summaries SET parent_conversation_id=?,nesting_depth=1 WHERE conversation_id=?'),
             ('summary-reference', 'UPDATE conversation_summaries SET raw_summary=? WHERE conversation_id=?'),
-            ('fts-reference', 'UPDATE conversations_fts SET user_body=? WHERE conversation_id=?'),
+            ('fts-owner', 'UPDATE conversations_fts SET conversation_id=? WHERE conversation_id=?'),
         )
         for label, sql in mutations:
             path = self.f.native/native.SUMMARY

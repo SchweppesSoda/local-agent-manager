@@ -3,6 +3,7 @@ import base64
 import copy
 from contextlib import closing
 import hashlib
+import json
 from pathlib import Path
 import re
 
@@ -81,6 +82,7 @@ def _preserve_other_attachments(root, directory, ids):
                 json_extract(a.value,'$.name') AS name,json_extract(a.value,'$.type') AS type
             FROM {V2}messages AS t,json_each(t.payload_json,'$.attachments') AS a
             WHERE a.type='object' AND json_extract(a.value,'$.type') IN ('file','image')''')
+        attachments.extend(_html_render_attachments(db))
     allowed = set()
     for row in attachments:
         if row['thread_id'] in ids or not isinstance(row['id'], str):
@@ -106,6 +108,41 @@ def _preserve_other_attachments(root, directory, ids):
     if set(directory.get('entries', ())) != allowed:
         fail('attachment_closure_unqualified')
     return [frozen_files.read_file(root, directory['path'] + '/' + name)[0] for name in sorted(allowed)]
+
+
+def _html_render_attachments(db):
+    """Known completed HTML render outputs are retained thread-owned uploads.
+
+    T3's HtmlRender.publish writes <createAttachmentId(threadId, 'html')>.html;
+    threadHtmlRenderAttachmentIds requires the same thread segment. This only
+    proves preservation of other threads' files, never authorizes deletion.
+    """
+    from .environment_config import _unique_object
+    from .t3code_store import V2, rows
+    result = []
+    for row in rows(db, f'''SELECT thread_id,payload_json FROM {V2}turn_items
+            WHERE type='dynamic_tool' AND status='completed'
+            AND json_extract(payload_json,'$.toolName')='t3-code.html_render' '''):
+        try:
+            item = json.loads(row['payload_json'], object_pairs_hook=_unique_object)
+            output = item.get('output')
+            if (item.get('threadId') != row['thread_id'] or item.get('type') != 'dynamic_tool'
+                    or item.get('status') != 'completed' or not isinstance(output, dict)
+                    or set(output) - {'htmlRender', 'message', 'isError'}
+                    or output.get('isError', False) is not False):
+                continue
+            render = output.get('htmlRender')
+            if (not isinstance(render, dict) or set(render) - {'attachmentId', 'title', 'height', 'heights'}
+                    or not isinstance(render.get('attachmentId'), str)
+                    or not render['attachmentId'].endswith('-html')
+                    or not isinstance(render.get('title'), str)
+                    or type(render.get('height')) not in (int, float)):
+                continue
+            result.append({'thread_id': row['thread_id'], 'id': render['attachmentId'],
+                           'type': 'file', 'name': 'render.html'})
+        except (ValueError, TypeError):
+            continue
+    return result
 
 
 def freeze(root, ids, *, native_ids=()):
