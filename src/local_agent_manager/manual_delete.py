@@ -441,15 +441,18 @@ def frontend_actions_after_native_success(
 CatalogBuilder = Callable[[], Any]
 
 
-def build_manual_delete_plan(catalog: Any) -> ManualDeletePlan:
+def build_manual_delete_plan(catalog: Any, *, record_ids: Iterable[str] | None = None) -> ManualDeletePlan:
     """Build HIGH-risk, per-root actions from a read-only session catalog.
 
     Inventory structures are read through the small adapter helpers below so
     current ``records/conversations`` and ``errors/failures`` aliases remain
     compatible. Missing safety fields never receive permissive defaults.
+    ``record_ids`` limits action materialization only; every catalog record,
+    duplicate, failure and descendant remains a protection source.
     """
 
     records, catalog_structure_errors = _catalog_records(catalog)
+    selected_ids = None if record_ids is None else frozenset(record_ids)
     failures, failure_structure_errors = _catalog_failures(catalog)
     errors = [*catalog_structure_errors, *failure_structure_errors]
 
@@ -499,6 +502,7 @@ def build_manual_delete_plan(catalog: Any) -> ManualDeletePlan:
             blocking_failures=tuple(blocking_failures),
         )
         for _key, record in sorted(by_target.items())
+        if selected_ids is None or _key[1] in selected_ids
     )
     return ManualDeletePlan(
         active_adapters=tuple(getattr(catalog, "active_adapters", ())),

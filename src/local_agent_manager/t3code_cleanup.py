@@ -370,7 +370,9 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
                 files.fail("native_catalog_incomplete")
             if manual_catalog is not None:
                 files.fail("multiple_codex_roots_unqualified")
-            plan = build_manual_delete_plan(catalog)
+            # Retain the whole protection catalog, but materialize only the
+            # already selected native roots and their full descendant scopes.
+            plan = build_manual_delete_plan(catalog, record_ids=ids)
             result = coordinator._native_manual_context(native, catalog, plan)
             context, manual_catalog, manual_plan = result[0], catalog, plan
             chosen = [a for a in context.plan.actions if a.target.thread_id in ids]

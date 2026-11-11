@@ -40,6 +40,21 @@ class FakeAppServer:
 
 
 class ManualDeleteTests(unittest.TestCase):
+    def test_selected_materialization_preserves_full_descendant_and_protection_proof(self):
+        catalog = self.execution_catalog()
+        full = build_manual_delete_plan(catalog)
+        root = next(a for a in full.actions if a.thread_id == 'root-thread')
+        scoped = build_manual_delete_plan(catalog, record_ids=[root.thread_id])
+        self.assertEqual(scoped.actions, (root,))
+        self.assertEqual(scoped.errors, full.errors)
+        self.assertEqual(scoped.actions[0].approval_payload(), root.approval_payload())
+        # A catalog failure in an unselected record still prevents permissive
+        # materialization; this selector never filters the protection catalog.
+        duplicate = replace(catalog, records=(*catalog.records, catalog.records[-1]))
+        scoped = build_manual_delete_plan(duplicate, record_ids=[root.thread_id])
+        self.assertTrue(scoped.errors)
+        self.assertFalse(scoped.actions[0].available)
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
