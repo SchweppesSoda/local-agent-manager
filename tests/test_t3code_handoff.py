@@ -386,6 +386,56 @@ class T3CodeHandoffTests(unittest.TestCase):
             ],
         )
 
+    def test_human_mode_streams_preflight_and_worker_progress_to_terminal(self) -> None:
+        def fake_spawn(spec_path: Path) -> int:
+            spec = strict_json_load(spec_path)
+            events_path = Path(spec["handoff_dir"]) / "events.jsonl"
+            lines = [
+                json.dumps({"event": ev})
+                for ev in (
+                    "worker_started",
+                    "t3_quiescent",
+                    "targets_closed",
+                    "plan_ready",
+                    "apply_finished",
+                    "cold_verify_finished",
+                    "targets_reopened",
+                    "worker_finished",
+                )
+            ]
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            write_new_json(
+                Path(spec["receipt_path"]),
+                {
+                    "schema_version": HANDOFF_RECEIPT_SCHEMA,
+                    "handoff_id": spec["handoff_id"],
+                    "goal_status": "complete",
+                    "goal_satisfied": True,
+                    "errors": [],
+                },
+            )
+            return 65432
+
+        with (
+            patch("local_agent_manager.t3code_handoff._qualify_lifecycle_targets", return_value=[]),
+            patch("local_agent_manager.t3code_handoff.windows_confirmation", return_value=True),
+            patch("local_agent_manager.t3code_handoff._spawn_detached_worker", side_effect=fake_spawn),
+        ):
+            out, err = StringIO(), StringIO()
+            code = main(
+                ["delete", "run", "--client", "t3code", "--record-id", TARGET_THREAD, "--handoff"],
+                stdout=out,
+                stderr=err,
+            )
+        self.assertEqual(code, 0, err.getvalue())
+        stderr_text = err.getvalue()
+        self.assertIn("[预检 1/4]", stderr_text)
+        self.assertIn("[预检 4/4]", stderr_text)
+        self.assertIn("[执行 1/7]", stderr_text)
+        self.assertIn("[执行 7/7]", stderr_text)
+        self.assertIn("[完成] 最终状态：complete", stderr_text)
+        self.assertIn("complete", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

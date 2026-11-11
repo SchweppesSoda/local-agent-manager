@@ -471,6 +471,52 @@ def _spawn_detached_worker(spec_path: Path) -> int:
     return int(payload["ProcessId"])
 
 
+_EVENT_LABELS: dict[str, str] = {
+    "worker_started": "[执行 1/7] 独立清理进程已启动，正在等待 T3 当前回合落盘...",
+    "t3_quiescent": "[执行 2/7] T3 已落盘静止，正在关闭已确认的桌面客户端...",
+    "targets_closed": "[执行 3/7] 客户端已全部退出，正在核验历史操作锁并生成离线清理计划...",
+    "preflight_children_settled": "[执行 3/7] 已自动结算历史残留预检锁，正在生成离线清理计划...",
+    "plan_ready": "[执行 4/7] 离线清理计划与范围校验通过，正在执行本地完整清理...",
+    "apply_finished": "[执行 5/7] 本地记录与缓存清理完成，正在执行独立冷启动核验 (operation verify)...",
+    "cold_verify_finished": "[执行 6/7] 冷启动核验完成，正在自动重开桌面客户端...",
+    "targets_reopened": "[执行 7/7] 桌面客户端已自动重开，正在写入最终回执与会话通知...",
+}
+
+
+def _follow_worker_events(
+    *,
+    events_path: Path,
+    receipt_path: Path,
+    worker_pid: int,
+    stderr: Any,
+    timeout_seconds: float = 600.0,
+) -> Mapping[str, Any] | None:
+    seen_lines = 0
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        finished = False
+        if events_path.is_file():
+            lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for raw in lines[seen_lines:]:
+                seen_lines += 1
+                row = json.loads(raw)
+                ev = str(row.get("event") or "")
+                if ev in _EVENT_LABELS:
+                    stderr.write(f"{_EVENT_LABELS[ev]}\n")
+                    stderr.flush()
+                elif ev == "worker_error":
+                    stderr.write(f"[异常] {row.get('error')}\n")
+                    stderr.flush()
+                elif ev == "worker_finished":
+                    finished = True
+        if finished and receipt_path.is_file():
+            return strict_json_load(receipt_path)
+        if worker_pid > 0 and _kernel_process_start_unix(worker_pid) is None and receipt_path.is_file():
+            return strict_json_load(receipt_path)
+        time.sleep(0.3)
+    return strict_json_load(receipt_path) if receipt_path.is_file() else None
+
+
 def start_t3code_handoff(
     args: argparse.Namespace,
     *,
@@ -479,9 +525,17 @@ def start_t3code_handoff(
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     prompt: Callable[[str], bool] | None = None,
     spawner: Callable[[Path], int] | None = None,
+    stderr: Any = None,
 ) -> dict[str, Any]:
-    del progress_callback
     prompt_fn = windows_confirmation if prompt is None else prompt
+    human_mode = stderr is not None and not bool(getattr(args, "json", False))
+
+    def _step(msg: str, **fields: Any) -> None:
+        if progress_callback is not None:
+            progress_callback({"stage": "handoff_preflight", "message": msg, **fields})
+        if human_mode:
+            stderr.write(f"{msg}\n")
+            stderr.flush()
     if os.name != "nt":
         return {
             "schema_version": "larj.operation-result.v1",
@@ -528,6 +582,7 @@ def start_t3code_handoff(
             notify_raw = getattr(args, "notify_thread_id", None)
             notify_thread_id = identifier(notify_raw.removeprefix("t3code:")) if notify_raw else None
 
+            _step("[预检 1/4] 正在发现 T3 会话绑定与级联删除范围...")
             try:
                 manifest = (
                     load_manifest(args.t3code_bindings)
@@ -589,10 +644,14 @@ def start_t3code_handoff(
             target_refs = [ref for ref in ref_snapshot.references if ref.frontend_id in expanded_set]
             native_record_count = len({(ref.engine, ref.native_id) for ref in target_refs})
 
+            _step(
+                f"[预检 2/4] 已定位级联范围（{len(expanded_thread_ids)} 条 T3 记录、{native_record_count} 条原生记录），正在检查历史操作锁..."
+            )
             recoverable_children = _inspect_store_journals(
                 coordinator,
                 [t3_root, *(Path(raw_root) for _, _, raw_root in target_stores)],
             )
+            _step("[预检 3/4] 正在核实需关闭并自动重开的桌面客户端进程...")
             target_specs = _qualify_lifecycle_targets(
                 t3_root=t3_root,
                 manifest=manifest,
@@ -602,6 +661,7 @@ def start_t3code_handoff(
                 native_record_count=native_record_count,
             )
 
+        _step("[预检 4/4] 已弹出置顶确认窗口（请点击“确定”继续，默认焦点为“取消”）...")
         if target_specs:
             actions = ("close", "restart") if any(item["reopen"] for item in target_specs) else ("close",)
             lifecycle_scope = LifecycleScope(
@@ -729,7 +789,7 @@ def start_t3code_handoff(
         spec_path = handoff_dir / "spec.json"
         write_new_json(spec_path, spec)
         worker_pid = (spawner or _spawn_detached_worker)(spec_path)
-        return {
+        result: dict[str, Any] = {
             "schema_version": "larj.operation-result.v1",
             "document_type": "operation_result",
             "command": "delete",
@@ -760,6 +820,31 @@ def start_t3code_handoff(
             ],
             "blockers": [],
         }
+        if human_mode and spawner is None:
+            _step(f"[交接已启动] 独立清理进程 PID {worker_pid}，正在实时跟踪执行进度（回执：{receipt_path}）...")
+            final_receipt = _follow_worker_events(
+                events_path=handoff_dir / "events.jsonl",
+                receipt_path=receipt_path,
+                worker_pid=worker_pid,
+                stderr=stderr,
+            )
+            if isinstance(final_receipt, Mapping):
+                result["status"] = "handoff_completed"
+                result["goal_status"] = str(final_receipt.get("goal_status") or "unknown")
+                result["goal_satisfied"] = bool(final_receipt.get("goal_satisfied", False))
+                result["modified"] = result["goal_satisfied"]
+                for err in final_receipt.get("errors", ()) or ():
+                    if isinstance(err, Mapping):
+                        result["blockers"].append({
+                            "blocker_code": str(err.get("code") or "worker_error"),
+                            "scope": "handoff_worker",
+                            "severity": "error",
+                            "retryable": True,
+                            "message": str(err.get("message") or ""),
+                        })
+                icon = "[完成]" if result["goal_satisfied"] else "[未完全完成]"
+                _step(f"{icon} 最终状态：{result['goal_status']}；回执已写入 {receipt_path}")
+        return result
     except HandoffError as exc:
         blocker: dict[str, Any] = {
             "blocker_code": exc.code,
@@ -1122,6 +1207,13 @@ def run_handoff_worker(spec_path: Path) -> int:
                             f"无法结算残留预检锁 {item['operation_id']}: {child_res.get('blockers')}",
                         )
 
+                if receipt["settled_preflight_children"]:
+                    _append_worker_event(
+                        events_path,
+                        "preflight_children_settled",
+                        count=len(receipt["settled_preflight_children"]),
+                    )
+
                 plan_path = handoff_dir / "cleanup.plan.json"
                 warm_coordinator = OperationCoordinator(CleanupService())
                 plan_argv = [
@@ -1224,6 +1316,8 @@ def run_handoff_worker(spec_path: Path) -> int:
                 except Exception as exc:
                     info = {"software": target.get("software"), "reopened": False, "error": str(exc)}
                 receipt["reopened_targets"].append(info)
+            if receipt["reopened_targets"]:
+                _append_worker_event(events_path, "targets_reopened", count=len(receipt["reopened_targets"]))
             receipt["completed_at"] = utc_now()
             _atomic_write_json(receipt_path, receipt)
 

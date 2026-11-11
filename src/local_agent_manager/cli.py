@@ -1410,7 +1410,7 @@ def _write_operation_human(
             f"项目：{_display_value(', '.join(map(str, projects)))}；"
             f"引擎：{_display_value(', '.join(map(str, engines)))}\n"
         )
-    for key in ("plan_sha256", "plan_path"):
+    for key in ("plan_sha256", "plan_path", "receipt_path"):
         if payload.get(key):
             stdout.write(f"  {key}：{_display_value(payload[key], max_width=240)}\n")
     groups = payload.get("batches") or payload.get("child_batches") or payload.get("progress")
@@ -1581,6 +1581,7 @@ def _run_operation_backend(
                     coordinator=coordinator,
                     scope=scope or {},
                     progress_callback=progress_callback,
+                    stderr=stderr,
                 )
                 return _emit_operation_payload(result, json_output=bool(args.json), stdout=stdout, stderr=stderr)
             if (scope or {}).get("t3code_only") or (scope or {}).get("paseo_only"):
