@@ -130,6 +130,33 @@ class T3CodeHandoffTests(unittest.TestCase):
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["blockers"][0]["blocker_code"], "notify_thread_in_deletion_scope")
 
+    def test_isolated_desktop_returns_structured_blocker_without_hanging(self) -> None:
+        with (
+            patch("local_agent_manager.t3code_handoff._qualify_lifecycle_targets", return_value=[]),
+            patch(
+                "local_agent_manager.t3code_handoff.windows_confirmation",
+                side_effect=RuntimeError("interactive Windows desktop unavailable (WinSta0\\exebox-test)"),
+            ),
+        ):
+            out, err = StringIO(), StringIO()
+            code = main(
+                [
+                    "delete",
+                    "run",
+                    "--client",
+                    "t3code",
+                    "--record-id",
+                    TARGET_THREAD,
+                    "--handoff",
+                    "--json",
+                ],
+                stdout=out,
+                stderr=err,
+            )
+        self.assertEqual(code, 3)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["blockers"][0]["blocker_code"], "interactive_desktop_unavailable")
+
     def test_cancel_declines_without_creating_handoff_files_and_confirm_starts_worker(self) -> None:
         fake_targets = [
             {

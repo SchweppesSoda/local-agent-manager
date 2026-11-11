@@ -42,17 +42,66 @@ class LifecycleScope:
             raise ValueError('invalid run identity')
 
 
+def is_interactive_windows_desktop():
+    """Return (is_default_visible_desktop, label) for the current Win32 thread."""
+    if os.name != 'nt':
+        return False, 'non-windows'
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    kernel.GetCurrentThreadId.restype = wintypes.DWORD
+    user.GetProcessWindowStation.restype = wintypes.HANDLE
+    user.GetThreadDesktop.argtypes = (wintypes.DWORD,)
+    user.GetThreadDesktop.restype = wintypes.HANDLE
+    user.GetUserObjectInformationW.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    )
+    user.GetUserObjectInformationW.restype = wintypes.BOOL
+
+    def _obj_name(handle):
+        if not handle:
+            return ''
+        buf = ctypes.create_unicode_buffer(256)
+        needed = wintypes.DWORD()
+        if not user.GetUserObjectInformationW(handle, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)):
+            return ''
+        return buf.value
+
+    class _USEROBJECTFLAGS(ctypes.Structure):
+        _fields_ = [('fInherit', wintypes.BOOL), ('fReserved', wintypes.BOOL), ('dwFlags', wintypes.DWORD)]
+
+    winsta = user.GetProcessWindowStation()
+    desk = user.GetThreadDesktop(kernel.GetCurrentThreadId())
+    winsta_name = _obj_name(winsta)
+    desk_name = _obj_name(desk)
+    flags = _USEROBJECTFLAGS()
+    needed = wintypes.DWORD()
+    visible = bool(
+        winsta
+        and user.GetUserObjectInformationW(winsta, 1, ctypes.byref(flags), ctypes.sizeof(flags), ctypes.byref(needed))
+        and (flags.dwFlags & 0x1)
+    )
+    label = f'{winsta_name}\\{desk_name}' if (winsta_name or desk_name) else 'unknown'
+    ok = visible and winsta_name.casefold() == 'winsta0' and desk_name.casefold() == 'default'
+    return ok, label
+
+
 def windows_confirmation(message):
     """Interactive only. Cancel is default; never substitute --yes or a receipt."""
     if os.name != 'nt':
         raise RuntimeError('interactive Windows confirmation unavailable')
+    ok, desk_label = is_interactive_windows_desktop()
+    if not ok:
+        raise RuntimeError(f'interactive Windows desktop unavailable ({desk_label})')
     import ctypes
     from ctypes import wintypes
     box = ctypes.WinDLL('user32', use_last_error=True).MessageBoxW
     box.argtypes = (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT)
     box.restype = ctypes.c_int
-    # OK/CANCEL, warning, second/default button, foreground, task modal.
-    return box(None, message, 'Agent lifecycle confirmation', 0x1 | 0x30 | 0x100 | 0x10000 | 0x2000) == 1
+    # OK/CANCEL, warning, second/default button, system modal, foreground, topmost.
+    return box(None, message, 'Agent lifecycle confirmation', 0x1 | 0x30 | 0x100 | 0x1000 | 0x10000 | 0x40000) == 1
 
 
 class LifecycleGate:

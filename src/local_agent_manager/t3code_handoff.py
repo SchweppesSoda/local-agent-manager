@@ -430,10 +430,20 @@ def _qualify_lifecycle_targets(
     return specs
 
 
+def _python_interpreter() -> str:
+    candidate = Path(sys.executable)
+    if candidate.name.casefold().startswith("python"):
+        return str(candidate)
+    base = getattr(sys, "_base_executable", None)
+    if isinstance(base, str) and base and Path(base).is_file():
+        return base
+    return str(candidate)
+
+
 def _spawn_detached_worker(spec_path: Path) -> int:
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     worker_script = Path(__file__).resolve()
-    cmd_line = subprocess.list2cmdline([sys.executable, "-B", str(worker_script), "--worker", str(spec_path)])
+    cmd_line = subprocess.list2cmdline([_python_interpreter(), "-B", str(worker_script), "--worker", str(spec_path)])
     ps_script = (
         "$ErrorActionPreference='Stop'; "
         "$res = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
@@ -603,6 +613,12 @@ def start_t3code_handoff(
             try:
                 gate.confirm()
             except RuntimeError as exc:
+                if "desktop unavailable" in str(exc):
+                    raise HandoffError(
+                        "interactive_desktop_unavailable",
+                        f"当前进程位于隔离桌面 ({exc})，无法在主桌面弹出确认窗口；请在本机 PowerShell、Windows Terminal 或 T3 内置终端直接运行此命令。",
+                        retryable=True,
+                    ) from exc
                 if "declined" in str(exc):
                     return {
                         "schema_version": "larj.operation-result.v1",
@@ -632,7 +648,17 @@ def start_t3code_handoff(
                 f"{native_record_count} 条原生记录）。\n"
                 f"是否确认执行？"
             )
-            if prompt_fn(summary_msg) is not True:
+            try:
+                confirmed = prompt_fn(summary_msg)
+            except RuntimeError as exc:
+                if "desktop unavailable" in str(exc):
+                    raise HandoffError(
+                        "interactive_desktop_unavailable",
+                        f"当前进程位于隔离桌面 ({exc})，无法在主桌面弹出确认窗口；请在本机 PowerShell、Windows Terminal 或 T3 内置终端直接运行此命令。",
+                        retryable=True,
+                    ) from exc
+                raise
+            if confirmed is not True:
                 return {
                     "schema_version": "larj.operation-result.v1",
                     "document_type": "operation_result",
@@ -913,8 +939,12 @@ def _reopen_desktop_target(target: Mapping[str, Any]) -> dict[str, Any]:
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     script = (
         "$ErrorActionPreference='Stop'; "
+        "try { "
         "$shell = New-Object -ComObject Shell.Application; "
-        "$shell.ShellExecute($env:LAM_REOPEN_EXE, '', $env:LAM_REOPEN_WORKDIR, 'open', 1)"
+        "$shell.ShellExecute($env:LAM_REOPEN_EXE, '', $env:LAM_REOPEN_WORKDIR, 'open', 1) "
+        "} catch { "
+        "Start-Process -FilePath $env:LAM_REOPEN_EXE -WorkingDirectory $env:LAM_REOPEN_WORKDIR | Out-Null "
+        "}"
     )
     env = {k: v for k, v in os.environ.items() if k not in _AMBIENT_PROVIDER_ENV_VARS}
     env["LAM_REOPEN_EXE"] = str(exe)
