@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 
-from . import paseo_cleanup_files as files, paseo_lifecycle, paseo_indexeddb, paseo_localstorage
+from . import paseo_cleanup_files as files, paseo_lifecycle, paseo_indexeddb, paseo_localstorage, paseo_managed_attachments as attachments
 from .paseo_bound_adapter import PaseoBoundAdapter, validate_manifest, native_catalog
 from .herdr_cleanup import native_remaining as generic_native_remaining, pi_reference_matches_action
 from . import antigravity_cli_cleanup as cli_native, antigravity_cli_joint as cli_joint
@@ -39,6 +39,8 @@ def validate(evidence):
         files.fail("closure_invalid")
     manifest = validate_manifest(evidence["binding_manifest"])
     files.validate(evidence["files"])
+    if evidence.get("managed_attachments") is not None and evidence["managed_attachments"]["root"] != evidence["root"]:
+        files.fail("managed_attachment_root_changed")
     if (canonical_path(manifest["profile_root"]) != canonical_path(evidence["root"])
             or evidence["selected_agent_ids"] != evidence["files"]["agent_ids"]):
         files.fail("closure_root_changed")
@@ -180,6 +182,8 @@ def residuals(document):
     remaining = files.remaining(evidence["files"])
     for desktop in evidence["desktop"]:
         remaining += paseo_indexeddb.remaining(desktop["indexeddb"]) + paseo_localstorage.remaining(desktop["localstorage"])
+    if evidence.get("managed_attachments") is not None:
+        remaining += attachments.remaining(evidence["managed_attachments"])
     if remaining:
         result.append(action_id(evidence))
     return list(dict.fromkeys(result))
@@ -309,10 +313,18 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             "selected_agent_ids": agent_ids, "files": files.freeze(adapter.profile_root, agent_ids), "native_targets": targets,
             "references": [ref.to_dict() for ref in approved_refs], "selectors": list(selectors),
             "frontend_id": "paseo:" + digest(agent_ids)[:24], "desktop": []}
+        evidence["managed_attachments"] = attachments.freeze(adapter.profile_root, agent_ids,
+            {row["id"] for row in adapter.observations})
+        managed_names = attachments.names(evidence["managed_attachments"])
+        if managed_names and not adapter.manifest["desktop_profiles"]:
+            files.fail("managed_attachment_desktop_coverage_required")
         for profile in adapter.manifest["desktop_profiles"]:
             root = Path(profile["root"])
-            evidence["desktop"].append({"indexeddb": paseo_indexeddb.freeze(root, profile["electron_runtime"], adapter.manifest["server_id"], agent_ids),
-                "localstorage": paseo_localstorage.freeze(root, adapter.manifest["server_id"], agent_ids)})
+            desktop = {"indexeddb": paseo_indexeddb.freeze(root, profile["electron_runtime"], adapter.manifest["server_id"], agent_ids, managed_names=managed_names or None),
+                "localstorage": paseo_localstorage.freeze(root, adapter.manifest["server_id"], agent_ids, managed_names=managed_names or None)}
+            if any((desktop[key].get("observation") or {}).get("protected_managed_names") for key in desktop):
+                files.fail("managed_attachment_preserved_reference")
+            evidence["desktop"].append(desktop)
         from .agent_operations import action_binding
         evidence["native_actions"] = [action_binding(a) for a in actions]
         for item in evidence["native_actions"]:
@@ -367,6 +379,8 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
         if approved.get(str(action.action_id)) != rendered:
             files.fail("execution_action_unapproved")
     with paseo_lifecycle.hold(evidence, census=census):
+        if evidence.get("managed_attachments") is not None:
+            attachments.remaining(evidence["managed_attachments"])
         token = _ticket.set((json.loads(json.dumps(evidence)), True))
         try:
             with cli_joint.execution_scope(document, evidence, 'paseo', census):
@@ -401,6 +415,8 @@ def execute(evidence, *, phase_callback):
         for module, item, family in prepared:
             module.install(item, family, phase_callback=phase_callback)
         files.apply(evidence["files"], phase_callback=phase_callback)
+        if evidence.get("managed_attachments") is not None:
+            attachments.apply(evidence["managed_attachments"], phase_callback=phase_callback)
     if files.remaining(evidence["files"]) or any(paseo_indexeddb.remaining(d["indexeddb"]) + paseo_localstorage.remaining(d["localstorage"]) for d in evidence["desktop"]):
         files.fail("frontend_after_unverified")
     phase_callback("verified")

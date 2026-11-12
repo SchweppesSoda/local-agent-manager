@@ -6,12 +6,12 @@ import subprocess
 from local_agent_record_janitor import office_leveldb as level
 
 
-def local_storage(root, server, selected, keep, *, inspect=False, attachment=False):
+def local_storage(root, server, selected, keep, *, inspect=False, attachment=False, managed_reference=False):
     node, dependency, helper = level.runtime()
     path = Path(root) / "Local Storage/leveldb"
     path.parent.mkdir(parents=True, exist_ok=True)
     request = {"path": str(path), "server": server, "selected": selected, "keep": keep,
-               "inspect": inspect, "attachment": attachment}
+               "inspect": inspect, "attachment": attachment, "managed_reference": managed_reference}
     script = r'''
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const h=require(process.argv[1]),q=JSON.parse(fs.readFileSync(0,'utf8'));
@@ -24,6 +24,7 @@ const drafts={version:5,state:{drafts:{
  [`agent:${q.server}:${q.keep}`]:record('KEEP_LOCAL'),
  [`agent:remote:${q.selected}`]:record('KEEP_REMOTE')},createModalDraft:record('KEEP_MODAL')}};
 if(q.attachment) drafts.state.drafts[`agent:${q.server}:${q.selected}`].input.attachments=[{unknown:'external'}];
+if(q.managed_reference) drafts.state.createModalDraft.input.text='KEEP_MODAL att_msg_1794040100204_fixture.png';
 const tab=(tabId,agentId)=>({tabId,target:{kind:'agent',agentId},createdAt:1});
 const layout={version:2,state:{layoutByWorkspace:{[`${q.server}:workspace`]:{
  root:{kind:'pane',pane:{id:'pane',tabIds:['erase','keep'],focusedTabId:'erase',tabs:[tab('erase',q.selected),tab('keep',q.keep)]}},focusedPaneId:'pane'}}}};

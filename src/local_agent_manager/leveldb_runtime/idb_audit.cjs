@@ -57,31 +57,60 @@ function logicalDigest(logical) {
   }
   return hash.digest('hex');
 }
-function audit(root,{v8Version=16,blinkVersion=21}={}) {
+function utf16(raw) {
+  if (raw.length%2) fail('idb_blob_closure_unverified');
+  return Buffer.from(raw).swap16().toString('utf16le');
+}
+function wrappedBlob(row,logical,scope) {
+  const key=idb.decode(row.key),[database,store]=key.prefix, primary=key.suffix[0];
+  const names=logical.filter(r=>{const k=idb.decode(r.key);return k.prefix[0]===0n&&k.suffix[0]===201&&unsignedInt(r.value)===database;});
+  if (names.length!==1) fail('idb_blob_closure_unverified');
+  const name=idb.decode(names[0].key).suffix;
+  const stores=logical.filter(r=>{const k=idb.decode(r.key);return k.prefix[0]===database&&k.prefix[1]===0n&&k.suffix[0]===50&&k.suffix[1]===store&&k.suffix[2]===0;});
+  if (utf16(name[1])!=='paseo_app_0@1'||utf16(name[2])!=='paseo-replica-row-store'||stores.length!==1||utf16(stores[0].value)!=='rows'
+      ||primary.type!==4||primary.data.length!==3||primary.data.some(v=>v.type!==1)) fail('idb_blob_closure_unverified');
+  const [server,kind,id]=primary.data.map(v=>utf16(v.data));
+  if (server!==scope.serverId||!['agent','timeline'].includes(kind)||!scope.agentIds.includes(id)) fail('idb_blob_owner_unselected');
+  const data=logical.filter(r=>{const k=idb.decode(r.key);return k.prefix[0]===database&&k.prefix[1]===store&&k.prefix[2]===1n&&idb.compareIDB(k.suffix[0],primary)===0;});
+  if (data.length!==1) fail('idb_blob_closure_unverified');
+  const c=idb.cursor(row.value);
+  if(c.take(1)[0]!==0) fail('idb_blob_closure_unverified');
+  const number=c.vi(),mime=utf16(c.text()),size=c.vi();
+  if(!c.end()||number===0n||mime!=='application/vnd.blink-idb-value-wrapper'||size>BigInt(Number.MAX_SAFE_INTEGER)) fail('idb_blob_closure_unverified');
+  return {path:`${database}/${Number((number>>8n)&255n).toString(16).padStart(2,'0')}/${number.toString(16)}`,size:Number(size)};
+}
+function audit(root,{v8Version=16,blinkVersion=21,wrappedScope=null}={}) {
+  if(wrappedScope && (typeof wrappedScope.serverId!=='string'||!Array.isArray(wrappedScope.agentIds)||!wrappedScope.agentIds.length
+      ||!wrappedScope.agentIds.every(id=>typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(id)))) fail('idb_blob_scope_unverified');
   const {summary,logical}=readLogical(root),prefix=Buffer.from([0,0,0,0]);
   const metadata=tag=>logical.find(row=>row.key.equals(Buffer.concat([prefix,Buffer.from([tag])])));
   if (unsignedInt(metadata(0)?.value)!==5n) fail('idb_storage_schema_unverified');
   const data=unsignedInt(metadata(2)?.value),v8=Number(data>>32n),blink=Number(data&0xffffffffn);
   if (v8!==v8Version || blink!==blinkVersion) fail('idb_runtime_data_format_incompatible');
   const scopesPrefix=Buffer.concat([prefix,Buffer.from([50])]);
-  let global=false;
+  let global=false;const wrappedFiles=[];
   for (const row of logical) {
     const key=idb.decode(row.key);
     if (key.prefix[0]===0n && key.suffix[0]===50) {
       if (row.key.equals(Buffer.concat([scopesPrefix,Buffer.from([0])])) && row.value.equals(Buffer.from([8,1]))) global=true;
       else fail('idb_pending_scope_recovery_unverified');
     }
-    if (key.prefix[2]===3n || key.prefix[0]===0n && [3,4].includes(key.suffix[0]) && row.value.length) fail('idb_blob_closure_unverified');
+    if (key.prefix[0]===0n && [3,4].includes(key.suffix[0]) && row.value.length) fail('idb_blob_closure_unverified');
+    if (key.prefix[2]===3n) {
+      if(!wrappedScope) fail('idb_blob_closure_unverified');
+      wrappedFiles.push(wrappedBlob(row,logical,wrappedScope));
+    }
   }
+  if(new Set(wrappedFiles.map(f=>f.path)).size!==wrappedFiles.length) fail('idb_blob_closure_unverified');
   if (!global) fail('idb_scopes_schema_unverified');
   const preserved=logical.filter(row=>!([2,5,6].some(tag=>row.key.equals(Buffer.concat([prefix,Buffer.from([tag])])))));
   const dataRecords=logical.filter(row=>{ const key=idb.decode(row.key); return key.prefix[0]!==0n && key.prefix[1]!==0n && key.prefix[2]===1n; }).length;
   return {...summary,schema_version:'larj.paseo-idb-audit.v1',logicalEntries:logical.length,
     rawLogicalSha256:logicalDigest(logical),preservationSha256:logicalDigest(preserved),dataRecords,
-    storageSchema:5,dataFormat:{v8,blink},pendingRecovery:false,blobEntries:false};
+    storageSchema:5,dataFormat:{v8,blink},pendingRecovery:false,blobEntries:!!wrappedFiles.length,wrappedFiles};
 }
 module.exports={audit,readLogical};
 if (require.main===module) {
-  try { process.stdout.write(JSON.stringify(audit(process.argv[2]))+'\n'); }
+  try { process.stdout.write(JSON.stringify(audit(process.argv[2],process.argv[3]?{wrappedScope:JSON.parse(process.argv[3])}:{}))+'\n'); }
   catch(e) { process.stdout.write(JSON.stringify({status:'blocked',code:e.code??'idb_audit_failed'})+'\n'); process.exitCode=1; }
 }

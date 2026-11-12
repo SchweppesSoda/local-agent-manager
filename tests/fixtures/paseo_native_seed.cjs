@@ -35,10 +35,18 @@ function buildRows({serverId='srv_local',selectedId='selected',keepId='keep',oth
 }
 function validateRequest(request) {
   if (request.schema_version!==SCHEMA || !['seed','inspect'].includes(request.mode)
-      || !['normal','auto-increment','legacy','blob'].includes(request.variant??'normal')) throw new Error('fixture_request_invalid');
+      || !['normal','auto-increment','legacy','blob','wrapped-selected','wrapped-keep','managed-reference'].includes(request.variant??'normal')) throw new Error('fixture_request_invalid');
   const root=path.resolve(request.fixtureRoot);
   if (!path.basename(root).startsWith('larj-paseo-fixture-') || fs.lstatSync(root).isSymbolicLink() || !fs.lstatSync(root).isDirectory()) throw new Error('fixture_root_invalid');
   const rows=buildRows(request);
+  if(request.variant==='managed-reference')rows.find(r=>r.serverId!==request.serverId&&r.kind==='timeline').payload=JSON.stringify({private:'att_msg_1794040100204_fixture.png'});
+  if (request.variant==='wrapped-selected'||request.variant==='wrapped-keep') {
+    const id=request.variant==='wrapped-selected'?request.selectedId:request.keepId;
+    const row=rows.find(r=>r.serverId===request.serverId&&r.kind==='timeline'&&r.id===id);
+    const value=JSON.parse(row.payload);
+    value.items[0].text=Array.from({length:8000},(_,i)=>crypto.createHash('sha256').update(`SYNTHETIC_WRAPPED_${i}`).digest('hex')).join('');
+    row.payload=JSON.stringify(value);
+  }
   return {root,profile:path.join(root,'session'),rows};
 }
 async function run(request) {

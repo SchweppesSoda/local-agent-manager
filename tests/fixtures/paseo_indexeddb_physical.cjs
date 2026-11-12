@@ -31,15 +31,36 @@ function build(name) {
   return {files:new Map([['CURRENT',Buffer.from('MANIFEST-000001\n')],['MANIFEST-000001',f.logRecords([manifest])],['000002.log',wal],['000003.ldb',table.bytes]]),
     runtime:{v8Version:name==='format_16_with_runtime_15'?15:16,blinkVersion:21}};
 }
+function wrappedFixture(name) {
+  const fixture=build('valid'), server='srv_test', selected='11111111-1111-4111-8111-111111111111';
+  const dataKey=(index,id=selected)=>Buffer.concat([Buffer.from([0,2,1,index,4]),f.vi(3),
+    ...[server,'timeline',id].map(value=>Buffer.concat([Buffer.from([1]),text(value)]))]);
+  const mime=name==='wrong_mime'?'image/png':'application/vnd.blink-idb-value-wrapper';
+  const blob=Buffer.concat([Buffer.from([name==='file_object'?1:0]),f.vi(507),text(mime),f.vi(123),
+    name==='trailing_object'?Buffer.from([0]):Buffer.alloc(0)]);
+  const database=name==='wrong_database'?'unselected-vault':'paseo-replica-row-store';
+  const store=Buffer.from('rows','utf16le');store.swap16();
+  const operations=[{key:meta(0),value:int(5)},{key:meta(2),value:int((16n<<32n)|21n)},
+    {key:Buffer.from([0,0,0,0,50,0]),value:Buffer.from([8,1])},
+    {key:Buffer.concat([meta(201),text('paseo_app_0@1'),text(database)]),value:int(2)},
+    {key:Buffer.from([0,2,0,0,50,1,0]),value:store},{key:dataKey(3),value:blob}];
+  if(name!=='missing_data')operations.push({key:dataKey(1),value:Buffer.from('SYNTHETIC_DATA')});
+  if(name==='pending_journal')operations.push({key:meta(4),value:Buffer.from([2,1])});
+  if(name==='duplicate_file')for(const index of [1,3])operations.push({key:dataKey(index,'second'),value:index===1?Buffer.from('SYNTHETIC_SECOND'):blob});
+  fixture.files.set('000002.log',f.logRecords([f.writeBatch(3n,operations)]));
+  fixture.runtime.wrappedScope={serverId:server,agentIds:name==='unselected'?['other']:[selected,'second']};
+  return fixture;
+}
 function run() {
   const results=[];
-  for (const name of names) {
-    const fixture=build(name),root=fs.mkdtempSync(path.join(os.tmpdir(),'larj-idb-audit-'));
+  const wrappers=['selected_wrapper','unselected','wrong_database','wrong_mime','file_object','trailing_object','missing_data','pending_journal','duplicate_file'];
+  for (const name of [...names,...wrappers]) {
+    const fixture=wrappers.includes(name)?wrappedFixture(name):build(name),root=fs.mkdtempSync(path.join(os.tmpdir(),'larj-idb-audit-'));
     try {
       for (const [name,raw] of fixture.files) fs.writeFileSync(path.join(root,name),raw,{flag:'wx'});
       let actual='accept',code;
       try { a.audit(root,fixture.runtime); } catch(e) { actual='reject'; code=e.code??e.message; }
-      results.push({name,actual,expected:name==='valid'?'accept':'reject',code});
+      results.push({name,actual,expected:['valid','selected_wrapper'].includes(name)?'accept':'reject',code});
     } finally { fs.rmSync(root,{recursive:true,force:true}); }
   }
   const comparison={rawBytesWrongForIDB:Buffer.compare(user('aa'),user('b'))>0,strictIDBOrder:idb.compare(user('aa'),user('b'))<0};

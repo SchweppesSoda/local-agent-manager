@@ -63,6 +63,19 @@ function qualify(content) {
   return rows.records;
 }
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+function managedReferences(value,names) {
+  if(names===undefined)return undefined;
+  if(!Array.isArray(names)||names.length>1000||names.some(n=>typeof n!=='string'||!/^[A-Za-z0-9_.-]+$/.test(n)))throw new Error('idb_managed_attachment_scope_invalid');
+  const found=new Set();let count=0;
+  function visit(v,depth=0){
+    if(++count>200000||depth>64)throw new Error('idb_managed_attachment_budget_exceeded');
+    if(typeof v==='string'){
+      for(const name of names)if(v.includes(name)||v.includes(name.slice(0,name.lastIndexOf('.'))))found.add(name);
+      if(v.startsWith('{')||v.startsWith('[')){let decoded;try{decoded=JSON.parse(v);}catch{}if(decoded!==undefined)visit(decoded,depth+1);}
+    }else if(v&&typeof v==='object')for(const item of Object.values(v))visit(item,depth+1);
+  }
+  visit(value);return [...found].sort();
+}
 app.whenReady().then(async () => {
   const storage = session.fromPath(request.sessionPath, { cache: false });
   storage.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !details.url.startsWith('paseo://app/') }));
@@ -101,6 +114,7 @@ app.whenReady().then(async () => {
     beforeSha256: beforeHash, expectedAfterSha256: expectedAfterHash, afterSha256: digest(after),
     rowsBefore: rowRecords.length, rowsAfter: afterRows.length, selectedBefore: rowRecords.filter(selected).length,
     selectedAfter: afterRows.filter(selected).length, databases: after.length,
+    protectedManagedNames:managedReferences(expected,request.managedNames),
     totalRecords:after.reduce((sum,db)=>sum+db.stores.reduce((sum,store)=>sum+store.records.length,0),0),valueCodec:'json-safe.v1',mutationStarted }));
   await new Promise(resolve=>setTimeout(resolve,300));
   window.destroy(); app.quit();

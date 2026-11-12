@@ -18,6 +18,7 @@ from .office_leveldb import _environment, _node, _snapshot
 
 SCHEMA = "larj.paseo-indexeddb.v1"
 RELATIVE = "IndexedDB/paseo_app_0.indexeddb.leveldb"
+BLOBS = RELATIVE.replace(".leveldb", ".blob")
 CODE = Path(__file__).with_name("leveldb_runtime")
 
 
@@ -77,18 +78,23 @@ def _run(command, *, cwd=None, timeout=60):
     return value
 
 
-def audit(path, state):
-    value = _run([state["node"], CODE / "idb_audit.cjs", path])
+def audit(path, state, scope=None):
+    command = [state["node"], CODE / "idb_audit.cjs", path]
+    if scope is not None:
+        command.append(json.dumps(scope, separators=(",", ":")))
+    value = _run(command)
     if value.get("schema_version") != "larj.paseo-idb-audit.v1":
         fail("browser_physical_audit_invalid")
     return value
 
 
-def _browser(session, temporary, state, server_id, ids, *, before=None, after=None):
+def _browser(session, temporary, state, server_id, ids, *, before=None, after=None, managed_names=None):
     control = Path(tempfile.mkdtemp(prefix="control-", dir=temporary))
     request = {"mode": "inspect" if before is None else "apply", "sessionPath": str(session),
                "controlPath": str(control), "serverId": server_id, "agentIds": ids,
                "beforeSha256": before, "afterSha256": after}
+    if managed_names is not None:
+        request["managedNames"] = managed_names
     path = control / "request.json"
     path.write_text(json.dumps(request), encoding="utf-8")
     value = _run([Path(state["root"]) / "electron.exe", CODE / "paseo_browser.cjs", path], cwd=control)
@@ -126,18 +132,72 @@ def _copy(root, snapshot, stage, *, relative=RELATIVE):
         fail("browser_source_changed")
 
 
-def _observe(stage, temporary, state, server_id, ids):
-    raw = audit(stage / RELATIVE, state)
-    value = _browser(stage, temporary, state, server_id, ids)
-    opened = audit(stage / RELATIVE, state)
+def _blob_snapshot(root):
+    path = frozen_files.checked_path(root, BLOBS)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    snapshot = frozen_files.freeze_remove(root, BLOBS)
+    # Chromium's decimal database / low-byte bucket / hexadecimal blob number.
+    import re
+    for directory in snapshot["directories"]:
+        relative = Path(directory["path"]).relative_to(BLOBS).parts
+        if (len(relative) > 2 or relative and not re.fullmatch(r"[1-9][0-9]*", relative[0])
+                or len(relative) == 2 and not re.fullmatch(r"[0-9a-f]{2}", relative[1])):
+            fail("browser_blob_layout_unqualified")
+    for item in snapshot["files"]:
+        parts = Path(item["path"]).relative_to(BLOBS).parts
+        if (len(parts) != 3 or not re.fullmatch(r"[1-9][0-9]*", parts[0])
+                or not re.fullmatch(r"[0-9a-f]{2}", parts[1]) or not re.fullmatch(r"[1-9a-f][0-9a-f]*", parts[2])
+                or f"{(int(parts[2], 16) >> 8) & 255:02x}" != parts[1]):
+            fail("browser_blob_layout_unqualified")
+    return snapshot
+
+
+def _copy_blobs(root, snapshot, stage):
+    if snapshot is None:
+        return
+    if _blob_snapshot(root) != snapshot:
+        fail("browser_blob_source_changed")
+    for directory in sorted(snapshot["directories"], key=lambda item: len(item["path"])):
+        path = frozen_files.checked_path(stage, directory["path"])
+        with frozen_files._parent_fence(stage, directory["path"]):
+            path.mkdir(parents=True, exist_ok=True)
+    for item in snapshot["files"]:
+        proof, body = frozen_files.read_file(root, item["path"], content=True)
+        if proof != item:
+            fail("browser_blob_source_changed")
+        with frozen_files._parent_fence(stage, item["path"]) as path:
+            with path.open("xb") as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+    if _blob_snapshot(root) != snapshot:
+        fail("browser_blob_source_changed")
+
+
+def _observe(stage, temporary, state, server_id, ids, blobs=None, managed_names=None):
+    scope = {"serverId": server_id, "agentIds": ids} if blobs is not None else None
+    raw = audit(stage / RELATIVE, state, scope)
+    expected = sorted((item["path"], item["size"]) for item in raw.get("wrappedFiles", ()))
+    actual = sorted((str(Path(item["path"]).relative_to(BLOBS)).replace("\\", "/"), item["size"])
+                    for item in (blobs or {}).get("files", ()))
+    if actual != expected:
+        fail("browser_blob_closure_unverified")
+    value = _browser(stage, temporary, state, server_id, ids, managed_names=managed_names)
+    opened = audit(stage / RELATIVE, state, scope)
     if (opened["preservationSha256"] != raw["preservationSha256"]
             or opened["dataRecords"] != raw["dataRecords"]
             or value["totalRecords"] != raw["dataRecords"]
             or value["beforeSha256"] != value["afterSha256"]):
         fail("browser_native_open_changed_records")
-    return {"before_sha256": value["beforeSha256"], "after_sha256": value["expectedAfterSha256"],
+    observation = {"before_sha256": value["beforeSha256"], "after_sha256": value["expectedAfterSha256"],
             "selected": value["selectedBefore"], "raw_preservation_sha256": raw["preservationSha256"],
             "data_records": raw["dataRecords"]}
+    if managed_names is not None:
+        observation["protected_managed_names"] = value["protectedManagedNames"]
+    return observation
 
 
 def require_no_blob(root):
@@ -149,7 +209,20 @@ def require_no_blob(root):
     fail("browser_blob_family_unqualified")
 
 
-def freeze(root, electron_root, server_id, ids):
+def _discard_selected_blobs(stage, before, state):
+    # A native transaction must have removed every external reference and
+    # settled its deletion journals before any selected payload is discarded.
+    audit(stage / RELATIVE, state)
+    current = _blob_snapshot(stage)
+    if current is None:
+        return
+    approved = {(f["path"], f["size"], f["sha256"]) for f in before["files"]}
+    if any((f["path"], f["size"], f["sha256"]) not in approved for f in current["files"]):
+        fail("browser_blob_state_unknown")
+    frozen_files.apply_remove(stage, current)
+
+
+def freeze(root, electron_root, server_id, ids, *, managed_names=None):
     root = Path(root)
     require_no_sealed(root)
     from .paseo_cleanup_files import ID
@@ -158,8 +231,9 @@ def freeze(root, electron_root, server_id, ids):
         fail("browser_selection_invalid")
     ids = sorted(set(ids))
     snapshot = _snapshot(root, RELATIVE)
-    # A sibling .blob family needs a separately qualified external-blob writer.
-    require_no_blob(root)
+    blobs = _blob_snapshot(root)
+    if blobs is not None and snapshot is None:
+        fail("browser_blob_closure_unverified")
     state = runtime(electron_root) if snapshot else None
     observation = None
     if snapshot:
@@ -167,11 +241,13 @@ def freeze(root, electron_root, server_id, ids):
             temporary = Path(raw).resolve(strict=True)
             stage = temporary / "session"
             _copy(root, snapshot, stage)
-            observation = _observe(stage, temporary, state, server_id, ids)
+            _copy_blobs(root, blobs, stage)
+            observation = _observe(stage, temporary, state, server_id, ids, blobs, managed_names)
         if runtime(electron_root) != state:
             fail("browser_runtime_changed")
     return {"schema_version": SCHEMA, "root": str(root), "relative": RELATIVE, "server_id": server_id,
-            "agent_ids": ids, "files": snapshot, "runtime": state, "observation": observation}
+            "agent_ids": ids, "files": snapshot, "runtime": state, "observation": observation, "blobs": blobs,
+            "managed_names": managed_names}
 
 
 def _validate(evidence):
@@ -189,13 +265,15 @@ def _validate(evidence):
 def prepared(evidence):
     """All native opens and after checks complete before original mutation."""
     root = _validate(evidence)
-    require_no_blob(root)
     require_no_sealed(root)
     if _snapshot(root, RELATIVE) != evidence["files"]:
         if remaining(evidence) == 0:
             yield None
             return
         fail("browser_source_changed")
+    blobs = evidence.get("blobs")
+    if _blob_snapshot(root) != blobs:
+        fail("browser_blob_source_changed")
     if evidence["files"] is None:
         yield None
         return
@@ -206,7 +284,8 @@ def prepared(evidence):
         temporary = Path(raw).resolve(strict=True)
         stage = temporary / "stage"
         _copy(root, evidence["files"], stage)
-        observation = _observe(stage, temporary, state, evidence["server_id"], evidence["agent_ids"])
+        _copy_blobs(root, blobs, stage)
+        observation = _observe(stage, temporary, state, evidence["server_id"], evidence["agent_ids"], blobs, evidence.get("managed_names"))
         if observation != evidence["observation"]:
             fail("browser_frozen_state_changed")
         if observation["selected"]:
@@ -214,6 +293,8 @@ def prepared(evidence):
                 before=observation["before_sha256"], after=observation["after_sha256"])
             if result["afterSha256"] != observation["after_sha256"] or result["selectedAfter"]:
                 fail("browser_after_unverified")
+            if blobs is not None:
+                _discard_selected_blobs(stage, blobs, state)
         # The exact staged family is reopened only on another private copy.
         snapshot = _snapshot(stage, RELATIVE)
         cold = temporary / "cold"
@@ -234,7 +315,7 @@ def install(evidence, prepared_family, *, phase_callback):
             fail("browser_after_unverified")
         return
     install_family(root, RELATIVE, evidence["files"], prepared_family, phase_callback=phase_callback,
-                   verify_after=lambda: _verify_installed(evidence))
+                   verify_after=lambda: _verify_installed(evidence), blobs=evidence.get("blobs"))
 
 
 def require_no_sealed(root):
@@ -243,11 +324,12 @@ def require_no_sealed(root):
             fail("cache_install_recovery_required")
 
 
-def install_family(root, relative, before, prepared_family, *, phase_callback, verify_after):
+def install_family(root, relative, before, prepared_family, *, phase_callback, verify_after, blobs=None):
     if relative not in {RELATIVE, "Local Storage/leveldb"}:
         fail("browser_family_unqualified")
     if relative == RELATIVE:
-        require_no_blob(root)
+        if _blob_snapshot(root) != blobs:
+            fail("browser_blob_source_changed")
     if _snapshot(root, relative) != before:
         fail("browser_source_changed")
     if prepared_family is None:
@@ -281,7 +363,8 @@ def install_family(root, relative, before, prepared_family, *, phase_callback, v
     # and makes the operation unknown rather than being recursively removed.
     with frozen_files._parent_fence(root, relative + "/CURRENT"):
         if relative == RELATIVE:
-            require_no_blob(root)
+            if _blob_snapshot(root) != blobs:
+                fail("browser_blob_source_changed")
         if _snapshot(root, relative) != before or frozen_files.freeze_remove(root, sealed_relative) != owned_seal:
             fail("browser_source_changed")
         for item in before["files"]:
@@ -300,6 +383,8 @@ def install_family(root, relative, before, prepared_family, *, phase_callback, v
             return [(i["path"], i["sha256"], i["size"]) for i in value["files"]]
         if contents(current) != contents(snapshot):
             fail("browser_install_unverified")
+        if blobs is not None:
+            frozen_files.apply_remove(root, blobs)
         verify_after()
         frozen_files.apply_remove(root, owned_seal)
 
@@ -318,8 +403,10 @@ def _verify_installed(evidence):
 
 def remaining(evidence):
     root = _validate(evidence)
-    require_no_blob(root)
     require_no_sealed(root)
+    blobs = _blob_snapshot(root)
+    if blobs is not None and blobs != evidence.get("blobs"):
+        fail("browser_blob_state_unknown")
     snapshot = _snapshot(root, RELATIVE)
     if snapshot is None:
         if evidence["files"] is not None:
@@ -334,9 +421,10 @@ def remaining(evidence):
         temporary = Path(raw).resolve(strict=True)
         stage = temporary / "session"
         _copy(root, snapshot, stage)
-        value = _observe(stage, temporary, state, evidence["server_id"], evidence["agent_ids"])
+        _copy_blobs(root, blobs, stage)
+        value = _observe(stage, temporary, state, evidence["server_id"], evidence["agent_ids"], blobs, evidence.get("managed_names"))
     expected = evidence["observation"]
-    if value["before_sha256"] == expected["after_sha256"] and not value["selected"]:
+    if value["before_sha256"] == expected["after_sha256"] and not value["selected"] and blobs is None:
         return 0
     if snapshot == evidence["files"] and value == expected:
         return value["selected"]

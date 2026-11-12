@@ -155,11 +155,12 @@ def rows(root, *, reader=None):
             if owner is None:
                 fail("creation_claim_owner_unverified")
             snapshot = owner["value"]["snapshot"]
-            expected = {_request_digest([kind, snapshot[field]]) for kind, field in (("agent", "agentId"), ("workspace", "workspaceId"))
+            expected = {_request_digest([kind, snapshot[field]]): kind for kind, field in (("agent", "agentId"), ("workspace", "workspaceId"))
                 if snapshot.get(field) and (kind == "agent" or snapshot["kind"] == "workspace")}
-            if Path(entry["path"]).stem not in expected:
+            claim_kind = expected.get(Path(entry["path"]).stem)
+            if claim_kind is None:
                 fail("creation_claim_identity_unverified")
-            entry["row"] = dict(owner["row"])
+            entry["row"] = {**owner["row"], "claim_kind": claim_kind}
         if entry["kind"] == "creation" and entry["row"].get("agent"):
             agent = entry["row"]["agent"]
             copies = [e["row"] for e in result if e["kind"] == "agent" and e["row"]["id"] == agent["id"]]
@@ -381,6 +382,58 @@ def _creation(value):
         "creation_kind": s["kind"], "completed": s["phase"] == "completed" and value["inFlight"] is None and not s.get("outcomeUnknown", False)}
 
 
+def _detach_workspace_agent(value):
+    """Keep the completed workspace receipt usable without its deleted agent."""
+    snapshot = value["snapshot"]
+    workspace = snapshot.get("workspace")
+    scalar = {"id", "projectId", "projectDisplayName", "projectCustomName", "projectCustomIconRevision",
+        "projectRootPath", "workspaceDirectory", "setupStatus", "worktreeSlug", "projectKind", "workspaceKind",
+        "name", "title", "pinnedAt", "archivingAt", "status", "statusEnteredAt", "activityAt", "createdAt",
+        "lastUserMessageAt", "forge"}
+    _object(workspace, scalar | {"labels", "internal", "background", "diffStat", "scripts", "project"}, {"id"})
+    if workspace["id"] != snapshot["workspaceId"] or not snapshot["workspaceId"]:
+        fail("creation_workspace_identity_unverified")
+    for key in scalar & workspace.keys():
+        _text(workspace[key], nullable=True)
+    for key in ("internal", "background"):
+        if key in workspace and type(workspace[key]) is not bool:
+            fail("creation_workspace_schema_unverified")
+    if "labels" in workspace and (not isinstance(workspace["labels"], list)
+            or any(not isinstance(label, str) for label in workspace["labels"])):
+        fail("creation_workspace_schema_unverified")
+    # This qualified descriptor subset has no script/runtime restoration
+    # objects. New nested formats need their own schema before rewriting it.
+    if workspace.get("scripts", []) != []:
+        fail("creation_workspace_schema_unverified")
+    diff = workspace.get("diffStat")
+    if diff is not None:
+        _object(diff, {"additions", "deletions"}, {"additions", "deletions"})
+        if any(type(number) not in (int, float) for number in diff.values()):
+            fail("creation_workspace_schema_unverified")
+    project = workspace.get("project")
+    if project is not None:
+        _object(project, {"projectKey", "projectName", "workspaceName", "checkout"}, {"projectKey", "projectName", "checkout"})
+        for key in ("projectKey", "projectName", "workspaceName"):
+            if key in project:
+                _text(project[key], nullable=key == "workspaceName")
+        checkout = project["checkout"]
+        _object(checkout, {"cwd", "currentBranch", "remoteUrl", "worktreeRoot", "mainRepoRoot", "isGit", "isPaseoOwnedWorktree"},
+                {"cwd", "isGit"})
+        for key, item in checkout.items():
+            if key in {"isGit", "isPaseoOwnedWorktree"}:
+                if type(item) is not bool:
+                    fail("creation_workspace_schema_unverified")
+            else:
+                _text(item, nullable=key != "cwd")
+    if (snapshot["error"] is not None or {"errorCode", "failedStage"} & snapshot.keys()
+            or snapshot["revision"] >= 9007199254740991):
+        fail("creation_cleanup_unqualified")
+    after = copy.deepcopy(value)
+    after["snapshot"].pop("agent", None)
+    after["snapshot"].update(agentId=None, revision=snapshot["revision"] + 1)
+    return encode(after)
+
+
 def transform(entry, ids):
     value = entry["value"]
     if entry["kind"] == "receipt":
@@ -393,8 +446,12 @@ def transform(entry, ids):
         row = entry["row"]
         if row["id"] not in ids:
             return entry["raw"]
-        if row["creation_kind"] != "agent" or not row["completed"]:
+        if not row["completed"]:
             fail("creation_cleanup_unqualified")
+        if row["creation_kind"] == "workspace":
+            if entry["kind"] == "claim":
+                return None if row["claim_kind"] == "agent" else entry["raw"]
+            return _detach_workspace_agent(value)
         return None
     if entry["kind"] == "agent":
         return None if value["id"] in ids else entry["raw"]

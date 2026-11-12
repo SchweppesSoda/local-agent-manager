@@ -23,7 +23,7 @@ class PaseoPhysicalTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
         value = json.loads(result.stdout)
         self.assertTrue(value['passed'], value)
-        self.assertEqual(len(value['results']), 11)
+        self.assertEqual(len(value['results']), 20)
 
 
 if __name__ == '__main__':

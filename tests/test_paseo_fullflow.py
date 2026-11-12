@@ -43,6 +43,32 @@ def write(path, value):
     path.write_bytes(files.encode(value))
 
 
+def workspace_creation(cwd, *, identifier=AGENT, native=NATIVE, key="workspace-key"):
+    return {"fingerprint": "a" * 64, "inFlight": None, "snapshot": {
+        "kind": "workspace", "idempotencyKey": key, "revision": 4, "phase": "completed",
+        "workspaceId": "wks_fixture", "agentId": identifier, "error": None,
+        "workspace": {"id": "wks_fixture", "projectId": "prj_fixture", "projectDisplayName": "project",
+            "projectRootPath": str(cwd), "workspaceDirectory": str(cwd), "projectKind": "git",
+            "workspaceKind": "local_checkout", "name": "workspace", "status": "active",
+            "activityAt": None, "scripts": [], "diffStat": {"additions": 1, "deletions": 0},
+            "project": {"projectKey": "fixture", "projectName": "project", "checkout": {
+                "cwd": str(cwd), "currentBranch": "main", "isGit": True, "isPaseoOwnedWorktree": False}}},
+        "agent": {k: v for k, v in agent(identifier, native, cwd).items() if k not in {"config", "lastStatus"}}}}
+
+
+def write_workspace_creation(root, value):
+    snapshot = value["snapshot"]
+    key = files._request_digest(["workspace", snapshot["idempotencyKey"]])
+    path = root / "creations" / (key + ".json")
+    write(path, value)
+    claims = {}
+    for kind, field in (("workspace", "workspaceId"), ("agent", "agentId")):
+        claim = path.with_name(files._request_digest([kind, snapshot[field]]) + ".claim")
+        claim.write_text(key, encoding="utf-8")
+        claims[kind] = claim
+    return path, claims
+
+
 class PaseoFilesTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -124,6 +150,60 @@ class PaseoFilesTests(unittest.TestCase):
                 "kind": "agent", "idempotencyKey": "key", "revision": 1, "phase": "completed",
                 "workspaceId": None, "agentId": AGENT, "error": None, "agent": snapshot}})
 
+    def test_workspace_receipt_detaches_selected_agent_and_preserves_workspace_claim(self):
+        value = workspace_creation(self.root)
+        path, claims = write_workspace_creation(self.root, value)
+        atomic = path.with_name("." + path.name + ".424242.123." + KEEP + ".tmp")
+        atomic.write_bytes(path.read_bytes())
+        workspace_claim = claims["workspace"].read_bytes()
+        keeper = (self.root / "agents" / (KEEP + ".json")).read_bytes()
+        evidence = files.freeze(self.root, [AGENT])
+        files.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(files.remaining(evidence), 0)
+        for receipt in (path, atomic):
+            after = json.loads(receipt.read_bytes())
+            self.assertEqual(after["snapshot"]["workspace"], value["snapshot"]["workspace"])
+            self.assertEqual(after["fingerprint"], value["fingerprint"])
+            self.assertEqual(after["snapshot"]["revision"], 5)
+            self.assertIsNone(after["snapshot"]["agentId"])
+            self.assertNotIn("agent", after["snapshot"])
+            self.assertNotIn(NATIVE, receipt.read_text())
+        self.assertEqual(claims["workspace"].read_bytes(), workspace_claim)
+        self.assertFalse(claims["agent"].exists())
+        self.assertEqual((self.root / "agents" / (KEEP + ".json")).read_bytes(), keeper)
+        # The remaining workspace claim still resolves after a fresh scan.
+        entries, _ = files.rows(self.root)
+        self.assertFalse(any(e["row"]["id"] == AGENT for e in entries))
+
+    def test_unselected_workspace_receipt_and_both_claims_are_preserved(self):
+        path, claims = write_workspace_creation(self.root, workspace_creation(self.root, identifier=KEEP, native=OTHER))
+        originals = {p: p.read_bytes() for p in (path, *claims.values())}
+        evidence = files.freeze(self.root, [AGENT])
+        files.apply(evidence, phase_callback=lambda _: None)
+        self.assertEqual(files.remaining(evidence), 0)
+        self.assertEqual({p: p.read_bytes() for p in originals}, originals)
+
+    def test_workspace_creation_unknown_outcomes_and_nested_restore_objects_block(self):
+        original = workspace_creation(self.root)
+        cases = (("inflight", lambda v: v.update(inFlight="agent")),
+            ("unknown", lambda v: v["snapshot"].update(outcomeUnknown=True)),
+            ("unfinished", lambda v: v["snapshot"].update(phase="agent_ready")),
+            ("workspace identity", lambda v: v["snapshot"]["workspace"].update(id="other")),
+            ("resume", lambda v: v["snapshot"]["workspace"].update(resume={"agentId": AGENT})),
+            ("nested resume", lambda v: v["snapshot"]["workspace"]["project"]["checkout"].update(nativeId=NATIVE)),
+            ("script runtime", lambda v: v["snapshot"]["workspace"].update(scripts=[{"agentId": AGENT}])),
+            ("stale error", lambda v: v["snapshot"].update(error="PRIVATE_ERROR")),
+            ("unsafe revision", lambda v: v["snapshot"].update(revision=9007199254740991)))
+        for label, change in cases:
+            with self.subTest(label):
+                value = copy.deepcopy(original)
+                change(value)
+                path, _ = write_workspace_creation(self.root, value)
+                before = path.read_bytes()
+                with self.assertRaises(ValueError):
+                    files.freeze(self.root, [AGENT])
+                self.assertEqual(path.read_bytes(), before)
+
     def test_partial_file_apply_resumes_without_repeating_completed_deletes(self):
         write(self.root / "agents/project/copy.json", agent(AGENT, NATIVE, self.root))
         write(self.root / "schedules/kept.json", schedule("kept"))
@@ -203,6 +283,31 @@ class PaseoFullflowTests(unittest.TestCase):
         self.assertFalse((self.root / "paseo.pid").exists())
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
+
+    def test_cold_cleanup_of_workspace_creation_with_absent_native_and_retired_binary(self):
+        config = self.root / "config.json"
+        write(config, {"version": 1, "agents": {"providers": {"codex": {
+            "command": [str(self.base / "retired-version" / "codex.exe")]}}}})
+        before_config = config.read_bytes()
+        value = workspace_creation(self.base)
+        receipt, claims = write_workspace_creation(self.root, value)
+        before_claim = claims["workspace"].read_bytes()
+        plan = self.plan()
+        self.assertEqual([a["kind"] for a in plan["actions"]], [paseo_cleanup.KIND])
+        result = self.coordinator().apply_operation(operation_id=plan["operation_id"], plan_path=self.plan_path,
+            plan_sha256=plan["plan_sha256"], clients_closed=True)
+        self.assertEqual(result["goal_status"], "complete", result)
+        result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertEqual(result["counts"].get("residual_count", 0), 0)
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertEqual(claims["workspace"].read_bytes(), before_claim)
+        self.assertFalse(claims["agent"].exists())
+        after = json.loads(receipt.read_bytes())
+        self.assertEqual(after["snapshot"]["workspace"], value["snapshot"]["workspace"])
+        self.assertNotIn("agent", after["snapshot"])
+        self.assertIsNone(after["snapshot"]["agentId"])
+        self.assertTrue((self.root / "agents" / (KEEP + ".json")).exists())
 
     def test_native_dependency_and_exact_ticket(self):
         add_native_record(self.home, NATIVE)

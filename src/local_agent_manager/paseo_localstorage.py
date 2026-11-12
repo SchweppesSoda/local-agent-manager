@@ -23,6 +23,8 @@ def _call(path, evidence, *, apply=False):
                  for i in observed["edits"]]
         request.update(authorized_before_sha256=observed["fingerprint"],
                        authorized_after_sha256=hashlib.sha256(level._json(edits)).hexdigest())
+    if evidence.get("managed_names") is not None:
+        request["paseo_managed_names"] = evidence["managed_names"]
     return level._call(request)
 
 
@@ -36,7 +38,7 @@ def _validate(evidence):
     return Path(evidence["root"])
 
 
-def freeze(root, server_id, ids):
+def freeze(root, server_id, ids, *, managed_names=None):
     root = Path(root)
     require_no_sealed(root)
     if (not isinstance(ids, (list, tuple)) or not ids or any(not isinstance(i, str) or not ID.fullmatch(i) for i in ids)
@@ -44,7 +46,7 @@ def freeze(root, server_id, ids):
         fail("local_storage_selection_invalid")
     evidence = {"schema_version": SCHEMA, "root": str(root), "relative": RELATIVE,
         "agent_ids": sorted(set(ids)), "server_id": server_id, "files": level._snapshot(root, RELATIVE),
-        "runtime": None, "observation": None}
+        "runtime": None, "observation": None, "managed_names": managed_names}
     if evidence["files"]:
         evidence["runtime"] = level.runtime_fingerprint()
         with tempfile.TemporaryDirectory(prefix="larj-paseo-local-") as raw:

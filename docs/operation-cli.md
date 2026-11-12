@@ -520,6 +520,17 @@ local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.
 检查计划中展开的后代、原生批次及前端批次，再按通用协议用 operation ID、plan SHA 和
 `--clients-closed` 执行。冷恢复从计划读取冻结绑定，不重新加载 bindings.json。
 
+原生 Codex 记录已经删除、旧程序路径也已失效时，自动发现不能从缺失记录证明历史归属。
+可根据已有原生计划中的精确会话 ID 和 `codex_home` 核实来源后，提供显式绑定；
+`codex_binary` 单独选择本次原生盘点使用的有效程序。规划器仍完整盘点该根并检查残留，
+不据此改写 Paseo 的启动设置，也不把当前登录账号或另一客户端的目录当作历史归属。
+
+已完成的 workspace 创建回执可能另存初始 agent 的完整快照。完整清理保留工作区描述、
+创建指纹及 workspace claim，移除选中会话的 `agent`、清空 `agentId` 并递增 revision，
+同时删除其 agent claim；单独创建 agent 的回执沿用整份删除。原子临时副本使用同一转换。
+未完成、结果未知、工作区身份不一致、未知嵌套恢复字段或脚本运行对象继续阻挡。
+当前工作区描述子集要求 scripts 为空，支持已知项目 checkout 和 diffStat；未选回执保持原字节。
+
 存在桌面缓存时，先按办公版说明准备固定 ClassicLevel 依赖，并提供完整官方
 [Electron 44.2.0 Windows x64 分发包](https://github.com/electron/electron/releases/tag/v44.2.0)
 的解压目录；计划会逐文件验证内置 manifest，不能用正在运行的产品目录替代。

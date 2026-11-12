@@ -804,7 +804,10 @@ Codex/Pi/Claude 根目录，以及全部相关本机桌面 profile 与运行文�
 旧 `agent-timelines` 或未知嵌套 schema 均阻挡。
 `0.15.3` 的 `agent-requests` 已完成回执、`creations` 已完成 agent 创建快照及其
 SHA-256 claim 一并冻结和移除；创建快照中的原生恢复引用必须已被注册记录覆盖。
-pending 回执、未完成/结果未知的创建、workspace 创建和不能证明归属的 claim 阻挡；
+已完成 workspace 创建中的选中 agent 快照和 agent claim 可精确移除，保留 workspace
+描述、创建指纹及 workspace claim；`agentId` 清空，revision 递增。该路径要求已知描述
+子集及空 scripts，未知项目嵌套字段、脚本运行对象和不一致的 workspace ID 继续阻挡。
+pending 回执、未完成/结果未知的创建和不能证明归属的 claim 阻挡；
 不会通过移除回执把未知执行结果解释为成功。更新 helper 后应重新生成计划。
 
 绑定桌面使用 `paseo://app`：IndexedDB v1 `paseo-replica-row-store` 的精确
@@ -815,6 +818,14 @@ pending 回执、未完成/结果未知的创建、workspace 创建和不能证�
 ClassicLevel 3 执行原生事务；不让浏览器直接打开原目录。完整分发包与 helper 的身份和
 哈希被冻结，原生读回及独立冷副本的全部逻辑数据必须符合批准 after。
 
+大型 JSON 行由 Chromium 外置成 `application/vnd.blink-idb-value-wrapper` 时，支持精确
+绑定的 `.blob` 文件闭包：数据库名、rows store、`[serverId, kind, agentId]` 及 blob 元数据
+必须证明每个文件都属于选中的 agent/timeline 行，并与冻结文件集合及大小完全一致。
+原生事务先在私有副本删除行，物理审计确认外部引用及删除日志已清空，再处置已证明归属
+的 payload；安装及冷核验覆盖 LevelDB 和 blob 两个集合。普通 Blob/File、未选会话的
+外置数据、缺失或孤立文件、共享 blob、未知 MIME 和未完成回收日志仍阻挡，不删除目录绕过。
+包装机制参见 [Chromium IndexedDB 数据路径](https://chromium.googlesource.com/chromium/src/third_party/+/master/blink/renderer/modules/indexeddb/docs/idb_data_path.md)；准入仍以实际格式、冻结引用和独立原生读回为准。
+
 执行要求相关应用关闭、`paseo.pid` 不存在、完整进程枚举可用。Windows 期间持有绑定
 运行文件的排他句柄和标准 daemon 启动 PID 租约；不自动停止应用或清除陈旧 PID。
 该边界覆盖声明的运行文件与标准启动路径，不能证明任意自定义、远程或独立插件 writer
@@ -824,9 +835,16 @@ ClassicLevel 3 执行原生事务；不让浏览器直接打开原目录。完�
 正常操作支持冷 status/verify，原生完成而前端尚未开始可冷继续。前端一旦开始后失败，
 持久 journal 保持 unknown，不自动重发；只有精确 after 可经 verify 判定完成。缓存安装
 前先写入带身份说明的完整 durable after 副本；中断时保留 `.larj-paseo-sealed-*` 并明确
-要求人工恢复，不能删除恢复副本后把未知状态当成成功。Blob、非文本附件、旧 replica
+要求人工恢复，不能删除恢复副本后把未知状态当成成功。任意 Blob/File、未资格的非文本附件、旧 replica
 cache、autoIncrement object store、不安全数值或未知 schema 不提供自动删除。
 macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平台资格。
+
+完整 profile 清理另支持 `desktop-attachments` 中已知生成命名的 PNG/JPEG 副本和预览：
+必须选择该 profile 的全部 agent，并绑定全部本机桌面 profile；replica 和本地存储的
+保留 after-image 均不得引用这些文件名或附件 ID。文件集合、内容摘要、格式标记及预览
+长度一起冻结，执行前复查，逐项处置后冷核验缺失。未选服务器、创建弹窗草稿及不透明
+保留值中的匹配内容均形成保护；部分 profile、其他命名、子目录、链接和新文件继续阻挡。
+该范围限于桌面生成的托管副本，外部源文件、工作区文件和项目注册表保留。
 
 绑定格式与依赖准备见 [完整本地操作](operation-cli.md#paseo-完整本地操作)。
 

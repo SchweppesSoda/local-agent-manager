@@ -17,6 +17,19 @@ const ID = /^[A-Za-z0-9_.-]{1,128}$/
 const T3_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@/%-]{0,255}$/
 const validT3Id = id => typeof id === 'string' && T3_ID.exec(id)?.[0] === id
 const MAX_BYTES = 16 * 1024 * 1024
+function managedReferences(value, names) {
+  if (names === undefined) return undefined
+  if (!Array.isArray(names) || names.length > 1000 || names.some(n => typeof n !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(n))) fail('office_leveldb_managed_attachment_scope_invalid')
+  const found = new Set(); let count = 0
+  function visit (v, depth = 0) {
+    if (++count > 200000 || depth > 64) fail('office_leveldb_managed_attachment_budget_exceeded')
+    if (typeof v === 'string') {
+      for (const name of names) if (v.includes(name) || v.includes(name.slice(0, name.lastIndexOf('.')))) found.add(name)
+      if (v.startsWith('{') || v.startsWith('[')) { let decoded; try { decoded = JSON.parse(v) } catch {} if (decoded !== undefined) visit(decoded, depth + 1) }
+    } else if (v && typeof v === 'object') for (const item of Object.values(v)) visit(item, depth + 1)
+  }
+  visit(value); return [...found].sort()
+}
 
 function decodeString (bytes) {
   if (!Buffer.isBuffer(bytes) || !bytes.length) fail('office_leveldb_string_invalid')
@@ -211,6 +224,7 @@ async function projection (db, request) {
   }
   const beforeHash = crypto.createHash('sha256'), afterHash = crypto.createHash('sha256')
   let total = 0, entries = 0
+  const managed = request.paseo_managed_names === undefined ? undefined : new Set()
   function field (hash, bytes) {
     const length = Buffer.alloc(8); length.writeBigUInt64LE(BigInt(bytes.length))
     hash.update(length); hash.update(bytes)
@@ -220,9 +234,16 @@ async function projection (db, request) {
     if (++entries > 20000 || total > 512 * 1024 * 1024) fail('office_leveldb_logical_budget_exceeded')
     field(beforeHash, key); field(beforeHash, value)
     const replacement = replacements.get(key.toString('hex'))
+    if (managed && replacement !== null) {
+      const after = replacement === undefined ? value : replacement
+      const strings = [after.toString('latin1'), after.toString('utf16le')]
+      if (after[0] === 0 || after[0] === 1) strings.push(decodeString(after))
+      for (const name of managedReferences(strings, request.paseo_managed_names)) managed.add(name)
+    }
     if (replacement !== null) { field(afterHash, key); field(afterHash, replacement === undefined ? value : replacement) }
   }
   return { edits, draft_keys: draftKeys, count,
+    protected_managed_names: managed === undefined ? undefined : [...managed].sort(),
     logical_before_sha256: beforeHash.digest('hex'), logical_after_sha256: afterHash.digest('hex') }
 }
 
@@ -232,6 +253,7 @@ function publicProjection (value) {
     draft_keys: value.draft_keys,
     logical_before_sha256: value.logical_before_sha256,
     logical_after_sha256: value.logical_after_sha256,
+    protected_managed_names: value.protected_managed_names,
     edits: value.edits.map(edit => ({ key_sha256: sha(edit.key), before_sha256: sha(edit.before),
       after_sha256: sha(edit.after), metadata_key_sha256: sha(edit.metaKey),
       before_metadata_sha256: sha(edit.beforeMeta), after_metadata_sha256: sha(edit.afterMeta),
