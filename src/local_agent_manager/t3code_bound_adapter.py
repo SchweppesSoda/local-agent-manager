@@ -18,6 +18,8 @@ from contextlib import closing
 
 SCHEMA = "larj.t3code-bindings.v1"
 DATABASE_ONLY_SCHEMA = "larj.t3code-antigravity-database.v1"
+DATABASE_RESET_SCHEMA = "larj.t3code-database-reset.v1"
+DATABASE_SCHEMAS = {DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA}
 _NATIVE_ENGINES = frozenset(("codex", "claude", "pi", "antigravity"))
 
 
@@ -46,10 +48,10 @@ def validate_manifest(value):
     fields = {"schema_version", "profile_root", "environment_id", "runtime_binaries", "native_stores", "desktop_profiles"}
     if not isinstance(value, dict):
         fail("binding_manifest_invalid")
-    database_only = value.get("schema_version") == DATABASE_ONLY_SCHEMA
-    if database_only:
+    schema = value.get("schema_version")
+    if schema == DATABASE_ONLY_SCHEMA:
         fields.add("provider_instance_id")
-    if set(value) != fields or value["schema_version"] not in {SCHEMA, DATABASE_ONLY_SCHEMA}:
+    if set(value) != fields or not isinstance(schema, str) or schema not in {SCHEMA, *DATABASE_SCHEMAS}:
         fail("binding_manifest_invalid")
     local_root(value["profile_root"])
     identifier(value["environment_id"])
@@ -57,8 +59,9 @@ def validate_manifest(value):
         fail("binding_runtime_required")
     for path in value["runtime_binaries"]:
         local_root(path)
-    if database_only:
-        identifier(value["provider_instance_id"])
+    if schema in DATABASE_SCHEMAS:
+        if schema == DATABASE_ONLY_SCHEMA:
+            identifier(value["provider_instance_id"])
         if value["native_stores"] != [] or value["desktop_profiles"] != []:
             fail("database_only_binding_scope_invalid")
         return value
@@ -398,7 +401,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         self.legacy_import_ids = set()
 
     def describe_client(self):
-        if self.manifest['schema_version'] == DATABASE_ONLY_SCHEMA:
+        if self.manifest['schema_version'] in DATABASE_SCHEMAS:
             return super().describe_client()
         # The qualified manifest defines the protection stores/capabilities.
         # Describing them must not rescan every event mirror. Consumers still
@@ -425,7 +428,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         snapshot = super().snapshot_references(refresh=True)
         if snapshot.errors or self.observation is None:
             fail("database_inventory_incomplete")
-        if self.manifest["schema_version"] == DATABASE_ONLY_SCHEMA:
+        if self.manifest["schema_version"] in DATABASE_SCHEMAS:
             return snapshot
         data = self.observation
         if data["peer_count"]:

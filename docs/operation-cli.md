@@ -829,6 +829,19 @@ Pi 的 T3 原生句柄是绝对 JSONL 路径。绑定同时核对 session 根、
 记录和未证明的共享关系会明确阻挡。工作区、诊断日志、凭据及外部备份保留。
 具体边界见 [T3 Code 适配说明](adapters.md#t3-code本机数据库与完整清理)。
 
+### 只重建 T3 会话数据库
+
+在 Windows 上，`delete plan --client t3code --t3code-bindings <JSON>` 接受
+`larj.t3code-database-reset.v1` 绑定。填写 `profile_root`、`environment_id` 和
+`runtime_binaries`，并将 `native_stores` 与 `desktop_profiles` 设为 `[]`。用
+`records --client t3code --t3code-root <profile>` 盘点同一个库，再用可重复的
+`--record-id` 提供库内全部完整 ID。计划拒绝部分选择、活动运行和未完成的后台任务。
+
+退出 T3 后，按核对过的计划哈希执行 `delete apply --clients-closed`，并用原计划运行
+`operation verify`。操作持有 T3 写入锁，从 `statev2.sqlite` 删除会话及关联事件、
+消息和索引记录，压缩数据库并截断 WAL。库内项目、T3 登录状态、原生 Agent 历史和
+工作树均保留。桌面缓存、附件及外部备份在本入口的数据库范围之外。
+
 ### 已退役 Antigravity 的 T3 数据库清理
 
 只清理共享 `statev2.sqlite` 时，可通过 `--t3code-bindings` 提供

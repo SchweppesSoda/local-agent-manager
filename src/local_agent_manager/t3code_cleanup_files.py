@@ -134,10 +134,17 @@ def validate(evidence):
     return Path(evidence["root"])
 
 
-def remaining(evidence):
+def freeze_reset(root, ids):
+    _require_known_database_family(root)
+    return {"schema_version": SCHEMA, "root": str(root), "thread_ids": ids,
+        "database": database.freeze(root, ids, compact=True),
+        "directories": [], "changes": [], "preserved": []}
+
+
+def remaining(evidence, *, compact=False):
     root = validate(evidence)
     _require_known_database_family(root)
-    missing, count = set(), database.remaining(evidence["database"])
+    missing, count = set(), database.remaining(evidence["database"], compact=compact)
     for change in evidence["changes"]:
         if frozen_files.satisfied(root, change):
             missing.add(change["path"])

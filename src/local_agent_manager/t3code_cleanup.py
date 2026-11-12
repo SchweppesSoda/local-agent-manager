@@ -1,5 +1,5 @@
 """Exact T3Code native children, server records and bound desktop restoration closure."""
-from contextlib import contextmanager, ExitStack
+from contextlib import closing, contextmanager, ExitStack
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 import hashlib
@@ -8,9 +8,11 @@ from pathlib import Path
 
 from . import frozen_files, t3code_cleanup_files as files, t3code_database, t3code_lifecycle, t3code_localstorage
 from .environment_config import _unique_object
-from .t3code_bound_adapter import DATABASE_ONLY_SCHEMA, T3CodeBoundAdapter, validate_manifest, native_catalog
+from .t3code_bound_adapter import (DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, DATABASE_SCHEMAS,
+    T3CodeBoundAdapter, validate_manifest, native_catalog)
 from .t3code_server_delete import _snapshot
-from .t3code_store import identifier
+from .t3code_store import V2, database_path, identifier
+from .sqlite_utils import connect_readonly
 from .herdr_cleanup import native_remaining as generic_native_remaining, pi_reference_matches_action
 from . import antigravity_acp_cleanup as antigravity
 from . import antigravity_cli_cleanup as cli_native, antigravity_cli_joint as cli_joint
@@ -55,11 +57,16 @@ def validate(evidence):
             or evidence["selected_thread_ids"] != evidence["files"]["thread_ids"]):
         files.fail("closure_root_changed")
     selected = set(evidence["selected_thread_ids"])
-    if manifest["schema_version"] == DATABASE_ONLY_SCHEMA:
+    schema = manifest["schema_version"]
+    if schema in DATABASE_SCHEMAS:
         if (selected != set(evidence["selectors"]) or evidence["frontend_id"] != "t3code:" + digest(sorted(selected))[:24]
                 or any(evidence[key] != [] for key in ("native_targets", "native_actions", "references", "desktop"))
-                or evidence["files"]["changes"] != [] or any(ref["driver"] != "antigravity"
-                    for ref in evidence["files"]["database"]["native_references"])):
+                or evidence["files"]["changes"] != []):
+            files.fail("database_only_scope_invalid")
+        if schema == DATABASE_ONLY_SCHEMA and any(ref["driver"] != "antigravity"
+                for ref in evidence["files"]["database"]["native_references"]):
+            files.fail("database_only_scope_invalid")
+        if schema == DATABASE_RESET_SCHEMA and any(evidence["files"][key] != [] for key in ("directories", "preserved")):
             files.fail("database_only_scope_invalid")
         return
     if not selected <= {i["thread_id"] for i in manifest["native_stores"]}:
@@ -198,7 +205,7 @@ def bound_adapters(document, supplied=None, *, readonly_recovery=False):
     from .client_contracts import describe_adapter
     adapter = T3CodeBoundAdapter(evidence["binding_manifest"])
     adapter.frozen_references = evidence["references"]
-    if readonly_recovery and adapter.manifest['schema_version'] != DATABASE_ONLY_SCHEMA:
+    if readonly_recovery and adapter.manifest['schema_version'] not in DATABASE_SCHEMAS:
         from .t3code_store import read_database
         present = set(read_database(adapter.profile_root)['threads'])
         missing = present - set(adapter.bindings)
@@ -239,8 +246,9 @@ def residuals(document):
             if not target["action_ids"]:
                 files.fail("absent_native_target_reappeared")
             result.extend(target["action_ids"])
-    remaining = files.remaining(evidence["files"])
-    if not remaining and evidence["binding_manifest"]["schema_version"] == DATABASE_ONLY_SCHEMA:
+    schema = evidence["binding_manifest"]["schema_version"]
+    remaining = files.remaining(evidence["files"], compact=schema == DATABASE_RESET_SCHEMA)
+    if not remaining and schema in DATABASE_SCHEMAS:
         t3code_database.require_wal_truncated(evidence["files"]["database"])
     for desktop in evidence["desktop"]:
         remaining += t3code_localstorage.remaining(desktop["localstorage"])
@@ -288,10 +296,30 @@ def _require_retired_threads(manifest, thread_ids):
             files.fail("database_only_thread_unqualified")
 
 
+def _require_reset_threads(manifest, thread_ids):
+    with closing(connect_readonly(database_path(Path(manifest["profile_root"])))) as db:
+        db.execute("BEGIN")
+        present = tuple(row[0] for row in db.execute(f"""SELECT thread_id FROM {V2}threads
+            UNION SELECT thread_id FROM projection_threads ORDER BY 1"""))
+        if present != tuple(thread_ids):
+            files.fail("database_reset_requires_all_thread_ids")
+        for table, predicate in (
+            (V2 + "runs", "status NOT IN ('completed','interrupted','failed','cancelled','rolled_back')"),
+            (V2 + "provider_sessions", "status NOT IN ('stopped','error')"),
+            ("projection_thread_sessions", "status NOT IN ('stopped','error')"),
+            ("orchestration_v2_effect_outbox", "status NOT IN ('succeeded','cancelled')"),
+            ("peer_environment_links", "1"),
+        ):
+            if db.execute(f'SELECT 1 FROM "{table}" WHERE {predicate} LIMIT 1').fetchone():
+                files.fail("database_reset_not_quiescent")
+
+
 def _database_only_context(coordinator, adapter, guards, selectors, engines, old):
     from .cleaner import ScanReport
     thread_ids = sorted({identifier(tid) for tid in selectors})
-    if engines and set(engines) != {"antigravity"}:
+    reset = adapter.manifest["schema_version"] == DATABASE_RESET_SCHEMA
+    require_threads = _require_reset_threads if reset else _require_retired_threads
+    if engines and (reset or set(engines) != {"antigravity"}):
         files.fail("selector_engine_mismatch")
     if adapter.observation["peer_count"]:
         files.fail("peer_environment_closure_unqualified")
@@ -299,17 +327,18 @@ def _database_only_context(coordinator, adapter, guards, selectors, engines, old
         validate(old)
         if thread_ids != old["selected_thread_ids"]:
             files.fail("database_only_scope_invalid")
-        if files.remaining(old["files"]):
-            _require_retired_threads(adapter.manifest, thread_ids)
+        if files.remaining(old["files"], compact=reset):
+            require_threads(adapter.manifest, thread_ids)
         evidence = old
     else:
-        _require_retired_threads(adapter.manifest, thread_ids)
+        require_threads(adapter.manifest, thread_ids)
         evidence = {"schema_version": SCHEMA, "root": str(adapter.profile_root), "binding_manifest": adapter.manifest,
             "selected_thread_ids": thread_ids, "selectors": list(selectors), "frontend_id": "t3code:" + digest(thread_ids)[:24],
-            "files": files.freeze(adapter.profile_root, thread_ids), "native_targets": [], "native_actions": [],
+            "files": (files.freeze_reset if reset else files.freeze)(adapter.profile_root, thread_ids),
+            "native_targets": [], "native_actions": [],
             "references": [], "desktop": [], "lifecycle": t3code_lifecycle.freeze(adapter.manifest)}
     base = coordinator.service.prepare_report(ScanReport(), active_adapters=(), platforms=("t3code",))
-    context, _ = _frontend_context(coordinator, base, adapter, guards, evidence, "antigravity", [], {})
+    context, _ = _frontend_context(coordinator, base, adapter, guards, evidence, "t3code" if reset else "antigravity", [], {})
     return context, context.active_adapters, None, None, {}, {}
 
 
@@ -329,7 +358,7 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
     adapter = selected[0]
     old = evidence_from_document(document or {})
     references = adapter.snapshot_references(refresh=True).references
-    if adapter.manifest["schema_version"] == DATABASE_ONLY_SCHEMA:
+    if adapter.manifest["schema_version"] in DATABASE_SCHEMAS:
         return _database_only_context(coordinator, adapter, guards, selectors, engines, old)
     if old:
         validate(old)
@@ -530,9 +559,12 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
     with t3code_lifecycle.hold(evidence, census=census):
         # Admit native deletion only after rechecking every frontend family
         # under the startup lock, including desktop changes since planning.
-        files.remaining(evidence["files"])
-        if evidence["binding_manifest"]["schema_version"] == DATABASE_ONLY_SCHEMA:
+        schema = evidence["binding_manifest"]["schema_version"]
+        files.remaining(evidence["files"], compact=schema == DATABASE_RESET_SCHEMA)
+        if schema == DATABASE_ONLY_SCHEMA:
             _require_retired_threads(evidence["binding_manifest"], evidence["selected_thread_ids"])
+        elif schema == DATABASE_RESET_SCHEMA:
+            _require_reset_threads(evidence["binding_manifest"], evidence["selected_thread_ids"])
         for target in evidence['native_targets']:
             if target['engine'] == 'antigravity':
                 native_remaining(target)
@@ -581,11 +613,14 @@ def execute(evidence, *, phase_callback):
                     antigravity.apply(target['native_files'], phase_callback=phase_callback)
         for module, item, family in prepared:
             module.install(item, family, phase_callback=phase_callback)
-        if evidence["binding_manifest"]["schema_version"] == DATABASE_ONLY_SCHEMA:
-            t3code_database.apply(evidence["files"]["database"], phase_callback=phase_callback, truncate_wal=True)
+        schema = evidence["binding_manifest"]["schema_version"]
+        if schema in DATABASE_SCHEMAS:
+            t3code_database.apply(evidence["files"]["database"], phase_callback=phase_callback,
+                                 truncate_wal=True, compact=schema == DATABASE_RESET_SCHEMA)
         else:
             files.apply(evidence["files"], phase_callback=phase_callback)
-    if files.remaining(evidence["files"]) or any(t3code_localstorage.remaining(d["localstorage"]) for d in evidence["desktop"]):
+    if files.remaining(evidence["files"], compact=schema == DATABASE_RESET_SCHEMA) or any(
+            t3code_localstorage.remaining(d["localstorage"]) for d in evidence["desktop"]):
         files.fail("frontend_after_unverified")
     phase_callback("verified")
     return T3CodeCleanupResult(tuple(evidence["selected_thread_ids"]))

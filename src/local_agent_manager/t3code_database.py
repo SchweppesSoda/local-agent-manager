@@ -191,7 +191,7 @@ def _transform(db, ids, *, native_ids=()):
         fail("relations_inconsistent")
 
 
-def freeze(root, ids, *, native_ids=()):
+def freeze(root, ids, *, native_ids=(), compact=False):
     ids = sorted({identifier(i) for i in ids})
     path = database_path(root)
     identity = list(frozen_files._identity(path.stat()))
@@ -214,6 +214,8 @@ def freeze(root, ids, *, native_ids=()):
                 _transform(simulation, ids, native_ids=native_ids)
                 staged = logical_hash(simulation)
                 simulation.commit()
+                if compact:
+                    simulation.execute("VACUUM")
                 after = logical_hash(simulation)
     if list(frozen_files._identity(database_path(root).stat())) != identity:
         fail("database_replaced")
@@ -265,7 +267,7 @@ def require_wal_truncated(evidence):
         fail("database_wal_not_truncated")
 
 
-def apply(evidence, *, phase_callback, truncate_wal=False):
+def apply(evidence, *, phase_callback, truncate_wal=False, compact=False):
     root, path = validate(evidence)
     started = False
     try:
@@ -286,10 +288,12 @@ def apply(evidence, *, phase_callback, truncate_wal=False):
             if logical_hash(db) != evidence["staged_sha256"]:
                 fail("database_after_state_unverified")
             db.commit()
+            if compact:
+                db.execute("VACUUM")
             if truncate_wal and db.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
                 if tuple(db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()) != (0, 0, 0):
                     fail("database_wal_not_truncated")
-        if remaining(evidence):
+        if remaining(evidence, compact=compact):
             fail("database_targets_remain")
         if truncate_wal:
             require_wal_truncated(evidence)
@@ -297,7 +301,7 @@ def apply(evidence, *, phase_callback, truncate_wal=False):
         raise T3CodeError(getattr(exc, "kind", "t3code_database_transaction_failed"), unknown=started) from exc
 
 
-def remaining(evidence, *, terminal_verified=False):
+def remaining(evidence, *, terminal_verified=False, compact=False):
     _, path = validate(evidence)
     ids = tuple(evidence["thread_ids"])
     with closing(connect_readonly(path)) as db:
@@ -315,6 +319,8 @@ def remaining(evidence, *, terminal_verified=False):
         if remaining_count and logical_hash(db) != evidence["before_sha256"]:
             fail("database_changed")
         if not remaining_count and not terminal_verified:
+            if compact and db.execute("PRAGMA freelist_count").fetchone()[0]:
+                fail("database_compaction_unverified")
             current_hash = logical_hash(db)
             if current_hash != evidence['after_sha256']:
                 from .joint_cli_recovery import database_evolution

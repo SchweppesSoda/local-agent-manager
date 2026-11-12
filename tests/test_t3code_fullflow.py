@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from local_agent_record_janitor import t3code_cleanup as cleanup, t3code_database as database
 from local_agent_record_janitor import t3code_cleanup_files as files, t3code_lifecycle as lifecycle
-from local_agent_record_janitor.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, T3CodeBoundAdapter, SCHEMA
+from local_agent_record_janitor.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, T3CodeBoundAdapter, SCHEMA
 from local_agent_record_janitor.cleanup_service import CleanupService
 from local_agent_record_janitor.operation_coordinator import OperationCoordinator
 from tests.orca_native_support import create_native_schema, add_native_record
@@ -197,6 +197,30 @@ class T3CodeFullflowTests(unittest.TestCase):
         result = self.apply(plan)
         self.assertEqual(result["goal_status"], "blocked", result)
         self.assertFalse(result["mutation_started"], result)
+
+    def test_database_reset_requires_every_thread_and_preserves_native_history(self):
+        native = add_native_record(self.home, NATIVE)
+        path = self.root / "userdata/statev2.sqlite"
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            projects = db.execute("SELECT * FROM projection_projects").fetchall()
+        adapter = T3CodeBoundAdapter({**self.manifest, "schema_version": DATABASE_RESET_SCHEMA, "native_stores": []})
+        result = self.coordinator().plan_operation(client="t3code", record_ids=(THREAD,), adapters=(adapter,),
+            plan_path=self.plan_path)
+        self.assertEqual(result["blockers"][0]["blocker_code"], "t3code_database_reset_requires_all_thread_ids", result)
+        plan = self.coordinator().plan_operation(client="t3code", record_ids=(THREAD, KEEP), adapters=(adapter,),
+            plan_path=self.plan_path, operation_id="t3-database-reset")
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        self.assertEqual([a["kind"] for a in plan["actions"]], [cleanup.KIND])
+        result = self.apply(plan)
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertTrue(native.is_file())
+        with closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {V2}threads").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT * FROM projection_projects").fetchall(), projects)
+            self.assertEqual(db.execute("PRAGMA freelist_count").fetchone()[0], 0)
+        result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
+        self.assertEqual(result["goal_status"], "complete", result)
 
     def test_native_dependency_and_exact_ticket(self):
         add_native_record(self.home, NATIVE)
