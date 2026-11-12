@@ -19,6 +19,13 @@ from changing live software/configuration or deleting a user's live stores.
 - Environment inventory stays metadata-only and does not authorize record or
   runtime deletion. Keep installation evidence, active runtime selection, native
   store identity, and authentication state distinct. Inject host facts in tests.
+- Resolve each frontend/provider's BIN, Agent home and session directory
+  independently from its actual per-machine/account configuration. This applies
+  to Codex, Claude Code, Antigravity (agy) and Pi across T3, Paseo, Cindy and other
+  adapters. Never turn a handoff's local paths or shared Cindy/T3 homes into fixed
+  relationships. Account bindings and successful login do not prove historical
+  session ownership; record unsupported mappings explicitly. See
+  [BIN and data-root boundaries](docs/adapters.md#bin-与数据目录的配置边界).
 - Report commit, validation and unresolved limits. Push/release/live cleanup
   follows the user's existing authorization; prepare local work before asking
   for any missing external or destructive authorization.

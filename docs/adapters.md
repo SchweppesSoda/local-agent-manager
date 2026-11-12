@@ -5,6 +5,142 @@
 引擎或 frontend mutation family 的独立执行器。不能因为新客户端也使用 Codex，
 就继承 Cindy 的目录、引用、进程归属或删除规则。
 
+## BIN 与数据目录的配置边界
+
+程序路径、Agent 数据根、前端 profile 和会话目录分别建模。T3、Paseo、Cindy 等前端
+对 Codex、Claude Code、Antigravity（agy）、Pi 的选择可以随机器、profile、provider
+实例及会话变化；一个 BIN 可以服务多个数据根，多个前端也可以使用同一个数据根。
+只能按该组合实际支持的设置与原生归属证据建立绑定，不能把交接记录中的本机绝对路径、
+程序来源或某个前端名称当成固定关系。例如，T3 的 Codex Home 指向 Cindy 管理的目录，
+只说明该机器当时如此配置，不是 T3 必须依赖 Cindy 的规则。
+
+下表描述本项目现有解析能力，不代表每个前端产品都支持四种引擎的全部组合。
+“BIN 不参与逐会话清理”表示清理器使用文件清单，不能据此推断应用的启动程序或目录。
+显式绑定和自动发现仍需核对原生 ID／Pi 文件路径；配置改变后重新准备绑定与计划。
+
+### T3 与 Paseo
+
+T3 从所选 profile 的 `userdata/settings.json` 中按 thread 对应的
+`providerInstances[instanceId]` 读取。Paseo 从 `config.json` 的
+`agents.providers[provider]` 读取，单个 agent 保存的 `launchEnv` 覆盖 provider 的
+`env`。这两者与管理器自身进程继承的环境不是同一份证据。
+
+| 前端 / 引擎 | 程序路径 | 数据根及当前限制 |
+|---|---|---|
+| T3 / Codex | `config.binaryPath` 单独存入 `codex_binary` | `config.homePath` 优先；未声明时读实例环境 `CODEX_HOME`；再以 `~/.codex` 为待验证候选。不会强制关联 Cindy。 |
+| T3 / Claude | 配置中的 `config.binaryPath`；逐会话清理不调用 Claude BIN | `config.homePath` 优先；未声明时读实例环境 `CLAUDE_CONFIG_DIR`；再以 `~/.claude` 为待验证候选。 |
+| T3 / Pi | 当前清理绑定未保存 Pi BIN；非空 `config.launchArgs` 要求显式绑定 | 实例环境 `PI_CODING_AGENT_DIR`，否则 `~/.pi/agent`；session 根读 `PI_CODING_AGENT_SESSION_DIR`，否则 `agentDir/sessions`。 |
+| T3 / agy CLI | 绝对 `config.binaryPath`，与受管 ACP 的双文件运行时分开 | 已验证 Windows CLI 布局为实际用户 home 下的 `.gemini/antigravity-cli`；解析实例环境 `USERPROFILE`，冲突 `HOME` 拒绝。不能把 T3 传入的 `GEMINI_HOME` 当作 CLI 原生根。 |
+| Paseo / Codex | `command[0]` 为单项绝对路径时存入 `codex_binary` | `launchEnv.CODEX_HOME` → provider `env.CODEX_HOME` → `~/.codex` 候选；按 native ID 核实。 |
+| Paseo / Claude | provider `command`；逐会话清理不调用 Claude BIN | `launchEnv.CLAUDE_CONFIG_DIR` → provider `env.CLAUDE_CONFIG_DIR` → `~/.claude` 候选。 |
+| Paseo / Pi | provider `command`；当前清理绑定未保存 Pi BIN | 合并环境后分别解析 `PI_CODING_AGENT_DIR` 和 `PI_CODING_AGENT_SESSION_DIR`；缺省分别为 `~/.pi/agent`、`agentDir/sessions`。 |
+| Paseo / agy CLI | provider 单项绝对 `command` 指向已核验的 `agy.exe` | 合并 provider 环境和 `launchEnv` 后解析 `USERPROFILE`，并核对 `HOME`；使用已验证的 CLI 存储布局。裸 `agy` 尚不能证明 daemon 的 PATH 解析。 |
+
+BIN 的自动回退也有边界：T3 未声明 Codex BIN、Paseo 使用裸命令名而非绝对 Codex 路径时，
+原生 adapter 可能使用管理器进程 PATH 的候选；这不是前端实际启动程序的观测。
+T3／Paseo 的 Codex、Claude、Pi 未指定引擎专属 home 时，目前回退管理器的
+`Path.home()`，没有据此验证前端进程或包装脚本继承的用户目录。
+
+T3 的受管 Antigravity ACP 使用独立的实例目录和受管运行时资格，不能与 CLI 模式互换。
+上述 agy 规则限定当前已验证布局；其他机器或版本如有不同启动／存储契约，应补充适配
+证据，不能仅把现有默认目录强加给它。
+
+T3／Paseo 自动绑定 Pi 时目前显式传入 session 根，未沿用独立 Pi 解析器对项目和全局
+`settings.json.sessionDir` 的读取。只通过该字段改目录的会话可能报
+`native_ids_not_in_configured_home` 或 `native_handle_not_in_configured_home`；
+显式 session 环境或已核实绑定是当前支持路径，不能宣称任意 Pi 配置均已自动覆盖。
+Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 参数要求显式资格；
+`claude-connect` 可以创建的自定义 Claude provider，不因此自动获得完整清理支持。
+
+实现入口：[T3 绑定发现](../src/local_agent_manager/t3code_discovery.py)、
+[Paseo 绑定发现](../src/local_agent_manager/paseo_discovery.py)、
+[agy 启动与存储绑定](../src/local_agent_manager/antigravity_cli_binding.py)。
+
+### Cindy
+
+| 引擎 | 管理器的程序路径选择 | 管理器的数据根解析及限制 |
+|---|---|---|
+| Codex | 显式 `--codex-bin` 优先；否则从该 profile 的已知托管布局发现候选 | `--cindy-codex-home` 可独立指定；当前自动发现默认 `<profile>/codex-home`。前端 profile 与数据库另有选择器；尚未逐账号解析下述其他 Home。 |
+| Claude | 环境盘点只发现 `<profile>/claude-code` 下的程序候选；逐会话清理不调用该 BIN | 生产品牌 `CindyGlobal/Cindy` 的引用按有效 `CLAUDE_CONFIG_DIR` 或 `~/.claude` 归属；其他已支持 profile 使用专属 `claude-home`。自定义根不能唯一归属时阻挡；尚未解析订阅账号绑定。 |
+| Pi | 环境盘点只发现 `<profile>/pi` 下的程序候选；逐会话清理不调用该 BIN | Cindy adapter 当前按 `<profile>/pi-agent-home/sessions` 绑定，尚无逐 provider 的任意 Pi 根配置读取。独立 Pi 的路径参数不等于重绑 Cindy。 |
+| agy | 尚无 Cindy / agy 原生绑定与 writer | 未实现的组合保留未知能力；不能借用 T3、Paseo 或独立 agy 的目录规则。 |
+
+这些是管理器的适配范围，不能表述为 Cindy 产品只允许这些配置或目录。
+管理器继承的 `CLAUDE_CONFIG_DIR` 不是 Cindy 进程环境的直接观测；程序候选或最高版本
+的目录也不证明 Cindy 当前选择了该程序。
+
+#### 原生订阅账号与旧独立账号
+
+2026-11-12 核对本机 Cindy **0.1.133** 的安装包 `app.asar`：版本来自 `package.json`，
+账号实现位于 `.vite/build/bootstrap-electron-BHNSmIC2.js` 的 `accountDirectory`、
+`accountOwnerPrefix`、`readAccountBinding` 和 `readBoundClaudeConfigDir`。
+这份版本限定的证据说明同一 Cindy profile 可以对应多个引擎 Home：
+
+| 账号类型 | 已观察到的目录／绑定规则 |
+|---|---|
+| 旧 Codex 独立账号 | 本机曾使用 `<profile>/codex-accounts/<owner-key>/<provider-id>`。源码允许 `accountHome` 回调提供路径，该布局只是缺省构造，不是任意机器的强制位置。 |
+| 新 Codex 原生订阅账号 | 非默认账号由 `accountDirectory("openai", accountId)` 映射到 `~/.codex-<accountId>`；当前生成的 ID 形如 `cindy-<owner-hash-prefix>-<uuid>`。 |
+| 新 Claude 原生订阅账号 | 同一函数对 `anthropic` 映射到 `~/.claude-<accountId>`；`readBoundClaudeConfigDir` 读取原生绑定。这里只验证了源码映射，未做 Claude 账号迁移实测。 |
+| 原生默认账号 | `accountId=default` 在该函数中分别映射到 `~/.codex`、`~/.claude`。函数返回值不单独证明每条启动路径最终使用的 Home。 |
+
+上表的 `~` 是 Cindy 进程的 `os.homedir()`。当前实现用活动 owner 标识的 SHA-256
+前 12 个十六进制字符限定非默认账号 ID；不能把本机 owner、账号 ID 或绝对路径写成规则。
+账号池文件由 `ownerScopedUserDataPath("subscription-accounts.json")` 定位，本机位于
+`<profile>/owners/<owner-scope>/subscription-accounts.json`。其 `pools` 保存分 provider
+账号池，`bindings` 通过 provider／目标键保存 `providerId` 与 `accountId`；不能只凭
+目录名或登录邮箱推导绑定，也不能把当前账号绑定反推为全部历史会话的归属。
+
+本机 Codex 迁移曾在明确指定目标 `CODEX_HOME` 后验证账号读取与额度查询成功，说明
+既有认证可在该目标 Home 被使用；这不证明历史记录已经迁移，也不改变 T3、Paseo 等
+前端原有的 Home 设置。多个账号可以共用同一 BIN，认证身份与原生存储身份仍须分开。
+
+该次迁移还确认三个范围独立：移除 Cindy 中的账号配置，不保证删除旧原生目录；
+删除原生目录，不保证清除 Cindy 数据库中的会话、消息与索引。应分别说明授权与验证
+范围，不能以登录成功、账号从 UI 消失或一个目录消失作为全部迁移／清理完成的证据。
+
+#### 尚未实现的多账号解析
+
+当前 `CindyProfile` 为每个前端数据库保存一个 `codex_home`；自动发现仍填入
+`<profile>/codex-home`，显式 `--cindy-codex-home` 则替换这一字段。代码尚未读取上述
+订阅账号注册表和绑定，也未自动把旧 `codex-accounts` 逐 provider 关联到会话。
+因此单个 Home 参数不能表达同一数据库中多个账号的逐会话存储归属。Claude 的生产
+profile 分支同样尚未读取这些订阅账号 Home；上述新布局不能算作已覆盖的清理能力。
+
+后续适配需先建立 owner／provider／account 的元数据发现，再结合每条会话的历史引用
+验证实际 native store，分别保存 BIN、Home 与存储身份。当前绑定变化、缺失或移除后，
+证据不足的历史记录应保持未定位；不能批量扫描同名前缀目录后按裸 ID 合并，也不能因
+默认 Home 未找到记录而判定孤儿、已删除或可清理。验证应使用临时存储覆盖多账号、
+共享 BIN、跨机器自定义路径，以及不同 root 下同名 native ID；这些代码工作尚未完成。
+
+实现入口：[Cindy profile 与 Codex 发现](../src/local_agent_manager/discovery.py)、
+[Cindy adapter](../src/local_agent_manager/adapters/cindy.py)、
+[Claude 根归属](../src/local_agent_manager/session_catalog_factory.py)。
+
+### 其他已注册入口
+
+| 入口 | 四种 Agent 的相关边界 |
+|---|---|
+| 独立 Codex / Codex 原生存储 | `--codex-bin` 与 `--codex-home` 独立；目录再回退到 `CODEX_HOME`、`~/.codex`。无显式 BIN 时使用当前进程的 PATH 候选，不代表其他前端的实际启动选择。 |
+| 独立 Claude | `--claude-config-dir` → `CLAUDE_CONFIG_DIR` → `~/.claude`；逐会话文件清理无需 Claude BIN。 |
+| 独立 Pi | agent 根：显式参数 → `PI_CODING_AGENT_DIR` → `~/.pi/agent`；session 根：显式参数 → `PI_CODING_AGENT_SESSION_DIR` → 项目 `sessionDir` → 全局 `sessionDir` → `agentDir/sessions`。 |
+| 独立 agy | `--antigravity-bin` 与 `--antigravity-root` 分别指定并核验；不自动继承某个前端的实例目录。 |
+| Herdr | Codex／Claude／Pi 的 native root 通过 `--herdr-bindings` 逐会话声明，Codex BIN、Pi agent 根与相关运行文件分别声明；默认只读引用不猜 home。agy 未注册完整清理能力。 |
+| Orca | Codex 根据已验证账号／runtime-home 证据及已知布局绑定，BIN 可显式指定；Claude 仅有已限定根的引用保护。Pi／agy 无对应完整清理资格。 |
+| WorkBuddy、千问办公 | 使用各自的存储／SDK 适配；不能从相似名称推成四种 Agent 的可替换 BIN／Home。 |
+
+`environment inventory` 的配置投影不等于上述记录清理绑定：当前 T3 只投影固定
+Codex／Claude／Antigravity 实例 ID，未覆盖自定义实例和 Pi；Paseo 只投影固定 provider 的
+command，不解析它们的 home 环境和 `extends`。Cindy 主要提供布局候选。
+这些覆盖缺口应保留为未知，不能把未列出的实例、BIN 或 Home 报成不存在或固定默认值。
+参见[环境配置投影](../src/local_agent_manager/environment_config.py)和
+[环境盘点](../src/local_agent_manager/environment_inventory.py)。
+
+Skill 部署的运行时绑定也保持独立：`runtimeBinding.resolver=explicit` 分别声明
+`binaryPath` 和 `homePath`；`t3-provider` 按 `instanceId` 读取 T3 配置，当前限定
+Claude／Antigravity driver。它验证的是 `homePath/skillsSubdir` 与挂载根的关系，
+不证明会话存储根，更不能授予记录清理能力；agy 的 Skill home 与 CLI 会话目录不可混用。
+实现见 [Skill 运行时绑定](../src/local_agent_manager/skills/clients/runtime_binding.py)。
+
 ## 通用接入契约
 
 | 角色 | 必须提供的证据 | 不得推导的结论 |
