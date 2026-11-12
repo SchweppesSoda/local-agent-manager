@@ -835,8 +835,10 @@ macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平�
 依据 `0.1.8-nightly.20261107.4301`、commit
 [`4cb6945dc60ed03f567dc5daafd083e52308e82b`](https://github.com/pingdotgg/t3code/tree/4cb6945dc60ed03f567dc5daafd083e52308e82b)。
 `--client t3code` 或显式 `--t3code-root` 才发现其存储，默认 `T3CODE_HOME`，否则
-`~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持当前固定
-schema 的 v1/v2 元数据投影。SQLite 只读事务保留 WAL 可见性；文件/侧文件禁止链接、
+`~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持原有结构和
+`0.1.10-nightly.20261112.4580` 的 v1/v2 元数据投影。后者的消息 `search_text`、搜索触发器
+及查询索引对应安装包 `server.asar` 的 081–083 迁移；两套完整结构分别校验，不接受混合
+迁移或未知表、列、索引和触发器。SQLite 只读事务保留 WAL 可见性；文件/侧文件禁止链接、
 reparse 与硬链接，单文件上限 512 MiB，元数据查询上限 20,000 行并有限时。
 
 T3 数据库操作所用的 Python `sqlite3` 需链接启用 FTS5 的 SQLite 3.45 或更新版本，

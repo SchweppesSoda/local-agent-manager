@@ -1,6 +1,6 @@
 """Bounded T3 Code v1/v2 metadata; native provider IDs never imply a home.
 
-Pinned to 0.1.8-nightly.20261107.4301. SQL projections deliberately exclude
+Qualified against explicit legacy and 0.1.10 schema contracts. SQL projections exclude
 titles, event/message payloads, runtime credentials and authentication tables.
 """
 from __future__ import annotations
@@ -23,6 +23,26 @@ from .sqlite_utils import connect_readonly
 from . import frozen_files
 
 CONTRACT = json.loads(files(__package__).joinpath("t3code_schema.json").read_text(encoding="utf-8"))
+
+
+def _schema_contracts():
+    original = {(row[0], row[1]): row for row in CONTRACT["objects"]}
+    result = [CONTRACT["objects"]]
+    for variant in CONTRACT.get("compatible_variants", ()):
+        objects = original.copy()
+        for key in variant["remove"]:
+            del objects[tuple(key)]
+        for row in variant["replace"]:
+            assert (row[0], row[1]) in objects
+            objects[row[0], row[1]] = row
+        for row in variant["add"]:
+            assert (row[0], row[1]) not in objects
+            objects[row[0], row[1]] = row
+        result.append([objects[key] for key in sorted(objects)])
+    return tuple(result)
+
+
+SCHEMA_CONTRACTS = _schema_contracts()
 RELATIVE = "userdata/statev2.sqlite"
 MAX_ROWS = 20000
 MAX_DATABASE_BYTES = 512 * 1024 * 1024
@@ -104,7 +124,7 @@ def database_path(root):
 def qualify(db):
     objects = [list(row) for row in db.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")]
-    if objects != CONTRACT["objects"]:
+    if objects not in SCHEMA_CONTRACTS:
         fail("schema_unverified")
 
 

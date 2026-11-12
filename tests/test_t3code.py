@@ -64,6 +64,46 @@ class T3CodeTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("t3code_schema_unverified", {e["message"] for e in value["errors"]})
 
+    def test_new_search_schema_inventory_delete_and_preserve_search_text(self):
+        home = self.root / 'new-t3'
+        with closing(create_store(home, objects=store.SCHEMA_CONTRACTS[1])) as db:
+            add_thread(db, 'selected')
+            add_thread(db, 'keeper')
+            db.execute(f'UPDATE {V2}messages SET search_text=? WHERE thread_id=?',
+                       ('selected search text', 'selected'))
+            db.execute(f'UPDATE {V2}messages SET search_text=? WHERE thread_id=?',
+                       ('kept search text', 'keeper'))
+            db.commit()
+            code, inventory = self.invoke('records', '--client', 't3code',
+                                          '--t3code-root', str(home), '--json')
+            self.assertEqual(code, 0, inventory)
+            self.assertEqual(inventory['count'], 2)
+            self.assertNotIn('selected search text', json.dumps(inventory))
+            evidence = database.freeze(home, ['selected'])
+            database.apply(evidence, phase_callback=lambda _: None)
+            self.assertEqual(database.remaining(evidence), 0)
+            self.assertEqual(db.execute(f'SELECT search_text FROM {V2}messages').fetchall(),
+                             [('kept search text',)])
+            # This is a contentless FTS5 table: verify postings with MATCH.
+            self.assertEqual(db.execute("SELECT count(*) FROM orchestration_v2_message_search WHERE text MATCH 'kept'").fetchone(), (1,))
+            self.assertEqual(db.execute("SELECT count(*) FROM orchestration_v2_message_search WHERE text MATCH 'selected'").fetchone(), (0,))
+            # Any further schema or trigger change remains unqualified.
+            db.execute(f'ALTER TABLE {V2}messages ADD COLUMN future_restore TEXT')
+            db.commit()
+            with self.assertRaisesRegex(ValueError, 'schema_unverified'):
+                store.qualify(db)
+        self.writer.assert_not_called()
+
+    def test_new_search_trigger_drift_and_partial_migration_are_rejected(self):
+        for change in ('DROP TRIGGER orchestration_v2_message_search_update',
+                       'DROP INDEX orchestration_v2_projection_nodes_settled_leaf_idx'):
+            with self.subTest(change=change), closing(create_store(
+                    self.root / ('variant-' + str(len(change))), objects=store.SCHEMA_CONTRACTS[1])) as db:
+                db.execute(change)
+                db.commit()
+                with self.assertRaisesRegex(ValueError, 'schema_unverified'):
+                    store.qualify(db)
+
     def test_titles_are_opt_in_metadata_without_message_content_or_adapter_changes(self):
         add_thread(self.db, 'named', native='native-name')
         add_thread(self.db, 'old-name', legacy=True)

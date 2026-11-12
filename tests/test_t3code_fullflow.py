@@ -83,6 +83,26 @@ class T3CodeFullflowTests(unittest.TestCase):
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
 
+    def test_new_search_schema_cold_plan_apply_and_verify(self):
+        from local_agent_manager.t3code_store import RELATIVE, SCHEMA_CONTRACTS
+        # Replace only the closed, synthetic fixture database from setUp.
+        (self.root / RELATIVE).unlink()
+        with closing(create_store(self.root, objects=SCHEMA_CONTRACTS[1])) as db:
+            add_thread(db, THREAD, native=NATIVE)
+            add_thread(db, KEEP, native=OTHER)
+            db.execute(f'UPDATE {V2}messages SET search_text=? WHERE thread_id=?', ('selected', THREAD))
+            db.execute(f'UPDATE {V2}messages SET search_text=? WHERE thread_id=?', ('keeper', KEEP))
+            db.commit()
+        plan = self.plan()
+        applied = self.apply(plan)
+        self.assertEqual(applied['goal_status'], 'complete', applied)
+        verified = self.coordinator().verify_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
+        self.assertTrue(verified['goal_satisfied'], verified)
+        with closing(sqlite3.connect(self.root / RELATIVE)) as db:
+            self.assertEqual(db.execute(f'SELECT thread_id,search_text FROM {V2}messages').fetchall(), [(KEEP, 'keeper')])
+            self.assertEqual(db.execute("SELECT count(*) FROM orchestration_v2_message_search WHERE text MATCH 'selected'").fetchone(), (0,))
+            self.assertEqual(db.execute("SELECT count(*) FROM orchestration_v2_message_search WHERE text MATCH 'keeper'").fetchone(), (1,))
+
     def test_full_plan_freezes_chromium_before_service_deletion(self):
         from local_agent_manager import t3code_desktop_cleanup as d
         from tests.test_t3code_desktop_writer import fixture, ENV, IDS

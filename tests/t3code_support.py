@@ -9,12 +9,12 @@ PRIVATE = "T3_PRIVATE_MESSAGE_TITLE_TOKEN_SENTINEL"
 STAMP = "2026-11-07T00:00:00.000Z"
 
 
-def create_store(root):
+def create_store(root, *, objects=None):
     path = Path(root) / RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
     try:
-        objects = CONTRACT["objects"]
+        objects = CONTRACT["objects"] if objects is None else objects
         for kind, name, table, sql in objects:
             if kind == "table" and not name.startswith("orchestration_v2_message_search_"):
                 db.execute(sql)
