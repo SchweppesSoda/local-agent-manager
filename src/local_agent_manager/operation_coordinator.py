@@ -17,6 +17,7 @@ from typing import Any
 from .action_registry import action_capability
 from .antigravity_cli_operations import route as antigravity_cli_route
 from .builtin_delete import module_for as builtin_delete
+from . import magpie_cleanup
 from .agent_operations import action_binding
 from .path_identity import inventory_path_identity_scope
 from .operation_store import OperationStore, plan_sha256, strict_json_load, write_new_json
@@ -166,6 +167,7 @@ class OperationCoordinator:
         t3code_roots: Sequence[str | Path] = (),
         adapters: Iterable[Any] | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        magpie_bindings: Path | None = None,
         **_unused: Any,
     ) -> dict[str, Any]:
         normalized_scope = self._scope(
@@ -237,6 +239,12 @@ class OperationCoordinator:
                 manual_actions=manual_actions,
                 manual_catalog=manual_catalog,
             )
+            if magpie_bindings is not None:
+                context, candidates = magpie_cleanup.augment(self, document, context, candidates, magpie_bindings)
+                document = self._make_plan_document(operation, normalized_scope, context, candidates, blockers,
+                    plan_path=plan_path, operation_home=operation_home, codex_home=codex_home,
+                    active_adapters=active_adapters, action_contexts=action_contexts,
+                    manual_actions=manual_actions, manual_catalog=manual_catalog)
             write_new_json(Path(str(document["plan_path"])), document)
             self._emit_progress(
                 progress_callback,
@@ -294,6 +302,7 @@ class OperationCoordinator:
         app_server_factory: Any = None,
         binary_resolver: Any = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        magpie_bindings: Path | None = None,
         **_unused: Any,
     ) -> dict[str, Any]:
         normalized_scope = self._scope(
@@ -323,6 +332,7 @@ class OperationCoordinator:
                 codex_home=codex_home,
             )
             self._validate_apply_scope(document, normalized_scope)
+            magpie_cleanup.check_repeated_bindings(document, magpie_bindings)
             builtin_module = builtin_delete(document["scope"])
             if builtin_module:
                 evidence = builtin_module.approved_evidence(document)
@@ -561,6 +571,7 @@ class OperationCoordinator:
         app_server_factory: Any = None,
         binary_resolver: Any = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        magpie_bindings: Path | None = None,
         **_unused: Any,
     ) -> dict[str, Any]:
         normalized_scope = self._scope(
@@ -578,6 +589,7 @@ class OperationCoordinator:
             )
         planned = self.plan_operation(
             scope=normalized_scope,
+            magpie_bindings=magpie_bindings,
             operation_id=operation_id,
             plan_path=plan_path,
             operation_home=operation_home,
@@ -597,6 +609,7 @@ class OperationCoordinator:
                 "run", normalized_scope, "operation_context_unavailable",
                 operation_id=operation_id, blocker_code="operation_context_unavailable",
             )
+        live.clients_closed_ack = clients_closed
         result = self._execute_live(
             live,
             timeout=float(timeout),
@@ -610,7 +623,7 @@ class OperationCoordinator:
 
     def _finish_native_run(self, initial: _LiveOperation, result: dict[str, Any], **execution: Any) -> dict[str, Any]:
         """Fresh, bounded residual plans; never retry a native deletion request."""
-        if initial.client != "native":
+        if initial.client != "native" or magpie_cleanup.evidences(initial.document):
             return result
         allowed: set[tuple[str, str]] = set()
         for action in initial.document.get("actions", ()):
@@ -1239,6 +1252,8 @@ class OperationCoordinator:
             for raw_id in batch.get("action_ids", ()):
                 action_id = str(raw_id)
                 action = actions.get(action_id)
+                if action and action.get("kind") == magpie_cleanup.KIND:
+                    continue
                 signature = cls._action_signature(
                     batch.get("storage_id"),
                     batch.get("mutation_family"),
@@ -1262,6 +1277,8 @@ class OperationCoordinator:
         signatures: set[tuple[str, str, tuple[str, ...], str]] = set()
         for batch in partition_actions(getattr(context.plan, "actions", ())):
             for action in batch.actions:
+                if str(getattr(action.kind, "value", action.kind)) == magpie_cleanup.KIND:
+                    continue
                 signature = cls._action_signature(
                     batch.storage_id,
                     batch.mutation_family,
@@ -1276,6 +1293,7 @@ class OperationCoordinator:
         return signatures
 
     @classmethod
+    @magpie_cleanup.with_residuals
     def _residual_action_ids(
         cls,
         document: Mapping[str, Any],
@@ -1592,7 +1610,7 @@ class OperationCoordinator:
                 # even when an interruption prevented an execution result.
                 verified_modified = bool(state.get("modified")) or bool(
                     raw_batch.get("mutation_family") in {
-                        "delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_server_thread", "delete_t3code_frontend"
+                        "delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_paseo_daemon_agent", "delete_t3code_server_thread", "delete_t3code_frontend", "delete_magpie_records"
                     }
                     and state.get("mutation_started")
                     and action_ids and not child_residuals
@@ -1711,6 +1729,7 @@ class OperationCoordinator:
         if not require_selection and selected > 1:
             raise OperationCoordinatorError("operation scope selectors conflict")
 
+    @magpie_cleanup.restore_context
     @inventory_path_identity_scope()
     def _build_context(
         self,
@@ -3539,6 +3558,8 @@ class OperationCoordinator:
 
     @staticmethod
     def _action_engine(context: Any, action: Any) -> str:
+        if str(getattr(action.kind, "value", action.kind)) == magpie_cleanup.KIND:
+            return ""
         external = getattr(
             getattr(action, "impact", None), "external_engine", None
         )
@@ -3749,6 +3770,9 @@ class OperationCoordinator:
                     capability["native_delete"] = True
             payload["counts"]["blocked_count"] = len(payload["blockers"])
             payload["goal_status"] = "ready" if candidates and not payload["blockers"] else "blocked"
+        payload["related_stores"] = {"magpie": {"included": bool(magpie_cleanup.evidences(payload)),
+            "scope": "explicit_profiles_and_native_bindings" if magpie_cleanup.evidences(payload) else "excluded",
+            "excluded": ["other_profiles", "request_archives", "remote_sync_and_backups", "webview_and_os_caches"]}}
         payload["plan_sha256"] = plan_sha256(payload)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(payload)
@@ -3950,6 +3974,7 @@ class OperationCoordinator:
         from .retired_clients import require_active_plan
         require_active_plan(document)
         validate_guard_sources(document)
+        magpie_cleanup.validate_document(document)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(document)
         from .paseo_daemon_delete import KIND as paseo_daemon_kind, approved_evidence
@@ -4635,7 +4660,8 @@ class OperationCoordinator:
     ) -> dict[str, Any]:
         entered = False
         try:
-            with mutation_roots(frozen_operation_roots(live.document)):
+            with mutation_roots(frozen_operation_roots(live.document)), magpie_cleanup.execution_scope(
+                    live.document, clients_closed=getattr(live, "clients_closed_ack", False)):
                 from .t3code_cleanup import evidence_from_document, execution_scope as t3code_execution_scope
                 if evidence_from_document(live.document) is not None:
                     from .mutation_guard import check_operation_root_admission
@@ -5098,7 +5124,7 @@ class OperationCoordinator:
                                 (),
                             )
                         }
-                        typed = tuple(action if str(getattr(action.kind, "value", action.kind)) in {"delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend"}
+                        typed = tuple(action if str(getattr(action.kind, "value", action.kind)) in {"delete_workbuddy_session", "remove_workbuddy_ui_reference", "delete_office_frontend", "delete_office_artifacts", "delete_orca_frontend", "delete_herdr_frontend", "delete_paseo_frontend", "delete_t3code_frontend", "delete_magpie_records"}
                                       else typed_by_id.get(str(action.action_id), action) for action in batch.actions)
                         outcome = self.service.execute(
                             batch_context,
@@ -6065,6 +6091,7 @@ class OperationCoordinator:
             "mutation_started": bool(mutation_started),
             "scope": dict(scope),
             "batches": [dict(value) for value in batches],
+            "related_stores": document.get("related_stores", {"magpie": {"included": False, "scope": "excluded"}}),
             "residual_action_ids": list(residuals),
             "blockers": [dict(value) for value in blockers],
             "counts": {

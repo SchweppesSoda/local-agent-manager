@@ -42,6 +42,7 @@ _DEFAULT_ROLLOUT_READER = find_thread_rollouts
 
 
 class ActionKind(str, Enum):
+    DELETE_MAGPIE_RECORDS = "delete_magpie_records"
     DELETE_HERDR_FRONTEND = "delete_herdr_frontend"
     DELETE_PASEO_FRONTEND = "delete_paseo_frontend"
     DELETE_PASEO_DAEMON_AGENT = "delete_paseo_daemon_agent"

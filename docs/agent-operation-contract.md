@@ -32,6 +32,12 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 
 ## Required agent workflow
 
+Magpie companion cleanup also follows [Magpie 关联清理](operation-cli.md#magpie-关联清理).
+Its explicit profile/native-record bindings join the same immutable operation;
+ordinary plans report Magpie excluded. Never infer this layer is clean from
+native deletion alone. Request archives and unknown formats remain blockers,
+and unknown Magpie children use the same status/verify and no-replay contract.
+
 1. Select one exact client and its physical stores. Official Codex/ChatGPT
    Desktop uses `native`/`codex-native` with the official native `CODEX_HOME`,
    never a Cindy substitute. Inventory and reports expose metadata only;

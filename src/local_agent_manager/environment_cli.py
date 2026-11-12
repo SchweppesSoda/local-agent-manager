@@ -33,6 +33,8 @@ def add_environment_commands(parser: argparse.ArgumentParser) -> None:
     )
     from .connection_cli import add_connection_commands
     add_connection_commands(commands)
+    from .magpie_discovery import add_commands as add_magpie_commands
+    add_magpie_commands(commands)
     for name, help_text in (
         ("inventory", "盘点已识别的运行时和配置路径"),
         ("doctor", "诊断运行时选择、路径和配置证据"),
@@ -62,6 +64,9 @@ def add_environment_commands(parser: argparse.ArgumentParser) -> None:
 def run_environment_command(
     args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO
 ) -> int:
+    if args.environment_command == "magpie-cleanup":
+        from .magpie_discovery import run
+        return run(args, stdout=stdout, stderr=stderr)
     if args.environment_command not in {"inventory", "doctor"}:
         from .connection_cli import run_connection_command
         return run_connection_command(args, stdout=stdout, stderr=stderr)

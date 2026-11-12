@@ -120,6 +120,8 @@ def _mutation_family_rank(family: str) -> int:
     """Return the explicit native → frontend → relation/index → project rank."""
 
     normalized = str(family).strip().casefold()
+    if normalized == "delete_magpie_records":
+        return 5
     if normalized == "delete_schedule_run":
         return 4
     if normalized in {

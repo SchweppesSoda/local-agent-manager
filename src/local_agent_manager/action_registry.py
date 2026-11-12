@@ -23,6 +23,8 @@ class ActionCapability:
 
 
 ACTION_REGISTRY: Mapping[str, ActionCapability] = {
+    "delete_magpie_records": ActionCapability("delete_magpie_records", True, "delete_magpie_records", True,
+        "bound_magpie_summary_calls_usage_routing_recordings_and_trash_absent"),
     "delete_antigravity_cli_sessions": ActionCapability("delete_antigravity_cli_sessions", True,
         "delete_antigravity_cli_sessions", True,
         "exact_cli_sessions_summary_mirrors_resume_cache_and_artifacts_absent"),

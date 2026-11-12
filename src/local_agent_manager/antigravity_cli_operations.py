@@ -279,6 +279,8 @@ def route(verb):
                 return function(self, *args, **kwargs)
             store = None
             try:
+                if options.get('magpie_bindings'):
+                    native.fail('magpie_direct_cli_binding_unqualified')
                 if verb in {'plan', 'run'}:
                     if verb == 'run' and not options.get('clients_closed'):
                         native.fail('clients_closed_ack_required')

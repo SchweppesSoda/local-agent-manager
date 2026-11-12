@@ -540,6 +540,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(delete, progress=True)
     _add_operation_scope_arguments(delete)
+    delete.add_argument("--magpie-bindings", type=Path,
+        help="将显式配置及原生会话映射中的 Magpie 列表、缓存、网关历史与回收站纳入冻结计划")
     delete.add_argument(
         "--paseo-only", action="store_true",
         help="delete plan/apply/run：通过本机 Paseo daemon 删除会话，保留 provider 原生会话；run --yes 支持多条",
@@ -1549,6 +1551,8 @@ def _run_operation_backend(
             if (scope or {}).get('client') == 'antigravity':
                 operation_kwargs.update(antigravity_root=args.antigravity_root, antigravity_bin=args.antigravity_bin,
                                         t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
+            if getattr(args, "magpie_bindings", None):
+                operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.plan_operation(**operation_kwargs)
         elif verb == "apply":
             operation_kwargs = {
@@ -1583,6 +1587,8 @@ def _run_operation_backend(
                 operation_kwargs['antigravity_root'] = args.antigravity_root
             if args.antigravity_bin:
                 operation_kwargs['antigravity_bin'] = args.antigravity_bin
+            if getattr(args, "magpie_bindings", None):
+                operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
             if bool(getattr(args, "handoff", False)):
@@ -1630,6 +1636,8 @@ def _run_operation_backend(
             if (scope or {}).get('client') == 'antigravity':
                 operation_kwargs.update(antigravity_root=args.antigravity_root, antigravity_bin=args.antigravity_bin,
                                         t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
+            if getattr(args, "magpie_bindings", None):
+                operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.run_operation(**operation_kwargs)
         elif verb == "status":
             operation_kwargs = {
@@ -1707,6 +1715,9 @@ def _run_delete_operation(
 ) -> int:
     verb = str(args.delete_action)
     try:
+        if getattr(args, "magpie_bindings", None) and (
+                getattr(args, "handoff", False) or args.paseo_only or args.t3code_only):
+            raise ValueError("magpie_native_disk_plan_required: Magpie 不支持 frontend-only 或自动关闭 handoff；使用普通 plan/apply 和显式关闭确认")
         if verb == "apply":
             if not getattr(args, "operation_id", None):
                 raise ValueError("delete apply 必须指定 --operation-id")
@@ -1881,6 +1892,10 @@ def main(
 
     if args.command == "environment":
         return run_environment_command(args, stdout=output, stderr=error_output)
+
+    if args.command == "delete" and getattr(args, "magpie_bindings", None) and not args.delete_action:
+        return _emit_fatal_error("delete", ValueError("magpie_bindings_requires_plan_apply_or_run"),
+                                json_output=args.json, stdout=output, stderr=error_output)
 
     if args.command == "agent":
         from .agent_cli import run_agent_command

@@ -44,6 +44,7 @@ class RecordKind(str, Enum):
 
 
 class MutationKind(str, Enum):
+    DELETE_MAGPIE_RECORDS = "delete_magpie_records"
     """Typed mutation vocabulary used internally during the compatibility period."""
 
     DELETE_CONVERSATION = "delete_conversation"

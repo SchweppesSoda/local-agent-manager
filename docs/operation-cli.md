@@ -1076,6 +1076,91 @@ persistence so a fresh process can verify the exact frozen snapshot. A started
 unknown operation is marked modified only after strict after-state verification;
 an unchanged before-state retains its residuals and does not claim modification.
 
+## Magpie 关联清理
+
+`delete plan/apply/run --magpie-bindings <文件>` 将 Magpie 纳入现有原生/前端操作。
+普通计划及结果中的 `related_stores.magpie.included=false` / `scope=excluded`
+明确表示未检查、未清理该层，不能据此宣称整机无残留。完成仅覆盖本次显式绑定的
+profiles、原生记录及受支持的文件类型。
+
+先生成一次不执行的原生计划。以 T3 为例，先沿用本节前面的实际 T3 provider、BIN、
+Home 和桌面绑定流程，再准备 Magpie；不能把 T3 的 Home 固定到 Cindy。以下路径
+都是示例变量，不代表本机默认值：
+
+```powershell
+local-agent-manager delete plan --client t3code --record-id $threadId --t3code-bindings $t3Bindings --out $nativePlan --json
+local-agent-manager environment magpie-cleanup prepare --native-plan $nativePlan --config-root $magpieConfig --cache-root $magpieCache --runtime-binary $magpieExe --runtime-binary $magpieCom --out $magpieBindings --json
+local-agent-manager delete plan --client t3code --record-id $threadId --t3code-bindings $t3Bindings --magpie-bindings $magpieBindings --out $jointPlan --json
+```
+
+`prepare` 只读记录，`--out` 只新建绑定文件，不覆盖已有文件。它核对原生计划的哈希，
+从引擎、物理根和原生 ID 生成映射，读取 usage 的 `native_session` 来关联代理会话。
+原生 ID 相同却分属不同 Home、未知别名或缺少可证明映射时停止，不自动猜选。
+返回的 `counts` 和联合计划里的 `magpie_evidence.counts` 按文件类型说明清理量；
+其中 `recorded_conversations` 是日期/会话 bucket 数，`trash_sessions` 是回收站条目数，
+`derived_indexes` 是整份重建索引的文件数。
+
+也可不用显式两根，改为 `--home <Magpie 实际 Home> --launch-environment <JSON>`；
+JSON 仅包含已核实的 `XDG_CONFIG_HOME` / `XDG_CACHE_HOME`。没有这些环境变量时，
+使用该 Home 的 `.config/magpie` 与 `.cache/magpie`。存在 `.portable` 时优先使用
+程序旁 `data` 与 `data/cache`。仅存在未标记的 `data` 时要求显式两根。管理器不读取
+自身环境来冒充其他进程的启动配置。多个 Windows `.exe`/`.com` 入口必须全部绑定；
+绑定同目录的一个入口而漏掉另一个会阻挡。
+
+绑定 schema 为 `lam.magpie-bindings.v1`，可放多个 profile：
+
+```json
+{
+  "schema_version": "lam.magpie-bindings.v1",
+  "profiles": [{
+    "config_root": "D:\\profiles\\magpie-config",
+    "cache_root": "D:\\profiles\\magpie-cache",
+    "runtime_binaries": ["D:\\apps\\Magpie\\magpie.exe", "D:\\apps\\Magpie\\magpie.com"],
+    "records": [{
+      "engine": "codex",
+      "root": "D:\\profiles\\selected-codex-home",
+      "id": "完整原生会话ID",
+      "gateway_keys": [{"agent": "codex", "id": "完整原生会话ID"}]
+    }]
+  }]
+}
+```
+
+`records` 必须与原生计划的全部删除目标及级联范围一致，不能用前端 thread/agent ID
+替代原生 ID。配置中的历史账号身份不证明旧会话归属；Cindy 多账号绑定证据不足时，
+先解决原生计划的阻挡项。不会为了清理 Magpie 而扩大原生删除范围。
+
+| 对象 | 本次 writer 的行为 |
+| --- | --- |
+| 原生列表 `sessions.json` v29 | 移除原生文件证据匹配的条目，保留其余条目 |
+| `calls-v15/*.gob` / `*.rev` | 按原始路径字节的 SHA-256 移除对应分片，不清空整个目录 |
+| `log-v1.bin`、`requests-v1.bin`、`page-v1.json`、`heat-v1.json` | 整份失效，之后由保留记录重建；范围在计划中明示 |
+| `usage.jsonl` | 删除精确 gateway identity 对应的行；其余原始行字节保持不变 |
+| `routing/YYYY-MM-DD.jsonl[.gz]` | 按 route ID 或精确 agent/conv 删除关联行；保留行字节不变，gzip 重新压缩 |
+| `gateway-conversations/<date>/<identity hash>` | 核验每条录制的身份后删除精确 bucket |
+| `gateway-sessions-hidden.json` | 删除选中身份的隐藏标记 |
+| `trash/sessions/<agent>/<key>` | 核验 manifest 身份及原生来源根后永久删除对应副本，包含网关回收站 |
+| provider/账号/认证配置、其他原生记录、其他 profile | 保留 |
+| 请求 archive、本地/云端同步备份、WebView/系统缓存 | 未纳入；选中 usage 有 archive 引用时阻挡，避免丢失追踪线索 |
+
+执行前需要用户已授权关闭 Magpie 以及该计划涉及的 Agent/前端，并提供真实
+`--clients-closed` 确认；本入口不自动结束进程。检查联合计划后，使用普通
+`delete apply --operation-id ... --plan ... --authorized-plan-sha256 ... --clients-closed`
+执行，或在已有明确删除授权下使用 `delete run`。配置、映射、日志、目录成员或已绑定
+程序指纹改变，或进程检查/排他句柄无法证明关闭，都会在原生写入前阻挡。
+
+执行顺序为原生删除 → 前端清理 → Magpie config/cache。每个 Magpie child 只拥有
+一个物理 store；共享历史文件使用整个根的排他范围，未知 child 不允许其他目标绕过。
+`operation status/verify` 从冻结计划恢复，无需重新提供绑定文件；apply 重复提供
+绑定文件时必须完全一致。中断结果 `unknown` 不重放，核验发现残留则保留证据并报告
+未完成。当前不自动生成“原生已删、仅剩 Magpie”的新写入计划，不编辑原计划继续删除。
+
+当前 Windows 联合入口覆盖 native/Cindy/T3/Paseo 已合格的 Codex、Claude、Pi 原生
+动作。Magpie 解析格式依据 v0.1.3828；单个共享文件及解压后 JSONL 上限 16 MiB，
+目录成员/树遍历沿用 `frozen_files` 的预算。未知 schema、额外 calls-v 版本、损坏行、
+链接或歧义都阻挡，不自动修复。独立 agy CLI、T3/Paseo 联合 agy 原生动作、仅删前端
+模式以及自动关闭 handoff 尚未接入 Magpie；传入绑定会明确拒绝，不静默忽略。
+
 ## Output
 
 JSON output and human summaries contain metadata only: IDs, stores, paths,

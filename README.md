@@ -101,6 +101,12 @@ local-agent-manager maintenance run --client cindy --category logs --older-than-
 
 ## 记录清理
 
+Magpie 的会话列表、解析缓存、网关历史和回收站是原生记录之外的一层。
+普通计划会明确标记这一层未纳入。需要联合清理时，用
+`environment magpie-cleanup prepare` 按实际 Magpie 配置目录、缓存目录、程序和已冻结的
+原生会话映射生成绑定，再通过 `delete plan --magpie-bindings` 纳入同一操作。
+支持范围、关闭要求及阻挡条件见 [Magpie 关联清理](docs/operation-cli.md#magpie-关联清理)。
+
 管理器自身的日志通过 `state inventory/cleanup/migrate --root '<数据根>'` 维护。
 清理和迁移先输出预览，应用时需要 `--apply --plan-sha256 '<预览哈希>'`。
 清理保留未解决的恢复材料，迁移保留旧位置的永久锁和布局标记。

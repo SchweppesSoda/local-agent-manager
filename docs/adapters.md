@@ -1080,6 +1080,47 @@ Adapter 不负责决定最终风险或动作，也永远不直接写库。核心
 
 扫描异常应携带受影响的 `codex_home`，使计划能把失败限制到对应 StorageLocation。只有确实无法归属保存位置的错误才应成为计划级错误并阻止所有动作。
 
+## Magpie 与前端、原生记录的关系
+
+这几层没有统一的会话主键，也没有按账号自动同步删除的保证：
+
+| 层 | 保存的对象 | 本项目的归属依据 |
+| --- | --- | --- |
+| Codex / Claude / Pi | 原生会话与产物 | 引擎、实际数据根、原生 ID；Pi 还需精确 transcript 路径 |
+| Cindy | 自身聊天行、SDK 关联，及各 provider/账号的原生目录 | Cindy session ID 与明确的原生存储绑定；新独立账号 Home 不能由旧默认目录代替 |
+| Paseo | daemon agent registry、原生持久化句柄、计划任务及桌面恢复副本 | agent ID、server/profile 和原生句柄映射 |
+| T3 | thread、provider thread、事件/投影及桌面恢复副本 | thread ID → provider native reference → 实际 BIN/Home/session root 绑定 |
+| Magpie 原生列表 | 扫描原始文件后生成的摘要及解析缓存 | `sessions.json` 的原始路径与原生删除计划中的文件证据 |
+| Magpie 网关层 | usage、routing、可选录制正文、隐藏标记 | `(agent, session)`；关联不同的前端 ID 时必须有 `native_session` 等可验证映射 |
+| Magpie 回收站 | 可以恢复原文件的独立副本 | `session.json` 的 agent/ID、来源路径及所在 profile |
+
+Magpie 网关列表是 usage 的投影；只删 `sessions.json` 会重新生成列表，只删隐藏标记
+也不会删掉历史。Magpie 自身的“删除网关会话”会隐藏列表并移动录制文件，保留 usage
+统计。本项目的显式联合清理会移除选定 usage 行，因而对应统计也会减少。
+
+实现依据为 Magpie **v0.1.3828** 的
+[原生列表](https://github.com/yetone/magpie/blob/v0.1.3828/internal/sessions/sessions.go)、
+[调用缓存](https://github.com/yetone/magpie/blob/v0.1.3828/internal/sessions/call_cache.go)、
+[网关录制](https://github.com/yetone/magpie/blob/v0.1.3828/internal/sessions/gateway.go)、
+[网关回收站](https://github.com/yetone/magpie/blob/v0.1.3828/internal/sessions/gateway_delete.go)、
+[目录选择](https://github.com/yetone/magpie/blob/v0.1.3828/internal/appdir/appdir.go)。
+这是已核定格式的边界，不是对未来版本或插件格式的兼容承诺。
+
+`magpie_discovery` 接受实际启动环境或显式 config/cache 两个根；不使用管理器继承的
+环境代替 Magpie 的环境。便携模式 `.portable` 优先于 XDG，未带标记却存在 `data`
+的布局要求显式绑定。BIN 仅用于识别/阻止已绑定程序重启，不用于推导原生 Home。
+`magpie_cleanup` 将所选原生动作与绑定逐项对齐，绑定覆盖该计划的全部原生删除目标；
+不接受仅有前端 ID、账号名、cwd 或相似路径的推断。多 profile 分别冻结，未纳入的
+profile 不在完成承诺内。
+
+配置文件只冻结指纹，正文和凭据不进入计划。文件链接、损坏 JSON/JSONL/GZip、
+未知缓存版本、未证明的路径/网关映射、共享 route ID，以及选中 usage 的 archive
+引用均会阻挡。整份共享文件的 hash 和目录成员列表用来防止计划后的范围变化；
+写入前持有已绑定 Magpie 程序的 Windows 排他句柄，按物理 store 的永久锁协调本项目。
+恢复核验检查精确 after-state，并重新发现该范围内的副本，不以缓存变空代替核验。
+
+命令、逐类清理范围和当前限制见 [Magpie 关联清理](operation-cli.md#magpie-关联清理)。
+
 ## 时间与年龄
 
 平台时间戳单位可能是秒、毫秒或 ISO 8601。adapter 应明确转换，不要用数值大小猜测后直接参与自动删除。

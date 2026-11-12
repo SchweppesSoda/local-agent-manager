@@ -97,9 +97,12 @@ class ExecutionOutcome:
     herdr_cleanup: Any | None = None
     paseo_cleanup: Any | None = None
     t3code_cleanup: Any | None = None
+    magpie_cleanup: Any | None = None
 
     @property
     def ok(self) -> bool:
+        if self.magpie_cleanup is not None:
+            return True
         if self.t3code_cleanup is not None:
             return True
         if self.paseo_cleanup is not None:
@@ -131,6 +134,8 @@ class ExecutionOutcome:
 
     @property
     def modified(self) -> bool:
+        if self.magpie_cleanup is not None:
+            return bool(self.magpie_cleanup.deleted_ids)
         if self.t3code_cleanup is not None:
             return bool(self.t3code_cleanup.deleted_ids)
         if self.paseo_cleanup is not None:
@@ -155,6 +160,8 @@ class ExecutionOutcome:
 
     @property
     def results(self) -> tuple[Any, ...]:
+        if self.magpie_cleanup is not None:
+            return (self.magpie_cleanup,)
         if self.t3code_cleanup is not None:
             return (self.t3code_cleanup,)
         if self.paseo_cleanup is not None:
@@ -179,6 +186,11 @@ class ExecutionOutcome:
 
     def audit_payload(self) -> dict[str, Any]:
         """Return mutation evidence without observations or chat bodies."""
+
+        if self.magpie_cleanup is not None:
+            return {"command": "delete", "mutation_kind": self.mutation_kind,
+                    "selected_action_ids": [str(a.action_id) for a in self.selected_actions],
+                    "result": self.magpie_cleanup.to_dict(), "plan_fingerprint": str(self.plan.plan_fingerprint)}
 
         if self.t3code_cleanup is not None:
             return {"command": "delete", "mutation_kind": self.mutation_kind,
@@ -773,6 +785,23 @@ def _execute_prevalidated_actions_locked(
             plan=plan,
             frontend_session_cleanup=result,
         )
+
+    if mutation_kind == "delete_magpie_records":
+        from .magpie_cleanup import execute, action_id
+        if len(actions) != 1:
+            raise ExecutionError("Magpie requires one physical store per batch")
+        payload = actions[0].impact.external_action_payload
+        evidence, index = payload["magpie_evidence"], payload["store_index"]
+        if (str(actions[0].action_id) != action_id(evidence, index)
+                or actions[0].target.thread_id != action_id(evidence, index)
+                or actions[0].impact.external_storage_root != evidence["stores"][index]["root"]
+                or actions[0].impact.owner_client != "magpie"):
+            raise ExecutionError("Magpie action scope mismatch")
+        def forward_magpie_phase(phase):
+            if action_state_callback is not None:
+                action_state_callback(phase, actions[0], None)
+        result = execute(evidence, index, phase_callback=forward_magpie_phase)
+        return ExecutionOutcome(mutation_kind=mutation_kind, selected_actions=tuple(actions), plan=plan, magpie_cleanup=result)
 
     if mutation_kind == "delete_t3code_frontend":
         from .t3code_cleanup import execute, action_id
