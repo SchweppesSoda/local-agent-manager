@@ -58,6 +58,11 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
    expiring consent, exact scope/run/identity matching and single-use actions;
    it does not itself operate clients. New callers must supply fresh identities
    immediately before dispatch and retain normal startup fences/exit checks.
+   T3 handoff closure additionally requires current target-file occupancy,
+   bound to PID/start time and the confirmed desktop ancestry. Names, shared
+   runtimes and caller-supplied extra PIDs alone do not authorize closure.
+   Recheck occupancy immediately before dispatch; skip released occupants,
+   and block unknown occupancy instead of closing additional software.
    Old frozen controllers and on-disk arm receipts do not satisfy this gate:
    preserve them as evidence, never replay or edit them to manufacture consent.
 4. Cindy retained chat-row deletion requires explicit Cindy session IDs via

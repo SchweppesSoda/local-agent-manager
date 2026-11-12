@@ -288,9 +288,11 @@ class T3CodeHandoffTests(unittest.TestCase):
             return handoff._qualify_lifecycle_targets(t3_root=self.root,
                 manifest={'runtime_binaries': [str(cindy)]},
                 target_stores=[('codex', canonical_path(home), str(home))],
-                record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1)
+                record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1,
+                occupancy_resources={str(home): [str(home/'state_5.sqlite')]})
         with (patch.object(handoff, 'list_processes', return_value=census),
-              patch.object(handoff, '_running_related_process_records', return_value=[]),
+              patch.object(handoff, 'file_owners', return_value=[dict(pid=40011, created_unix=100.0,
+                  source='windows_restart_manager', resources=[str(home/'state_5.sqlite')])]),
               patch.object(handoff, '_kernel_process_start_unix', return_value=100.0),
               patch.object(handoff, '_kernel_process_image', return_value=(str(cindy), 100.0)) as image):
             targets = qualify()
@@ -308,7 +310,7 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertTrue(os.path.samefile(image, sys.executable))
         self.assertEqual(started, _kernel_process_start_unix(os.getpid()))
 
-    def test_explicit_desktop_spawner_is_confirmed_without_transient_child(self):
+    def test_extra_pid_and_matching_names_do_not_authorize_closure_without_file_occupancy(self):
         from local_agent_manager import t3code_handoff as handoff
         magpie = self.base/'magpie.exe'
         magpie.write_bytes(b'fixture never launched')
@@ -316,16 +318,27 @@ class T3CodeHandoffTests(unittest.TestCase):
                 dict(pid=41001, parent=41000, name='magpie-bun.exe', executable=str(self.base/'bun.exe'), command='server'),
                 dict(pid=40000, parent=0, name='uTools.exe', executable=str(self.base/'uTools.exe'), command='launcher')]
         with (patch.object(handoff, 'list_processes', return_value=rows),
+              patch.object(handoff, 'file_owners', return_value=[]) as owners,
+              patch.object(handoff, '_kernel_process_image', return_value=(str(magpie), 100.0)),
               patch.object(handoff, '_kernel_process_start_unix', return_value=100.0)):
             def qualify(pids):
                 return handoff._qualify_lifecycle_targets(t3_root=self.root,
                     manifest={'runtime_binaries': []}, target_stores=[], record_ids=[TARGET_THREAD],
-                    expanded_thread_ids=[TARGET_THREAD], native_record_count=1, extra_app_pids=pids)
+                    expanded_thread_ids=[TARGET_THREAD], native_record_count=1, extra_app_pids=pids,
+                    occupancy_resources={str(self.root): [str(self.root/'userdata/statev2.sqlite')]})
             self.assertEqual(qualify([]), [])
+            with self.assertRaisesRegex(handoff.HandoffError, '没有目标数据文件'):
+                qualify([41000])
+            owners.return_value = [dict(pid=41001, created_unix=100.0, source='windows_restart_manager',
+                                       resources=[str(self.root/'userdata/statev2.sqlite')])]
             targets = qualify([41000, 41000])
             self.assertEqual([(t['pid'],t['software'],t['reopen']) for t in targets], [(41000,'Magpie',True)])
             self.assertEqual(targets[0]['lifecycle_target'].pid, 41000)
-            self.assertIn('明确列入', targets[0]['affected_tasks'][0])
+            self.assertIn('Windows 文件占用证据', targets[0]['affected_tasks'][0])
+            self.assertEqual(targets[0]['occupancy'][0]['pid'], 41001)
+            owners.return_value[0]['created_unix'] = 99.0
+            with self.assertRaises(handoff.HandoffError):
+                qualify([])
             for invalid in (41001,40000,99999,-1):
                 with self.subTest(pid=invalid), self.assertRaises(handoff.HandoffError):
                     qualify([invalid])
@@ -349,10 +362,14 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertEqual(handoff._climb_desktop_owner(40400, by_pid)['pid'], 40400)
         self.assertEqual(handoff._climb_desktop_owner(40600, by_pid)['pid'], 40600)
         with (patch.object(handoff, 'list_processes', return_value=census[:4]),
+              patch.object(handoff, '_kernel_process_image', return_value=(str(self.t3_exe), 100.0)),
+              patch.object(handoff, 'file_owners', return_value=[dict(pid=40300, created_unix=100.0,
+                  source='windows_restart_manager', resources=[str(self.root/'userdata/statev2.sqlite')])]),
               patch.object(handoff, '_kernel_process_start_unix', return_value=100.0)):
             targets = handoff._qualify_lifecycle_targets(t3_root=self.root,
                 manifest={'runtime_binaries': [str(self.t3_exe)]}, target_stores=[],
-                record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1)
+                record_ids=[TARGET_THREAD], expanded_thread_ids=[TARGET_THREAD], native_record_count=1,
+                occupancy_resources={str(self.root): [str(self.root/'userdata/statev2.sqlite')]})
         self.assertEqual([(t['pid'], t['software']) for t in targets], [(40200, 'T3 Code Desktop')])
 
     def test_confirmed_background_launcher_cannot_restart_until_hold_released(self):
@@ -367,6 +384,43 @@ class T3CodeHandoffTests(unittest.TestCase):
                 subprocess.run([str(exe)],capture_output=True,timeout=5)
         result = subprocess.run([str(exe)],capture_output=True,timeout=5)
         self.assertEqual(result.returncode,0)
+
+    def test_released_occupancy_never_closes_confirmed_application(self):
+        from local_agent_manager import t3code_handoff as h
+        target = dict(pid=41000, created_unix=100., software='Magpie', executable=str(self.t3_exe), occupancy=[dict(
+            pid=41001, created_unix=100., resources=[str(self.root/'userdata/statev2.sqlite')])])
+        with (patch.object(h, '_capture_descendant_tree', return_value={41000:100., 41001:100.}),
+              patch.object(h, '_kernel_process_image', return_value=(str(self.t3_exe), 100.0)),
+              patch.object(h, 'file_owners', return_value=[]) as owners,
+              patch.object(h, '_request_graceful_close') as close):
+            result = h._close_confirmed_target(target)
+            self.assertEqual(result['skip_reason'], 'target_file_occupancy_released')
+            self.assertFalse(result['was_running'])
+            close.assert_not_called()
+            # PID reuse or a new occupant cannot enlarge previous consent.
+            owners.return_value = [dict(pid=41001, created_unix=101.)]
+            self.assertFalse(h._close_confirmed_target(target)['was_running'])
+            target['occupancy'] = []
+            with self.assertRaises(h.HandoffError):
+                h._close_confirmed_target(target)
+            close.assert_not_called()
+
+    def test_current_exact_occupant_can_close_but_changed_image_cannot(self):
+        from local_agent_manager import t3code_handoff as h
+        proof = dict(pid=41000, created_unix=100., resources=[str(self.root/'userdata/statev2.sqlite')])
+        target = dict(pid=41000, created_unix=100., software='T3', executable=str(self.t3_exe), occupancy=[proof])
+        with (patch.object(h, '_capture_descendant_tree', return_value={41000:100.}),
+              patch.object(h, '_kernel_process_image', return_value=(str(self.codex_exe),100.)) as identity,
+              patch.object(h, '_kernel_process_start_unix', return_value=None),
+              patch.object(h, 'file_owners', return_value=[proof]),
+              patch.object(h, 'list_processes', return_value=[]),
+              patch.object(h, '_request_graceful_close') as close):
+            with self.assertRaises(h.HandoffError):
+                h._close_confirmed_target(target)
+            close.assert_not_called()
+            identity.return_value = str(self.t3_exe),100.
+            self.assertTrue(h._close_confirmed_target(target)['was_running'])
+            close.assert_called_once_with(41000)
 
     def test_worker_orchestrates_cleanup_reopen_and_single_notification(self) -> None:
         handoff_dir = self.localappdata / "local-agent-manager/handoffs/test-worker-1"

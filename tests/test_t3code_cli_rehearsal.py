@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -92,7 +93,7 @@ def worker(argv):
             # Inject only host facts, consent and process launch. The child
             # executes the real worker/CLI/writers on isolated physical stores.
             stack.enter_context(patch.object(handoff, 'list_processes', return_value=[]))
-            stack.enter_context(patch.object(handoff, '_running_related_process_records', return_value=[]))
+            stack.enter_context(patch.object(handoff, 'file_owners', return_value=[]))
             stack.enter_context(patch.object(handoff, '_bundled_install', return_value=Path(os.environ['T3CODE_HOME']).parent))
             stack.enter_context(patch.object(handoff, 'windows_confirmation', return_value=True))
             def launch(spec):
@@ -211,7 +212,7 @@ class ColdCliRehearsal(unittest.TestCase):
                     'runtime_binaries': [str(self.frontend), str(binary)], 'native_stores': bindings,
                     'desktop_profiles': [{'root': str(self.desktop), 'runtime_binaries': [str(self.frontend)]}]}
         self.bindings = self.base/'bindings.json'; self.bindings.write_text(json.dumps(manifest))
-        env = {k: v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','LARJ_LEVELDB_RUNTIME','LARJ_NODE','LAM_REHEARSAL_CODEX_BINARY'}}
+        env = {k: v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','LARJ_LEVELDB_RUNTIME','LARJ_NODE','LAM_REHEARSAL_CODEX_BINARY','LAM_REHEARSAL_PROFILE'}}
         self.env = {**env, 'TEMP': str(self.base), 'TMP': str(self.base), 'PYTHONUTF8': '1', 'USERPROFILE': str(self.base/'profile'), 'HOME': str(self.base/'profile'),
                     'APPDATA': str(self.base/'appdata'), 'LOCALAPPDATA': str(self.base/'local'), 'CODEX_HOME': str(self.home),
                     'CLAUDE_CONFIG_DIR': str(self.claude), 'T3CODE_HOME': str(self.root), 'PASEO_HOME': str(self.base/'no-paseo'),
@@ -219,8 +220,12 @@ class ColdCliRehearsal(unittest.TestCase):
         self.plan_path = self.base/'plan.json'
 
     def call(self, label, args):
+        started = time.perf_counter()
         completed = subprocess.run([sys.executable, '-m', 'tests.test_t3code_cli_rehearsal', '--worker', *args, '--json', '--progress'],
                                    cwd=Path(__file__).resolve().parents[1], env=self.env, capture_output=True, timeout=600)
+        with (self.evidence/'timings.jsonl').open('a', encoding='utf-8') as metrics:
+            metrics.write(json.dumps({'label': label, 'seconds': time.perf_counter()-started,
+                                      'exit_code': completed.returncode})+'\n')
         (self.evidence/(label+'.json')).write_bytes(completed.stdout)
         (self.evidence/(label+'.jsonl')).write_bytes(completed.stderr)
         self.assertTrue(completed.stdout, completed.stderr.decode(errors='replace'))
@@ -562,5 +567,17 @@ class ColdCliRehearsal(unittest.TestCase):
 
 if __name__ == '__main__':
     if '--worker' in sys.argv:
+        if os.environ.get('LAM_REHEARSAL_PROFILE'):
+            import cProfile
+            profiler = cProfile.Profile()
+            profiler.enable()
+            try:
+                code = worker(sys.argv[sys.argv.index('--worker')+1:])
+            finally:
+                profiler.disable()
+                target = Path(os.environ['LAM_REHEARSAL_PROFILE'])
+                target.mkdir(parents=True, exist_ok=True)
+                profiler.dump_stats(str(target/f'{os.getpid()}.prof'))
+            raise SystemExit(code)
         raise SystemExit(worker(sys.argv[sys.argv.index('--worker')+1:]))
     unittest.main()

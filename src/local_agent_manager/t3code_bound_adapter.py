@@ -403,7 +403,8 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         # The qualified manifest defines the protection stores/capabilities.
         # Describing them must not rescan every event mirror. Consumers still
         # call snapshot_references for fresh reference and failure evidence.
-        stores = {(item['engine'], canonical_path(item['root'])) for item in self.bindings.values()}
+        roots = {(item['engine'], item['root']) for item in self.bindings.values()}
+        stores = {(backend, canonical_path(root)) for backend, root in roots}
         names = tuple(sorted({item['engine'] for item in self.bindings.values()}))
         return ClientDescriptor('t3code', profile_root=self.profile_root, sources=(self.profile_root / RELATIVE,),
             native_stores=tuple(StoreKey(backend, Path(root), kind='session_root' if backend == 'pi'
@@ -413,7 +414,12 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                 reason='T3 Code mutation requires an approved local closure and held server ownership') for e in names))
 
     def snapshot_references(self, *, refresh=False):
-        _, raw = frozen_files.read_file(self.profile_root, "userdata/environment-id", content=True, limit=256)
+        from .t3code_reference_batch import read
+        return read(self, self._snapshot_references_fresh)
+
+    def _snapshot_references_fresh(self):
+        from .t3code_reference_batch import read_environment
+        _, raw = read_environment(self.profile_root)
         if raw.decode("utf-8").strip() != self.manifest["environment_id"]:
             fail("environment_identity_changed")
         snapshot = super().snapshot_references(refresh=True)
@@ -425,6 +431,8 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         if data["peer_count"]:
             fail("peer_environment_closure_unqualified")
         references, observations, stores = [], [], {}
+        root_keys = {root: canonical_path(root) for root in {b['root'] for b in self.bindings.values()}}
+        profile_key = canonical_path(self.profile_root)
         for thread_id, copies in data["threads"].items():
             binding = self.bindings.get(thread_id)
             if binding is None or len(copies) != 1 or copies[0]["version"] != "v2":
@@ -444,9 +452,10 @@ class T3CodeBoundAdapter(T3CodeAdapter):
                     fail('antigravity_instance_binding_conflict')
             observations.append({"id": thread_id, "parent_thread_id": row["parent_thread_id"],
                 "source": str(self.profile_root / RELATIVE)})
-            backend, root = binding["engine"], canonical_path(binding["root"])
-            stores[(backend, root)] = StoreKey(backend, Path(root),
-                kind="session_root" if backend == "pi" else "config_dir" if backend == "claude" else "directory")
+            backend, root = binding["engine"], root_keys[binding["root"]]
+            if (backend, root) not in stores:
+                stores[(backend, root)] = StoreKey(backend, Path(root),
+                    kind="session_root" if backend == "pi" else "config_dir" if backend == "claude" else "directory")
         seen = set()
         history = history_references(self.profile_root, self.bindings)
         self.legacy_import_ids = {row['thread_id'] for row in history if row.get('legacy_import')}
@@ -479,12 +488,12 @@ class T3CodeBoundAdapter(T3CodeAdapter):
             if key_ in seen:
                 continue
             seen.add(key_)
-            store = stores[(binding["engine"], canonical_path(binding["root"]))]
+            store = stores[(binding["engine"], root_keys[binding["root"]])]
             if binding["engine"] == "pi":
                 native = self._pi_record(binding, row, store)
             else:
                 native = RecordKey(store, row["native_id"], kind="session" if binding["engine"] == "claude" else "record")
-            fingerprint = hashlib.sha256(json.dumps([canonical_path(self.profile_root), key_, native.to_dict()], sort_keys=True).encode()).hexdigest()
+            fingerprint = hashlib.sha256(json.dumps([profile_key, key_, native.to_dict()], sort_keys=True).encode()).hexdigest()
             references.append(ClientReference("t3code", self.profile_root / RELATIVE, row["thread_id"], native.record_id,
                 row["driver"], binding["engine"], fingerprint, native_record=native, kind=ReferenceKind.RESTORE,
                 lifecycle=ReferenceLifecycle.RESTORABLE, source_locator="provider-native", evidence_complete=True,

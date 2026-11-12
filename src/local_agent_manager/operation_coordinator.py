@@ -4938,7 +4938,8 @@ class OperationCoordinator:
                 from .mutation_guard import scopes_for_frozen_plan
                 batch_scopes = (scopes_for_frozen_plan(store.read_plan()) if live.document.get("schema_version") == PLAN_V3
                                 else scopes_for_actions(live.context.plan, batch.actions))
-                with mutation_guard(batch_scopes, store=store), store.mutation_lock():
+                from .t3code_reference_batch import hold as t3_reference_batch
+                with mutation_guard(batch_scopes, store=store), store.mutation_lock(), t3_reference_batch(live.document, batch.mutation_family):
                     def checkpoint(
                         phase: str,
                         action: Any,

@@ -28,7 +28,7 @@ import uuid
 
 from . import frozen_files, t3code_database
 from .child_recovery import is_recoverable_preflight_child
-from .codex_desktop_state import _relevant_process_ids, _running_related_process_records
+from .windows_file_owners import file_owners, FileOwnersError
 from .lifecycle_confirmation import LifecycleGate, LifecycleScope, LifecycleTarget, windows_confirmation
 from .mutation_guard import _journal_unknown
 from .office_runtime import processes as list_processes
@@ -383,6 +383,7 @@ def _qualify_lifecycle_targets(
     expanded_thread_ids: Sequence[str],
     native_record_count: int,
     extra_app_pids: Sequence[int] = (),
+    occupancy_resources: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     census = list_processes()
     by_pid = {int(row["pid"]): dict(row) for row in census if isinstance(row.get("pid"), int) and row["pid"] > 0}
@@ -393,82 +394,52 @@ def _qualify_lifecycle_targets(
             identity = _kernel_process_image(pid)
             if identity is not None and Path(identity[0]).name.casefold() == name:
                 row['executable'], row['_image_created_unix'] = identity
-    runtime_keys = {canonical_path(path) for path in manifest.get("runtime_binaries", ()) if Path(path).exists()}
-    target_engines = {engine for engine, _, _ in target_stores}
     target_homes = {engine: raw_root for engine, _, raw_root in target_stores}
-
-    # 1. Locate T3 Code Desktop root(s) and their full descendant trees.
-    t3_roots: set[int] = set()
-    for pid, row in by_pid.items():
-        name = str(row.get("name") or "").casefold()
-        cmd = str(row.get("command") or "")
-        if name.startswith("t3 code") and "--type=" not in cmd:
+    runtime_keys = {canonical_path(path) for path in manifest.get('runtime_binaries', ()) if Path(path).is_file()}
+    occupancy = {}
+    for store_root, resources in (occupancy_resources or {}).items():
+        try:
+            owners = file_owners(resources)
+        except (FileOwnersError, OSError) as exc:
+            raise HandoffError('occupancy_probe_failed', f'目标文件占用查询失败；未请求关闭：{exc}') from exc
+        for proof in owners:
+            pid = proof['pid']
+            if pid == os.getpid():
+                raise HandoffError('handoff_self_occupancy', '当前进程占用目标文件；不能关闭自身。')
+            row = by_pid.get(pid)
+            if row is None or _kernel_process_start_unix(pid) != proof['created_unix']:
+                raise HandoffError('occupancy_owner_changed', '文件占用进程身份在核验期间变化；未请求关闭。')
             owner = _climb_desktop_owner(pid, by_pid)
-            if str(owner.get("name") or "").casefold().startswith("t3 code"):
-                t3_roots.add(int(owner["pid"]))
-    t3_tree = set(t3_roots)
-    changed = True
-    while changed:
-        before = len(t3_tree)
-        t3_tree.update(pid for pid, row in by_pid.items() if int(row.get("parent") or 0) in t3_tree)
-        changed = len(t3_tree) != before
+            owner_pid = int(owner['pid'])
+            owner_exe = owner.get('executable')
+            if (_desktop_family(owner) is None
+                    and (not owner_exe or canonical_path(owner_exe) not in runtime_keys)):
+                raise HandoffError('unsupported_file_owner',
+                    f'PID {owner_pid} 占用目标文件，但不属于已核实的 Agent 客户端或绑定运行时；未请求关闭。')
+            if owner_pid == os.getpid():
+                raise HandoffError('handoff_self_occupancy', '当前进程树占用目标文件；不能关闭自身。')
+            # Ancestry must be contemporaneous, not a reused parent PID.
+            current = row
+            while current['pid'] != owner_pid:
+                parent = by_pid[int(current['parent'])]
+                child_start = _kernel_process_start_unix(int(current['pid']))
+                parent_start = _kernel_process_start_unix(int(parent['pid']))
+                if child_start is None or parent_start is None or parent_start > child_start:
+                    raise HandoffError('occupancy_ancestry_unverified', '无法核实占用进程与桌面应用的关系。')
+                current = parent
+            occupancy.setdefault(owner_pid, []).append({**proof, 'store_root': store_root})
 
-    # 2. Locate non-T3 processes that would block offline cleanup of target stores.
-    blocking_pids: set[int] = set()
-    touches_cindy_global = any("cindyglobal" in canon_root.casefold() for _, canon_root, _ in target_stores)
-    if "codex" in target_engines:
-        codex_records = _running_related_process_records()
-        for engine, canon_root, raw_root in target_stores:
-            if engine != "codex":
-                continue
-            for pid in _relevant_process_ids(Path(raw_root), codex_records):
-                if pid > 0 and pid not in t3_tree and pid in by_pid:
-                    blocking_pids.add(pid)
-            for rec in codex_records:
-                rec_pid = int(rec.get("process_id") or 0)
-                if rec_pid <= 0 or rec_pid in t3_tree or rec_pid not in by_pid:
-                    continue
-                rec_home = rec.get("codex_home")
-                if isinstance(rec_home, str) and rec_home and Path(rec_home).exists():
-                    if canonical_path(rec_home) == canon_root:
-                        blocking_pids.add(rec_pid)
-    for pid, row in by_pid.items():
-        if pid in t3_tree or pid == os.getpid():
-            continue
-        name = str(row.get("name") or "").casefold()
-        exe = row.get("executable")
-        exe_key = canonical_path(exe) if exe and Path(exe).exists() else None
-        if exe_key and exe_key in runtime_keys:
-            blocking_pids.add(pid)
-            continue
-        if touches_cindy_global and name == "cindy.exe":
-            blocking_pids.add(pid)
-            continue
-        if "claude" in target_engines and name in {"claude", "claude.exe"}:
-            blocking_pids.add(pid)
-            continue
-        if "antigravity" in target_engines and (
-            name.startswith("paseo") or name in {"agy", "agy.exe", "agy_acp_server.exe"}
-        ):
-            blocking_pids.add(pid)
-
-    owner_roots: list[int] = sorted(t3_roots)
     explicit_owners = set()
     for pid in extra_app_pids:
         row = by_pid.get(pid)
         if type(pid) is not int or pid <= 0 or row is None or _desktop_family(row) is None:
-            raise HandoffError('handoff_app_unverified',
-                f'额外桌面应用 PID {pid} 不存在或不属于已识别的 Agent 桌面；未请求关闭。')
-        owner = _climb_desktop_owner(pid, by_pid)
-        owner_pid = int(owner['pid'])
+            raise HandoffError('handoff_app_unverified', f'额外桌面应用 PID {pid} 身份未核实；未请求关闭。')
+        owner_pid = int(_climb_desktop_owner(pid, by_pid)['pid'])
+        if owner_pid not in occupancy:
+            raise HandoffError('handoff_app_occupancy_unproven',
+                f'额外桌面应用 PID {pid} 没有目标数据文件的占用证据；未请求关闭。')
         explicit_owners.add(owner_pid)
-        if owner_pid not in owner_roots:
-            owner_roots.append(owner_pid)
-    for pid in sorted(blocking_pids):
-        owner = _climb_desktop_owner(pid, by_pid)
-        owner_pid = int(owner["pid"])
-        if owner_pid not in owner_roots and owner_pid not in t3_tree:
-            owner_roots.append(owner_pid)
+    owner_roots = sorted(occupancy)
 
     specs: list[dict[str, Any]] = []
     selector_label = ", ".join(record_ids[:3]) + (f" 等 {len(record_ids)} 项" if len(record_ids) > 3 else "")
@@ -483,6 +454,10 @@ def _qualify_lifecycle_targets(
         started_unix = _kernel_process_start_unix(root_pid)
         if started_unix is None:
             continue
+        identity = _kernel_process_image(root_pid)
+        if (identity is None or identity[1] != started_unix
+                or canonical_path(identity[0]) != canonical_path(exe)):
+            raise HandoffError('owner_identity_changed', f'待关闭进程 PID {root_pid} 的内核映像身份无法核实。')
         if '_image_created_unix' in row and row['_image_created_unix'] != started_unix:
             raise HandoffError('owner_identity_changed', f'待关闭进程 PID {root_pid} 在核验期间发生变化。')
         created_iso = _iso_from_unix(started_unix)
@@ -493,11 +468,14 @@ def _qualify_lifecycle_targets(
                 f"（级联 {len(expanded_thread_ids)} 条 T3 记录、{native_record_count} 条原生记录）"
             )
         elif root_pid in explicit_owners:
-            task_desc = f"调用方明确列入的 provider 后台启动应用；关闭并在核验后自动重开 {profile['software']}"
+            task_desc = f"已核实占用目标文件；关闭并在核验后自动重开 {profile['software']}"
         elif profile["reopen"]:
             task_desc = f"关闭占用目标原生存储的后台进程，并在清理核验完成后自动重开 {profile['software']}"
         else:
             task_desc = f"终止占用目标原生存储的独立进程 {profile['software']}"
+        descriptions = [f"PID {p['pid']} 占用 {p['store_root']} 中的已列明数据文件（{len(p['resources'])} 个候选文件）"
+                        for p in occupancy[root_pid]]
+        task_desc += '；Windows 文件占用证据：' + '；'.join(descriptions)
         lifecycle_target = LifecycleTarget(
             software=profile["software"],
             pid=root_pid,
@@ -517,6 +495,7 @@ def _qualify_lifecycle_targets(
             "reopen": bool(profile["reopen"]),
             "hold_executable": bool(profile["hold_executable"]),
             "hold_background_launcher": root_pid in explicit_owners,
+            "occupancy": occupancy[root_pid],
             "lifecycle_target": lifecycle_target,
         })
     return specs
@@ -810,6 +789,7 @@ def start_t3code_handoff(
                        if t['action_ids'] or t['engine'] == 'antigravity'}
             target_stores = [s for s in target_stores if (s[0], s[1]) in pending]
             _step("[预检 3/4] 正在核实需关闭并自动重开的桌面客户端进程...")
+            from .t3code_occupancy import resources as occupancy_resources
             target_specs = _qualify_lifecycle_targets(
                 t3_root=t3_root,
                 manifest=manifest,
@@ -818,6 +798,7 @@ def start_t3code_handoff(
                 expanded_thread_ids=expanded_thread_ids,
                 native_record_count=native_record_count,
                 extra_app_pids=getattr(args, 'handoff_app_pid', ()),
+                occupancy_resources=occupancy_resources(evidence_from_document(preview.document)),
             )
 
         _step("[预检 4/4] 已弹出置顶确认窗口（请点击“确定”继续，默认焦点为“取消”）...")
@@ -1040,24 +1021,21 @@ def _wait_for_t3_quiescent(t3_root: Path, timeout_seconds: float) -> None:
 
 def _capture_descendant_tree(root_pid: int, expected_start_unix: float) -> dict[int, float]:
     current_start = _kernel_process_start_unix(root_pid)
-    if current_start is None or abs(current_start - expected_start_unix) > 2.0:
+    if current_start != expected_start_unix:
         return {}
     census = list_processes()
-    tree_pids = {root_pid}
+    verified = {root_pid: current_start}
     changed = True
     while changed:
-        before = len(tree_pids)
+        before = len(verified)
         for row in census:
             pid = row.get("pid")
             parent = row.get("parent")
-            if isinstance(pid, int) and pid > 0 and parent in tree_pids and pid != os.getpid():
-                tree_pids.add(pid)
-        changed = len(tree_pids) != before
-    verified: dict[int, float] = {}
-    for pid in tree_pids:
-        started = _kernel_process_start_unix(pid)
-        if started is not None and (pid == root_pid or started >= expected_start_unix - 2.0):
-            verified[pid] = started
+            if isinstance(pid, int) and pid > 0 and parent in verified and pid not in verified and pid != os.getpid():
+                started = _kernel_process_start_unix(pid)
+                if started is not None and started >= verified[parent]:
+                    verified[pid] = started
+        changed = len(verified) != before
     return verified
 
 
@@ -1114,13 +1092,29 @@ def _close_confirmed_target(target: Mapping[str, Any]) -> dict[str, Any]:
     tree = _capture_descendant_tree(root_pid, expected_start)
     if not tree:
         return {"software": target["software"], "pid": root_pid, "was_running": False, "closed_pids": []}
+    identity = _kernel_process_image(root_pid)
+    if (identity is None or identity[1] != expected_start
+            or canonical_path(identity[0]) != canonical_path(target['executable'])):
+        raise HandoffError('owner_identity_changed', '关闭前的进程映像身份变化；未关闭软件。')
 
+    proofs = target.get('occupancy')
+    if not proofs:
+        raise HandoffError('handoff_app_occupancy_unproven', '确认目标缺少目标文件占用证据；未关闭软件。')
+    live_proofs = []
+    for proof in proofs:
+        for current in file_owners(proof['resources']):
+            if (current['pid'] in tree and current['created_unix'] == tree[current['pid']]
+                    and current['pid'] == proof['pid'] and current['created_unix'] == proof['created_unix']):
+                live_proofs.append(current)
+    if not live_proofs:
+        return {'software': target['software'], 'pid': root_pid, 'was_running': False,
+                'closed_pids': [], 'skip_reason': 'target_file_occupancy_released'}
     _request_graceful_close(root_pid)
     grace_deadline = time.monotonic() + 6.0
     while time.monotonic() < grace_deadline:
         alive = [
             pid for pid, started in tree.items()
-            if (cur := _kernel_process_start_unix(pid)) is not None and abs(cur - started) <= 2.0
+            if (cur := _kernel_process_start_unix(pid)) == started
         ]
         if not alive:
             break
@@ -1137,18 +1131,18 @@ def _close_confirmed_target(target: Mapping[str, Any]) -> dict[str, Any]:
             parent = row.get("parent")
             if isinstance(pid, int) and pid > 0 and pid not in tree and parent in tree and pid != os.getpid():
                 started = _kernel_process_start_unix(pid)
-                if started is not None and started <= close_cutoff:
+                if started is not None and tree[parent] <= started <= close_cutoff:
                     tree[pid] = started
         changed = len(tree) != before
 
     for pid, started in sorted(tree.items(), reverse=True):
         cur = _kernel_process_start_unix(pid)
-        if cur is not None and abs(cur - started) <= 2.0:
+        if cur == started:
             _terminate_pid_verified(pid, started)
 
     still_alive = [
         pid for pid, started in tree.items()
-        if (cur := _kernel_process_start_unix(pid)) is not None and abs(cur - started) <= 2.0
+        if (cur := _kernel_process_start_unix(pid)) == started
     ]
     if still_alive:
         raise HandoffError(
@@ -1368,7 +1362,9 @@ def run_handoff_worker(spec_path: Path) -> int:
                 if closed_info["was_running"] and target.get("reopen"):
                     closed_for_reopen.append(target)
             _append_worker_event(events_path, "targets_closed", count=len(receipt["closed_targets"]))
-            launcher_holds.enter_context(_hold_background_launchers(spec.get('confirmed_targets', ())))
+            closed_pids = {item['pid'] for item in receipt['closed_targets'] if item['was_running']}
+            launcher_holds.enter_context(_hold_background_launchers(
+                [t for t in spec.get('confirmed_targets', ()) if t['pid'] in closed_pids]))
 
             from .cleanup_service import CleanupService
             from .operation_coordinator import OperationCoordinator
