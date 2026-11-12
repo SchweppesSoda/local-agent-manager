@@ -373,6 +373,8 @@ class ColdCliRehearsal(unittest.TestCase):
         before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.preserved}
         self.bindings.write_text(json.dumps(manifest))
         if recover:
+            from tests.native_recovery_support import mirrors
+            mirrors(self.agyroot)
             with closing(sqlite3.connect(self.agyroot/agy.SUMMARY)) as db:
                 db.execute('PRAGMA journal_mode=WAL')
             self.assertFalse(Path(str(self.agyroot/agy.SUMMARY)+'-wal').exists())
@@ -406,9 +408,14 @@ class ColdCliRehearsal(unittest.TestCase):
                 desktop.observe(reopened_runtime, self.desktop, 'env-1', [ROOTS[0], CHILDREN[0]],
                                 native=True, mode='seed', seed=seed)
             with closing(sqlite3.connect(self.agyroot/agy.SUMMARY)) as db:
-                db.execute('UPDATE conversation_summaries SET title=? WHERE conversation_id=?',
-                           ('updated retained summary', AGY_KEEP))
+                db.execute('UPDATE conversation_summaries SET title=?,raw_summary=? WHERE conversation_id=?',
+                           ('updated retained summary', b'updated retained raw summary', AGY_KEEP))
                 db.commit()
+            mirrors(self.agyroot)
+            cache_path = self.agyroot/agy.CACHE
+            cache = json.loads(cache_path.read_text())
+            cache[str(self.base/'new-retained-workspace')] = AGY_KEEP
+            cache_path.write_text(json.dumps(cache))
             with patch.dict(os.environ, self.env, clear=True):
                 self._check_partial_recovery_boundaries(old_document)
             self.env['LAM_REHEARSAL_RECOVERY_CRASH'] = '1'
@@ -449,6 +456,13 @@ class ColdCliRehearsal(unittest.TestCase):
             if recover:
                 self.assertEqual(db.execute('SELECT title FROM conversation_summaries').fetchone()[0],
                                  'updated retained summary')
+        if recover:
+            from local_agent_manager import antigravity_cli_restore as restore
+            entries = restore.proto_entries((self.agyroot/restore.PROTO).read_bytes())
+            self.assertEqual(set(entries), {AGY_KEEP})
+            self.assertEqual(entries[AGY_KEEP][0], b'updated retained raw summary')
+            self.assertEqual(set(json.loads((self.agyroot/restore.METADATA).read_text())['conversations']), {AGY_KEEP})
+            self.assertEqual(json.loads((self.agyroot/agy.CACHE).read_text())[str(self.base/'new-retained-workspace')], AGY_KEEP)
         local_storage(self.desktop, inspect=True, thread_id=CHILDREN[0])
         (self.evidence / 'preservation.json').write_text(json.dumps(dict(
             target_t3_remaining=0, native_targets_remaining=0, kept_threads=3,

@@ -162,11 +162,15 @@ def qualify_remaining(original, current):
             before, now = previous['native_files'], target['native_files']
             # Reopened clients may update unrelated summary metadata. The new
             # full plan binds every current row and preserves its unselected
-            # rows. Selected session bytes and parent relationships cannot drift.
+            # rows and current restore maps. Selected session bytes and parent
+            # relationships cannot drift; shared rewrite paths cannot expand.
             if (now.get('summary_schema_sha256') != before.get('summary_schema_sha256')
                     or any(now['parents'].get(sid) != before['parents'].get(sid) for sid in target['ids'])
                     or now['changes'] != before['changes']
-                    or now['rewrites'] != before['rewrites'] or now['cache'] != before['cache']):
+                    or {c['before']['path'] for c in now['rewrites']}
+                       != {c['before']['path'] for c in before['rewrites']}
+                    or (now['cache'] or {}).get('before', {}).get('path')
+                       != (before['cache'] or {}).get('before', {}).get('path')):
                 fail('unstarted_native_bytes_changed')
     for change in old['files']['changes']:
         if ff.freeze_remove(Path(old['root']), change['path']) != change:

@@ -17,6 +17,7 @@ from local_agent_manager.cleanup_service import CleanupService
 from local_agent_manager.operation_coordinator import OperationCoordinator
 from local_agent_manager.operation_store import OperationStore
 from local_agent_manager.windows_held_files import HeldFiles
+from local_agent_manager.t3code_references import ReferenceConflict
 
 TARGET = '11111111-1111-4111-8111-111111111111'
 KEEP = '22222222-2222-4222-8222-222222222222'
@@ -273,7 +274,7 @@ class CliFormatTests(unittest.TestCase):
         t3 = self.base/'t3'
         with closing(create_store(t3)) as db:
             add_thread(db, KEEP, native=TARGET, driver='antigravity')
-        with self.assertRaisesRegex(agy.CleanupError, 't3code_native_or_restore'):
+        with self.assertRaisesRegex(ReferenceConflict, 't3code_native_or_restore'):
             guards.freeze([{'client': 't3code', 'root': str(t3)}], [TARGET])
         paseo = self.base/'paseo'; (paseo/'agents').mkdir(parents=True)
         row = {'id': KEEP, 'provider': 'antigravity', 'cwd': str(self.base),
@@ -296,7 +297,7 @@ class CliFormatTests(unittest.TestCase):
             ):
                 insert(db, V2+'turn_items', turn_item_id='restore', thread_id='keeper', payload_json=json.dumps(payload))
                 db.commit()
-                with self.assertRaisesRegex(agy.CleanupError, 't3code_native_or_restore'):
+                with self.assertRaisesRegex(ReferenceConflict, 't3code_native_or_restore'):
                     guards.freeze([{'client': 't3code', 'root': str(t3)}], [TARGET])
                 db.execute(f'DELETE FROM {V2}turn_items WHERE turn_item_id=?', ('restore',))
                 db.commit()
