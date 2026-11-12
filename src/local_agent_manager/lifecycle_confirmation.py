@@ -9,6 +9,8 @@ import math
 import os
 import time
 
+from .windows_dialogs import ConfirmationDialog, show_confirmation
+
 
 @dataclass(frozen=True)
 class LifecycleTarget:
@@ -18,6 +20,7 @@ class LifecycleTarget:
     executable: str
     home: str
     affected_tasks: tuple[str, ...]
+    details: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -25,21 +28,25 @@ class LifecycleScope:
     run_id: str
     targets: tuple[LifecycleTarget, ...]
     actions: tuple[str, ...] = ('close',)
+    reason: str = ''
+    details: str = ''
 
     def validate(self):
-        if (not self.run_id or not self.targets or not self.actions
+        if (not self.run_id or not self.reason.strip() or not self.targets or not self.actions
                 or len(set(self.targets)) != len(self.targets)
                 or len({t.pid for t in self.targets}) != len(self.targets)
                 or len(set(self.actions)) != len(self.actions)
                 or any(a not in ('close', 'restart') for a in self.actions)):
             raise ValueError('exact lifecycle scope required')
         for t in self.targets:
-            values = (t.software, t.created, t.executable, t.home, *t.affected_tasks)
+            values = (t.software, t.created, t.executable, t.home, *t.affected_tasks, *t.details)
             if (t.pid <= 0 or not t.affected_tasks
                     or any(not v or any(ord(c) < 32 for c in v) for v in values)):
                 raise ValueError('software, process identity and affected tasks required')
         if any(ord(c) < 32 for c in self.run_id):
             raise ValueError('invalid run identity')
+        if any(ord(c) < 32 and c != '\n' for c in self.reason + self.details):
+            raise ValueError('invalid confirmation text')
 
 
 def is_interactive_windows_desktop():
@@ -95,13 +102,28 @@ def windows_confirmation(message):
     ok, desk_label = is_interactive_windows_desktop()
     if not ok:
         raise RuntimeError(f'interactive Windows desktop unavailable ({desk_label})')
-    import ctypes
-    from ctypes import wintypes
-    box = ctypes.WinDLL('user32', use_last_error=True).MessageBoxW
-    box.argtypes = (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT)
-    box.restype = ctypes.c_int
-    # OK/CANCEL, warning, second/default button, system modal, foreground, topmost.
-    return box(None, message, 'Agent lifecycle confirmation', 0x1 | 0x30 | 0x100 | 0x1000 | 0x10000 | 0x40000) == 1
+    if isinstance(message, str):
+        message = ConfirmationDialog('是否继续？', message, '继续')
+    return show_confirmation(message)
+
+
+def lifecycle_dialog(scope: LifecycleScope) -> ConfirmationDialog:
+    scope.validate()
+    action = '关闭' if 'close' in scope.actions else '重新打开'
+    content = [scope.reason, f'将{action}：']
+    details = [f'本次操作编号：{scope.run_id}',
+               '操作：' + '、'.join('关闭' if a == 'close' else '重新打开' for a in scope.actions)]
+    for target in scope.targets:
+        content.append(f'• {target.software}\n  ' + '；'.join(target.affected_tasks))
+        details.extend((f'\n{target.software}（PID {target.pid}）',
+                        f'进程启动时间：{target.created}', f'程序路径：{target.executable}',
+                        f'数据目录：{target.home}', *target.details))
+    if scope.details:
+        details.append('\n' + scope.details)
+    return ConfirmationDialog(
+        instruction=f'需要{action}以下软件', content='\n\n'.join(content),
+        confirm_label=f'{action}并继续', details='\n'.join(details),
+    )
 
 
 class LifecycleGate:
@@ -124,14 +146,7 @@ class LifecycleGate:
     def confirm(self):
         if self._confirmed_until is not None or self._armed:
             raise RuntimeError('new lifecycle admission required')
-        rows = [f'Run: {self.scope.run_id}', 'Actions: ' + ', '.join(self.scope.actions),
-                'The following software and tasks will be interrupted:']
-        for t in self.scope.targets:
-            rows.extend((f'{t.software}: PID {t.pid}, created {t.created}',
-                         f'Executable: {t.executable}', f'Home: {t.home}',
-                         'Affected tasks: ' + ', '.join(t.affected_tasks)))
-        rows.append('Confirm only these lifecycle actions for this run?')
-        if self._prompt('\n'.join(rows)) is not True:
+        if self._prompt(lifecycle_dialog(self.scope)) is not True:
             raise RuntimeError('user lifecycle confirmation declined')
         self._confirmed_until = self._clock() + self._ttl
 

@@ -61,8 +61,11 @@ and unknown Magpie children use the same status/verify and no-replay contract.
    affected tasks and obtain explicit confirmation for the current run and
    lifecycle identities. Without that confirmation, do not arm or close.
    The `lifecycle_confirmation.LifecycleGate` support entry enforces in-memory,
-   expiring consent, exact scope/run/identity matching and single-use actions;
-   it does not itself operate clients. New callers must supply fresh identities
+   expiring consent, exact scope/run/identity matching and single-use actions.
+   Callers supply a plain-language reason in `LifecycleScope.reason`. The
+   Windows dialog shows the reason, software and task impact first, with exact
+   process identities and file evidence available in expandable details.
+   It does not itself operate clients. New callers must supply fresh identities
    immediately before dispatch and retain normal startup fences/exit checks.
    T3 handoff closure additionally requires current target-file occupancy,
    bound to PID/start time and the confirmed desktop ancestry. Names, shared

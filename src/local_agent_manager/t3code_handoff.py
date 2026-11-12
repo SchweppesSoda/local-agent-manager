@@ -30,6 +30,7 @@ from . import frozen_files, t3code_database
 from .child_recovery import is_recoverable_preflight_child
 from .windows_file_owners import file_owners, FileOwnersError
 from .lifecycle_confirmation import LifecycleGate, LifecycleScope, LifecycleTarget, windows_confirmation
+from .windows_dialogs import ConfirmationDialog
 from .mutation_guard import _journal_unknown
 from .office_runtime import processes as list_processes
 from .operation_store import OperationStore, strict_json_load, utc_now, write_new_json
@@ -442,7 +443,6 @@ def _qualify_lifecycle_targets(
     owner_roots = sorted(occupancy)
 
     specs: list[dict[str, Any]] = []
-    selector_label = ", ".join(record_ids[:3]) + (f" 等 {len(record_ids)} 项" if len(record_ids) > 3 else "")
     for root_pid in owner_roots:
         row = by_pid[root_pid]
         exe = row.get("executable")
@@ -463,19 +463,15 @@ def _qualify_lifecycle_targets(
         created_iso = _iso_from_unix(started_unix)
         profile = _software_profile(row, t3_root=t3_root, target_homes=target_homes)
         if profile["software"] == "T3 Code Desktop":
-            task_desc = (
-                f"待当前回合结束后关闭并自动重开；清理 T3 会话 {selector_label}"
-                f"（级联 {len(expanded_thread_ids)} 条 T3 记录、{native_record_count} 条原生记录）"
-            )
-        elif root_pid in explicit_owners:
-            task_desc = f"已核实占用目标文件；关闭并在核验后自动重开 {profile['software']}"
+            task_desc = "等待当前任务保存后关闭；清理结束后自动重新打开。"
         elif profile["reopen"]:
-            task_desc = f"关闭占用目标原生存储的后台进程，并在清理核验完成后自动重开 {profile['software']}"
+            task_desc = "正在运行的任务会中断，请先保存工作；清理结束后自动重新打开。"
         else:
-            task_desc = f"终止占用目标原生存储的独立进程 {profile['software']}"
-        descriptions = [f"PID {p['pid']} 占用 {p['store_root']} 中的已列明数据文件（{len(p['resources'])} 个候选文件）"
-                        for p in occupancy[root_pid]]
-        task_desc += '；Windows 文件占用证据：' + '；'.join(descriptions)
+            task_desc = "正在运行的任务会中断，请先保存工作；清理结束后不会自动重新打开。"
+        descriptions = tuple(
+            f"文件占用：PID {p['pid']}，数据目录 {p['store_root']}；查询文件：" + '、'.join(p['resources'])
+            for p in occupancy[root_pid]
+        )
         lifecycle_target = LifecycleTarget(
             software=profile["software"],
             pid=root_pid,
@@ -483,6 +479,7 @@ def _qualify_lifecycle_targets(
             executable=str(Path(exe).resolve()),
             home=profile["home"],
             affected_tasks=(task_desc,),
+            details=descriptions,
         )
         specs.append({
             "software": lifecycle_target.software,
@@ -552,14 +549,14 @@ def _spawn_detached_worker(spec_path: Path) -> int:
 
 
 _EVENT_LABELS: dict[str, str] = {
-    "worker_started": "[执行 1/7] 独立清理进程已启动，正在等待 T3 当前回合落盘...",
-    "t3_quiescent": "[执行 2/7] T3 已落盘静止，正在关闭已确认的桌面客户端...",
-    "targets_closed": "[执行 3/7] 客户端已全部退出，正在核验历史操作锁并生成离线清理计划...",
-    "preflight_children_settled": "[执行 3/7] 已自动结算历史残留预检锁，正在生成离线清理计划...",
-    "plan_ready": "[执行 4/7] 离线清理计划与范围校验通过，正在执行本地完整清理...",
-    "apply_finished": "[执行 5/7] 删除阶段已结束，正在核对执行结果并进行冷验证...",
-    "cold_verify_finished": "[执行 6/7] 冷启动核验完成，正在自动重开桌面客户端...",
-    "targets_reopened": "[执行 7/7] 桌面客户端已自动重开，正在写入最终回执与会话通知...",
+    "worker_started": "[执行 1/7] 正在等待 T3 当前任务结束并保存...",
+    "t3_quiescent": "[执行 2/7] T3 当前任务已保存，正在关闭你确认的软件...",
+    "targets_closed": "[执行 3/7] 软件关闭检查已完成，正在检查是否可以开始删除...",
+    "preflight_children_settled": "[执行 3/7] 已处理上次中断的检查，正在重新核对删除范围...",
+    "plan_ready": "[执行 4/7] 删除范围已核对，正在删除选中的聊天记录...",
+    "apply_finished": "[执行 5/7] 删除步骤已结束，正在检查是否还有残留...",
+    "cold_verify_finished": "[执行 6/7] 记录核查已完成，正在重新打开刚才关闭的桌面软件...",
+    "targets_reopened": "[执行 7/7] 软件重开步骤已结束，正在保存结果...",
 }
 
 
@@ -625,7 +622,7 @@ def start_t3code_handoff(
     coordinator: Any,
     scope: Mapping[str, Any],
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
-    prompt: Callable[[str], bool] | None = None,
+    prompt: Callable[[ConfirmationDialog], bool] | None = None,
     spawner: Callable[[Path], int] | None = None,
     stderr: Any = None,
 ) -> dict[str, Any]:
@@ -684,7 +681,7 @@ def start_t3code_handoff(
             notify_raw = getattr(args, "notify_thread_id", None)
             notify_thread_id = identifier(notify_raw.removeprefix("t3code:")) if notify_raw else None
 
-            _step("[预检 1/4] 正在发现 T3 会话绑定与级联删除范围...")
+            _step("[预检 1/4] 正在查找选中聊天及其关联记录...")
             recovery_document = partial = None
             recovery_path = getattr(args, 'recover_plan', None)
             if recovery_path is not None:
@@ -767,7 +764,7 @@ def start_t3code_handoff(
             native_record_count = len({(ref.engine, ref.native_id) for ref in target_refs})
 
             _step(
-                f"[预检 2/4] 已定位级联范围（{len(expanded_thread_ids)} 条 T3 记录、{native_record_count} 条原生记录），正在检查历史操作锁..."
+                f"[预检 2/4] 找到 {len(expanded_thread_ids)} 条 T3 聊天和 {native_record_count} 条关联 Agent 记录，正在检查是否有未完成的清理..."
             )
             recoverable_children = _inspect_store_journals(
                 coordinator,
@@ -775,7 +772,7 @@ def start_t3code_handoff(
                 partial=partial,
             )
             cli_forwards = forwarded_arguments(args, t3_root)
-            _step("[预检 2/4] 正在执行完整只读计划校验；通过后才会请求关闭软件...")
+            _step("[预检 2/4] 正在检查这些记录能否安全删除；检查通过后再确认需要关闭的软件...")
             with tempfile.TemporaryDirectory(prefix="lam-t3-preflight-") as preview_dir:
                 preview = prepare_cleanup(record_ids, cli_forwards, Path(preview_dir) / "plan.json",
                     run_cli=_run_cli_json, coordinator=coordinator)
@@ -788,7 +785,7 @@ def start_t3code_handoff(
             pending = {(t['engine'], canonical_path(t['root'])) for t in evidence_from_document(preview.document)['native_targets']
                        if t['action_ids'] or t['engine'] == 'antigravity'}
             target_stores = [s for s in target_stores if (s[0], s[1]) in pending]
-            _step("[预检 3/4] 正在核实需关闭并自动重开的桌面客户端进程...")
+            _step("[预检 3/4] 正在检查哪些软件占用了要清理的数据...")
             from .t3code_occupancy import resources as occupancy_resources
             target_specs = _qualify_lifecycle_targets(
                 t3_root=t3_root,
@@ -801,13 +798,20 @@ def start_t3code_handoff(
                 occupancy_resources=occupancy_resources(evidence_from_document(preview.document)),
             )
 
-        _step("[预检 4/4] 已弹出置顶确认窗口（请点击“确定”继续，默认焦点为“取消”）...")
+        _step("[预检 4/4] 请在 Windows 确认窗口中核对操作；点击“取消”可停止。")
+        cleanup_summary = (f'将永久删除 {len(expanded_thread_ids)} 条 T3 聊天记录及其关联的 '
+                           f'{native_record_count} 条 Agent 记录。')
+        cleanup_details = ('选中的 T3 会话：\n' + '\n'.join(record_ids)
+                           + '\n包含关联任务的完整 T3 会话范围：\n' + '\n'.join(expanded_thread_ids))
         if target_specs:
             actions = ("close", "restart") if any(item["reopen"] for item in target_specs) else ("close",)
             lifecycle_scope = LifecycleScope(
                 run_id=handoff_id,
                 targets=tuple(item["lifecycle_target"] for item in target_specs),
                 actions=actions,
+                reason=('为了删除你选中的聊天记录，需要先关闭正在使用这些数据的软件。\n'
+                        + cleanup_summary),
+                details=cleanup_details,
             )
             gate = LifecycleGate(lifecycle_scope, prompt=prompt_fn)
             try:
@@ -841,12 +845,11 @@ def start_t3code_handoff(
                     }
                 raise
         else:
-            summary_msg = (
-                f"Run: {handoff_id}\n"
-                f"当前未检测到运行中的 T3 或关联客户端进程。\n"
-                f"即将永久清理 T3 会话 {', '.join(record_ids)}（级联共 {len(expanded_thread_ids)} 条 T3 记录、"
-                f"{native_record_count} 条原生记录）。\n"
-                f"是否确认执行？"
+            summary_msg = ConfirmationDialog(
+                instruction='永久删除选中的聊天记录？',
+                content=cleanup_summary + '\n\n本次无需关闭软件。删除后无法恢复。',
+                confirm_label='永久删除',
+                details=f'本次操作编号：{handoff_id}\n{cleanup_details}',
             )
             try:
                 confirmed = prompt_fn(summary_msg)
@@ -941,7 +944,7 @@ def start_t3code_handoff(
             "blockers": [],
         }
         if human_mode and spawner is None:
-            _step(f"[交接已启动] 独立清理进程 PID {worker_pid}，正在实时跟踪执行进度（回执：{receipt_path}）...")
+            _step(f"[清理已启动] 正在跟踪执行进度；结果将保存到 {receipt_path}")
             final_receipt = _follow_worker_events(
                 events_path=handoff_dir / "events.jsonl",
                 receipt_path=receipt_path,
@@ -962,8 +965,8 @@ def start_t3code_handoff(
                             "retryable": True,
                             "message": str(err.get("message") or ""),
                         })
-                icon = "[完成]" if result["goal_satisfied"] else "[未完全完成]"
-                _step(f"{icon} 最终状态：{result['goal_status']}；回执已写入 {receipt_path}")
+                outcome = "[完成] 选中的记录已删除并核查" if result["goal_satisfied"] else "[未完成] 请查看结果中的原因"
+                _step(f"{outcome}；结果已保存到 {receipt_path}")
         return result
     except (HandoffError, CleanupFlowError) as exc:
         blocker: dict[str, Any] = {

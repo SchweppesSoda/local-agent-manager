@@ -211,7 +211,7 @@ class T3CodeHandoffTests(unittest.TestCase):
                 ),
             }
         ]
-        seen_prompts: list[str] = []
+        seen_prompts = []
 
         with (
             patch("local_agent_manager.t3code_handoff._qualify_lifecycle_targets", return_value=fake_targets),
@@ -239,7 +239,12 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertEqual(declined["blockers"][0]["blocker_code"], "user_confirmation_declined")
         self.assertFalse((self.localappdata / "local-agent-manager/handoffs").exists())
         self.assertEqual(len(seen_prompts), 1)
-        self.assertIn("T3 Code Desktop: PID 40001", seen_prompts[0])
+        self.assertIn("T3 Code Desktop", seen_prompts[0].content)
+        self.assertIn("正在使用这些数据", seen_prompts[0].content)
+        self.assertIn("2 条 T3 聊天记录", seen_prompts[0].content)
+        self.assertNotIn("PID", seen_prompts[0].content)
+        self.assertIn("PID 40001", seen_prompts[0].details)
+        self.assertIn(TARGET_THREAD, seen_prompts[0].details)
 
         spawned_specs: list[Path] = []
         with (
@@ -297,6 +302,9 @@ class T3CodeHandoffTests(unittest.TestCase):
               patch.object(handoff, '_kernel_process_image', return_value=(str(cindy), 100.0)) as image):
             targets = qualify()
             self.assertEqual([(t['pid'], t['executable']) for t in targets], [(40010, str(cindy))])
+            self.assertIn('正在运行的任务会中断', targets[0]['lifecycle_target'].affected_tasks[0])
+            self.assertNotIn(str(home), targets[0]['lifecycle_target'].affected_tasks[0])
+            self.assertIn(str(home/'state_5.sqlite'), targets[0]['lifecycle_target'].details[0])
             self.assertIsNone(census[0]['executable'])
             for identity in (None, (str(self.t3_exe), 100.0), (str(cindy), 99.0)):
                 image.return_value = identity
@@ -334,7 +342,7 @@ class T3CodeHandoffTests(unittest.TestCase):
             targets = qualify([41000, 41000])
             self.assertEqual([(t['pid'],t['software'],t['reopen']) for t in targets], [(41000,'Magpie',True)])
             self.assertEqual(targets[0]['lifecycle_target'].pid, 41000)
-            self.assertIn('Windows 文件占用证据', targets[0]['affected_tasks'][0])
+            self.assertIn('文件占用：PID 41001', targets[0]['lifecycle_target'].details[0])
             self.assertEqual(targets[0]['occupancy'][0]['pid'], 41001)
             owners.return_value[0]['created_unix'] = 99.0
             with self.assertRaises(handoff.HandoffError):
@@ -584,7 +592,7 @@ class T3CodeHandoffTests(unittest.TestCase):
 
         with (
             patch("local_agent_manager.t3code_handoff._qualify_lifecycle_targets", return_value=[]),
-            patch("local_agent_manager.t3code_handoff.windows_confirmation", return_value=True),
+            patch("local_agent_manager.t3code_handoff.windows_confirmation", return_value=True) as prompt,
             patch("local_agent_manager.t3code_handoff._spawn_detached_worker", side_effect=fake_spawn),
         ):
             out, err = StringIO(), StringIO()
@@ -599,7 +607,10 @@ class T3CodeHandoffTests(unittest.TestCase):
         self.assertIn("[预检 4/4]", stderr_text)
         self.assertIn("[执行 1/7]", stderr_text)
         self.assertIn("[执行 7/7]", stderr_text)
-        self.assertIn("[完成] 最终状态：complete", stderr_text)
+        self.assertIn("[完成] 选中的记录已删除并核查", stderr_text)
+        self.assertEqual(prompt.call_args.args[0].confirm_label, '永久删除')
+        self.assertIn('本次无需关闭软件', prompt.call_args.args[0].content)
+        self.assertIn(CHILD_THREAD, prompt.call_args.args[0].details)
         self.assertIn("complete", out.getvalue())
 
     def test_real_spawned_worker_boots_and_writes_receipt_without_mocks(self) -> None:
