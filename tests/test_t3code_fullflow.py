@@ -1,5 +1,5 @@
 import copy
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
 import json
 import os
 from pathlib import Path
@@ -87,12 +87,14 @@ class T3CodeFullflowTests(unittest.TestCase):
         from local_agent_manager import t3code_desktop_cleanup as d
         from tests.test_t3code_desktop_writer import fixture, ENV, IDS
         installed = self.installed_runtime
-        if not (installed/'T3 Code (Nightly).exe').exists():
+        if not (installed/'T3 Code (Nightly).exe').is_file():
             self.skipTest('existing qualified Electron required')
         profile = self.base/'desktop'
         profile.mkdir()
         seed = json.loads(json.dumps(fixture()).replace(ENV, 'env_test').replace(IDS[0], THREAD))
-        runtime = self.enterContext(d.isolated_runtime(installed))
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        runtime = stack.enter_context(d.isolated_runtime(installed))
         d.observe(runtime, profile, 'env_test', [THREAD], native=True, mode='seed', seed=seed)
         (runtime/'electron.exe').rename(runtime/'T3 Code (Nightly).exe')
         installed = runtime
@@ -133,27 +135,35 @@ class T3CodeFullflowTests(unittest.TestCase):
 
     def test_online_desktop_plan_rejects_source_change_during_copy_rehearsal(self):
         from local_agent_manager import t3code_desktop_cleanup as d
-        from tests.test_t3code_desktop_writer import fixture, ENV, IDS
-        runtime = self.enterContext(d.isolated_runtime(self.installed_runtime))
+
+        installed = self.base / 'synthetic-runtime'
+        installed.mkdir()
+        binary = installed / 'T3 Code (Nightly).exe'
+        binary.write_bytes(b'synthetic runtime identity, never executed')
         profile = self.base/'desktop'
-        profile.mkdir()
-        seed = json.loads(json.dumps(fixture()).replace(ENV, 'env_test').replace(IDS[0], THREAD))
-        d.observe(runtime, profile, 'env_test', [THREAD], native=True, mode='seed', seed=seed)
-        (runtime/'electron.exe').rename(runtime/'T3 Code (Nightly).exe')
-        self.manifest['runtime_binaries'] = [str(runtime/'T3 Code (Nightly).exe')]
+        log_path = profile / d.LEVEL / 'LOG'
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b'original fixture\n')
+        self.manifest['runtime_binaries'] = [str(binary)]
         self.manifest['desktop_profiles'] = [{'root':str(profile), 'runtime_binaries':self.manifest['runtime_binaries']}]
         frozen = files.freeze(self.root, [THREAD])['database']
-        prepare = d.prepared
+
         @contextmanager
-        def concurrent_writer(evidence, copied):
-            with prepare(evidence, copied) as after:
-                with (profile/d.LEVEL/'LOG').open('ab') as log:
-                    log.write(b'concurrent fixture writer\n')
-                yield after
-        with (patch.object(d, 'default_runtime', return_value=runtime),
+        def concurrent_writer(evidence, _runtime):
+            copied = self.base / 'rehearsal'
+            d.copy_source(profile, copied, evidence['files'])
+            with log_path.open('ab') as log:
+                log.write(b'concurrent fixture writer\n')
+            yield
+
+        # Stub Chromium's interpretation of the copy while exercising the
+        # real file snapshots, rehearsal copy, and post-rehearsal drift check.
+        with (patch.object(d, 'default_runtime', return_value=installed),
+              patch.object(d, 'observe', return_value={'counts': {'thread': 1}}),
               patch.object(d, 'prepared', side_effect=concurrent_writer),
               self.assertRaisesRegex(ValueError, 'desktop_planning_source_changed')):
             d.new_full_plan(self.manifest, frozen, profile)
+        self.assertEqual((self.base / 'rehearsal' / d.LEVEL / 'LOG').read_bytes(), b'original fixture\n')
         self.assertFalse(d.journal_root(profile).exists())
         self.assertGreater(database.remaining(frozen), 0)
 

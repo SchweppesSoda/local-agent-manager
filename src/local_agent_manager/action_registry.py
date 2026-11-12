@@ -174,7 +174,7 @@ def capability_field_for_action(kind: object) -> str | None:
     family = action_capability(kind).mutation_family
     if family in {"delete_conversation", "delete_pi_session", "delete_claude_session", "delete_antigravity_cli_sessions",
                   "repair_legacy_index", "remove_desktop_state", "remove_broken_relation",
-                  "delete_workbuddy_session", "delete_office_artifacts"}:
+                  "delete_workbuddy_session", "delete_office_artifacts", "delete_magpie_records"}:
         return "native_delete"
     if family in {"remove_frontend_reference", "remove_workbuddy_ui_reference"}:
         return "frontend_reference_delete"

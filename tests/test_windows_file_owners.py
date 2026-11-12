@@ -15,16 +15,18 @@ class FileOwnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw)/'only-synthetic.sqlite'
             path.write_bytes(b'synthetic')
-            code = "import sys; f=open(sys.argv[1],'rb'); print('ready',flush=True); sys.stdin.readline(); f.close()"
+            code = ("import os, sys; f=open(sys.argv[1],'rb'); print(os.getpid(),flush=True); "
+                    "sys.stdin.readline(); f.close()")
             with subprocess.Popen([sys.executable, '-B', '-c', code, str(path)], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                   creationflags=subprocess.CREATE_NO_WINDOW) as child:
                 try:
-                    self.assertEqual(child.stdout.readline().strip(), 'ready')
+                    # In a Windows virtual environment, Popen can identify the launcher.
+                    holder_pid = int(child.stdout.readline())
                     rows = file_owners([path])
-                    holder = next(row for row in rows if row['pid'] == child.pid)
-                    self.assertEqual(holder['created_unix'], _kernel_process_start_unix(child.pid))
+                    holder = next(row for row in rows if row['pid'] == holder_pid)
+                    self.assertEqual(holder['created_unix'], _kernel_process_start_unix(holder_pid))
                     self.assertEqual(holder['resources'], [str(path)])
                 finally:
                     child.communicate('\n', timeout=10)
-            self.assertNotIn(child.pid, [row['pid'] for row in file_owners([path])])
+            self.assertNotIn(holder_pid, [row['pid'] for row in file_owners([path])])

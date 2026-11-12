@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import time
 import unittest
@@ -151,12 +152,16 @@ class ArtifactCoverageTests(unittest.TestCase):
         self.assertEqual(self.selected(self.inspect('codex', ['runtimes'])), [])
 
     def test_cindy_account_discovery_tags_native_client_and_deduplicates_home(self):
-        profile = self.root / 'CindyGlobal'
+        roaming = self.root / 'Library/Application Support' if sys.platform == 'darwin' else self.root
+        profile = roaming / 'CindyGlobal'
         account = profile / 'codex-accounts' / ('a' * 64) / 'openai-deadbeef'
         account.mkdir(parents=True)
         (account / 'state_5.sqlite').write_bytes(b'presence only')
         (profile / 'codex-home').mkdir()
-        with patch.object(rules, 'default_appdata', return_value=self.root), patch.object(rules, 'default_codex_home', return_value=profile / 'codex-home'):
+        with (patch.object(Path, 'home', return_value=self.root),
+              patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root)}),
+              patch.object(rules, 'default_appdata', return_value=roaming),
+              patch.object(rules, 'default_codex_home', return_value=profile / 'codex-home')):
             profiles = rules.default_profiles(['cindy', 'codex'])
         native = [p['root'] for p in profiles if p['client'] == 'codex']
         self.assertIn(str(account), native)

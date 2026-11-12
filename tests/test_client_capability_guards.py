@@ -17,12 +17,14 @@ from local_agent_record_janitor.manual_delete import (
     ManualDeletePlanError, ManualDeleteSelectionError, build_manual_delete_plan, execute_manual_delete,
 )
 from local_agent_record_janitor.client_capability_guards import ClientCapabilityLimits, action_frontend_engines
+from local_agent_record_janitor.client_contracts import ClientDescriptor
+from local_agent_record_janitor.magpie_cleanup import actions_for as magpie_actions_for
 from local_agent_record_janitor.operation_coordinator import OperationCoordinator
 from local_agent_record_janitor.planning import (
     ActionImpact, ActionKind, CandidateAction, CleanupPlan, RiskLevel,
     StorageLocation, TargetRef, storage_id_for_path,
 )
-from local_agent_record_janitor.record_identity import EngineCapability
+from local_agent_record_janitor.record_identity import EngineCapability, StoreKey
 from tests.support import create_thread_index, write_rollout
 from tests.test_cindy_references import create_database
 from tests.test_client_inventory import _write_pi_session
@@ -156,6 +158,21 @@ class ClientCapabilityGuardTests(unittest.TestCase):
                     service.execute(context, (action,), timeout=1, app_server_factory=writer,
                         binary_resolver=writer, cleaner=writer, session_executor=writer)
                 self.assertEqual(raised.exception.kind, "client_capability_limit")
+
+    def test_magpie_actions_use_the_exact_magpie_store_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "config"
+            cache = Path(temporary) / "cache"
+            config.mkdir()
+            cache.mkdir()
+            actions, storages = magpie_actions_for({
+                "profile": str(config), "stores": [{"root": str(config)}, {"root": str(cache)}], "dependencies": [],
+            })
+            plan = CleanupPlan(storages=storages, actions=actions, plan_fingerprint="plan:v1:synthetic")
+            descriptor = ClientDescriptor("magpie", native_stores=(StoreKey("magpie", config),))
+            limited = ClientCapabilityLimits((descriptor,)).restrict_plan(plan)
+            self.assertFalse(limited.actions[0].available)
+            self.assertTrue(limited.actions[1].available)
 
     def test_coordinator_retains_pi_target_limits_when_merging_one_native_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

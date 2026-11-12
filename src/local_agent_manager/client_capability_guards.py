@@ -171,8 +171,12 @@ def action_location(plan: Any, action: Any) -> tuple[str, Path | str | None, tup
     impact = getattr(action, "impact", None)
     raw_engine = getattr(impact, "external_engine", None)
     kind = str(getattr(getattr(action, "kind", ""), "value", getattr(action, "kind", "")))
-    engine = normalize_engine(raw_engine or (
-        "pi" if kind == "delete_pi_session" else "claude" if kind == "delete_claude_session" else "codex"))
+    default_engines = {
+        "delete_pi_session": "pi",
+        "delete_claude_session": "claude",
+        "delete_magpie_records": "magpie",
+    }
+    engine = normalize_engine(raw_engine or default_engines.get(kind, "codex"))
     root = getattr(impact, "external_storage_root", None)
     if root is None:
         root = next((storage.path for storage in plan.storages

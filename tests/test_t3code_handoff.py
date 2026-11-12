@@ -315,7 +315,7 @@ class T3CodeHandoffTests(unittest.TestCase):
         import sys
         from local_agent_manager.t3code_handoff import _kernel_process_image, _kernel_process_start_unix
         image, started = _kernel_process_image(os.getpid())
-        self.assertTrue(os.path.samefile(image, sys.executable))
+        self.assertTrue(os.path.samefile(image, sys._base_executable))
         self.assertEqual(started, _kernel_process_start_unix(os.getpid()))
 
     def test_extra_pid_and_matching_names_do_not_authorize_closure_without_file_occupancy(self):
