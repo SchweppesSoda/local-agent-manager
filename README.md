@@ -9,7 +9,7 @@ local-agent-manager resources --json
 local-agent-manager state inventory --root '<Agent 数据根>' --json
 ```
 
-两个权威管理 Skill 位于 `skills/agent-management` 与 `skills/skill-management`。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。工作业务内容与客户端本机配置由各自的源仓库维护。
+两个权威管理 Skill 是 [agent-management](skills/agent-management/SKILL.md) 与 [skill-management](skills/skill-management/SKILL.md)。后者管理各类 Skill 的创建、内容维护、发现、导入、部署、同步、验证与恢复，按所选源和客户端执行。`work-skills` 作为独立源接入，`mount-work-skills` 保留该源的兼容入口。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。各源维护自身内容、运行时与客户端配置；普通 Skill 内容修改无需先登记部署。
 
 旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量和恢复数据保留原契约。控制目录可通过 `state migrate` 显式迁移。实现和运行路径改变后，受绑定的未执行计划须重新生成。
 

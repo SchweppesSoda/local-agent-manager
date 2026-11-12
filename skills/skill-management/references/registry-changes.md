@@ -1,5 +1,7 @@
 # Registry changes
 
+Use the selected source's deployment configuration: `local-agent-manager skills <command> --repo-root <source>` reads its `config/skill-targets.yaml`, or pass an explicit `--config`. Check the relevant command's help. Source registration and deployment changes use this workflow; ordinary Skill content edits use [content maintenance](content-maintenance.md).
+
 1. Identify the source, actual consumer and selected target. Run `local-agent-manager skills clients detect --repo-root <source>`.
 2. Run `local-agent-manager skills plan --repo-root <source> --target <adapter>` and review every action and blocker.
 3. Apply the same arguments and exact reviewed ID with `local-agent-manager skills apply --repo-root <source> --target <adapter> --plan-id <id> --yes`.

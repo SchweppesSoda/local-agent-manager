@@ -1,4 +1,4 @@
 interface:
   display_name: "Skill Management"
-  short_description: "Manage Skill sources and client deployments"
-  default_prompt: "Use $skill-management to maintain and verify Skill deployments."
+  short_description: "Create, maintain, deploy, and verify Skills across sources"
+  default_prompt: "Use $skill-management to create or maintain Skills and manage their sources and client deployments."

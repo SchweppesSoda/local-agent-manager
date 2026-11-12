@@ -1,6 +1,8 @@
 # Local Agent Manager 整合设计
 
-项目统一维护环境、Skill 和记录管理的通用代码。`agent-management` 与 `skill-management` 是两个操作入口，业务技能库按独立 source 配置接入。
+项目统一维护环境、Skill 和记录管理的通用代码。`agent-management` 与 `skill-management` 是两个操作入口。Skill 管理面向个人、项目、共享和包管理的技能源，各源按自身归属与更新方式维护。
+
+`skill-management` 负责 Skill 的创建、内容与路由维护、资源检查，以及跨源导入、客户端发现、部署、同步、验证和恢复。先判断任务和权威源，再选择内容维护或部署流程。内容维护可直接处理独立 Skill；需要管理器执行部署事务时才使用源配置与计划协议。`work-skills` 是一个接入源，旧 `mount-work-skills` 仅保留该源的兼容路由；其业务路径、运行时、wrapper 和自动化授权不成为通用管理默认值。
 
 ## 模块与源边界
 
