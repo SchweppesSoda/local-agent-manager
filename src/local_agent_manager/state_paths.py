@@ -20,7 +20,7 @@ ROUTED_LAYOUT = "lam.state-routing.v1"
 
 def routed_control(root: Path, base: Path) -> Path:
     key = sha256(os.path.normcase(canonical_existing_path_key(root)).encode("utf-8")).hexdigest()
-    return base / key / MANAGER_CONTROL
+    return base / key[:32] / MANAGER_CONTROL
 
 
 def validate_external_directory(root: Path, directory: Path) -> None:

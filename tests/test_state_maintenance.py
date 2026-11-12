@@ -123,6 +123,18 @@ class StateMaintenanceTests(unittest.TestCase):
         self.assertTrue(journal_root(self.home, "new").is_relative_to(base))
         admission(self.home)
 
+    def test_routing_preserves_previously_migrated_plan_lookup(self):
+        old = self.terminal()
+        self.apply("migrate")
+        migrated = OperationStore(self.home, old.operation_id)
+        base = self.root / "repository-state"
+        base.mkdir()
+        preview = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(_find_operation_plan(old.operation_id, operation_home=self.home), migrated.plan_path)
+        self.assertEqual(_find_operation_plan(old.operation_id, operation_home=old.directory), migrated.plan_path)
+        self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 1)
+
     def test_windows_path_and_handle_identity_use_the_same_creation_time(self):
         path_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=3, st_ctime_ns=30, st_birthtime_ns=20)
         handle_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=4, st_ctime_ns=40, st_birthtime_ns=20)
