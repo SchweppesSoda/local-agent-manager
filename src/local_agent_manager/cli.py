@@ -516,6 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_arguments(records, progress=True)
     _add_operation_scope_arguments(records)
     records.add_argument("--inspect-clients", action="store_true", help="附带只读运行证据；Herdr 查询已知本机 session 的 metadata API，其他客户端检查进程归属")
+    records.add_argument("--include-titles", action="store_true", help="在 T3 records 元数据中包含会话名称；不读取消息正文")
 
     delete = subparsers.add_parser(
         "delete",
@@ -1874,6 +1875,10 @@ def main(
         output.write("\n")
         return EXIT_ERROR
 
+    if getattr(args, 'include_titles', False) and getattr(args, 'client', None) != 't3code':
+        return _emit_fatal_error('records', ValueError('--include-titles requires --client t3code'),
+            json_output=args.json, stdout=output, stderr=error_output)
+
     if args.command == "environment":
         return run_environment_command(args, stdout=output, stderr=error_output)
 
@@ -2819,6 +2824,13 @@ def _run_client_records(
 
     client = _normalize_client_name(getattr(args, "client", None))
     engines = tuple(getattr(args, "engine", ()) or ())
+    if getattr(args, 'include_titles', False):
+        from .t3code_store import T3CodeAdapter
+        # Use separate inventory adapters; never change a supplied deletion or
+        # protection adapter's cached observation or its default disclosure.
+        active_adapters = tuple(T3CodeAdapter(profile_root=a.profile_root,
+            binding_errors=a.binding_errors, include_titles=True) if isinstance(a, T3CodeAdapter)
+            else a for a in active_adapters)
     progress = (
         ProgressReporter(stderr)
         if bool(getattr(args, "progress", False))

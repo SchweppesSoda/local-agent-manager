@@ -115,7 +115,7 @@ def rows(db, query, args=()):
     return [dict(row) for row in result]
 
 
-def read_database(root):
+def read_database(root, *, include_titles=False):
     path = database_path(root)
     identity = frozen_files._identity(path.stat())
     with closing(connect_readonly(path)) as db:
@@ -125,8 +125,9 @@ def read_database(root):
         db.execute("BEGIN")
         qualify(db)
         projects = rows(db, "SELECT project_id,workspace_root,created_at,updated_at,deleted_at FROM projection_projects ORDER BY project_id")
-        legacy = rows(db, "SELECT thread_id,project_id,worktree_path,created_at,updated_at,archived_at,deleted_at FROM projection_threads ORDER BY thread_id")
-        current = rows(db, f"""SELECT thread_id,project_id,default_provider,provider_instance_id,created_at,updated_at,archived_at,deleted_at,
+        title_column = ',title' if include_titles else ''
+        legacy = rows(db, f"SELECT thread_id,project_id,worktree_path,created_at,updated_at,archived_at,deleted_at{title_column} FROM projection_threads ORDER BY thread_id")
+        current = rows(db, f"""SELECT thread_id,project_id,default_provider,provider_instance_id,created_at,updated_at,archived_at,deleted_at{title_column},
             json_extract(payload_json,'$.worktreePath') AS worktree_path,
             json_extract(payload_json,'$.lineage.parentThreadId') AS parent_thread_id,
             json_extract(payload_json,'$.lineage.relationshipToParent') AS parent_relationship
@@ -181,9 +182,10 @@ def capability(value):
 
 
 class T3CodeAdapter:
-    def __init__(self, *, profile_root, binding_errors=()):
+    def __init__(self, *, profile_root, binding_errors=(), include_titles=False):
         self.profile_root = local_root(profile_root)
         self.binding_errors = tuple(binding_errors)
+        self.include_titles = include_titles
         self.observation = None
         self._snapshot = None
 
@@ -194,7 +196,8 @@ class T3CodeAdapter:
         errors, references = list(self.binding_errors), []
         self.observation = None
         try:
-            self.observation = read_database(self.profile_root)
+            self.observation = (read_database(self.profile_root, include_titles=True) if self.include_titles
+                                else read_database(self.profile_root))
         except (OSError, ValueError, sqlite3.Error, RecursionError) as exc:
             errors.append(SourceFailure(str(path), exc.kind if isinstance(exc, T3CodeError) else "t3code_database_unreadable",
                 profile_root=self.profile_root, database=path, error_type="T3CodeInventoryIncomplete"))

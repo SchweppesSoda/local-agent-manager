@@ -64,6 +64,30 @@ class T3CodeTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("t3code_schema_unverified", {e["message"] for e in value["errors"]})
 
+    def test_titles_are_opt_in_metadata_without_message_content_or_adapter_changes(self):
+        add_thread(self.db, 'named', native='native-name')
+        add_thread(self.db, 'old-name', legacy=True)
+        self.db.execute(f'UPDATE {V2}threads SET title=? WHERE thread_id=?', ('报价核对', 'named'))
+        self.db.execute('UPDATE projection_threads SET title=? WHERE thread_id=?', ('旧会话名称', 'old-name'))
+        self.db.commit()
+        adapter = store.T3CodeAdapter(profile_root=self.home)
+        adapter.snapshot_references()
+        before = adapter.observation
+        output = StringIO()
+        code = main(['records', '--client', 't3code', '--include-titles', '--json'],
+            adapters=(adapter,), stdout=output, stderr=StringIO(), app_server_factory=self.writer)
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertNotIn(PRIVATE, output.getvalue())
+        result = json.loads(output.getvalue())
+        titles = {r['record_id']: r['record_metadata']['snapshots'][0]['title'] for r in result['records']}
+        self.assertEqual(titles, {'named': '报价核对', 'old-name': '旧会话名称'})
+        self.assertIs(adapter.observation, before)
+        self.assertFalse(adapter.include_titles)
+        code, default = self.invoke('records', '--client', 't3code', '--json')
+        self.assertEqual(code, 0)
+        self.assertTrue(all('title' not in s for r in default['records'] for s in r['record_metadata']['snapshots']))
+        self.writer.assert_not_called()
+
     def test_antigravity_plan_run_and_forged_bindings_preserve_mixed_profile(self):
         add_thread(self.db, "selected", native="selected-native")
         add_thread(self.db, "keeper", native="shared-id")

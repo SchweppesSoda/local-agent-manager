@@ -575,6 +575,8 @@ Codex、Claude、Antigravity 混合 profile 不需要原生绑定，选中 Antig
 先用 `records --client t3code --json` 获取元数据，或用可重复的 `--t3code-root` 指定
 实际 T3 home（包含 `userdata` 的目录，不是 Electron 桌面 profile）。默认使用
 `T3CODE_HOME` 或 `~/.t3`。普通 inventory 不执行删除，也不推断原生 provider 根目录。
+需要按名称核对时使用 `records --client t3code --include-titles --json`：在同一只读数据库
+快照中附带 v1/v2 会话的 `title` 列，不读取消息正文。默认清单及删除/保护读取仍省略标题。
 
 `delete plan/run --client t3code` 省略 `--t3code-bindings` 时自动准备绑定。
 准备流程读取 provider instance、配置的原生 home 和 executable，并用原生会话 ID
