@@ -278,22 +278,43 @@ def helpers_fingerprint():
             for path in paths}
 
 
-def journal_root(profile):
-    return ff.checked_path(Path(profile), '.local-agent-record-janitor/desktop-cleanups')
+def _journal_roots(profile):
+    from .state_paths import LEGACY_CONTROL, ROUTED_LAYOUT, control_directory, read_layout_marker
+
+    profile = Path(profile).resolve()
+    legacy = ff.checked_path(profile, LEGACY_CONTROL + '/desktop-cleanups')
+    marker = read_layout_marker(profile)
+    if marker is not None and marker.get('schema_version') == ROUTED_LAYOUT:
+        return ff.checked_path(control_directory(profile), 'desktop-cleanups'), legacy
+    return (legacy,)
+
+
+def journal_root(profile, operation_id=None):
+    roots = _journal_roots(profile)
+    if operation_id is None:
+        return roots[0]
+    present = [root for root in roots if ff.checked_path(root.parent, root.name + '/' + operation_id).exists()]
+    if len(present) > 1:
+        fail('desktop_journal_duplicate')
+    return present[0] if present else roots[0]
 
 
 def admission(profile, *, own=None):
-    directory = journal_root(profile)
-    if not directory.exists():
-        return
-    ff._plain(directory.lstat(), directory=True)
-    for child in directory.iterdir():
-        ff._plain(child.lstat(), directory=True)
-        if child.name == own:
+    seen = set()
+    for directory in _journal_roots(profile):
+        if not directory.exists():
             continue
-        state = strict_json_load(ff.checked_path(child, 'state.json'))
-        if state.get('phase') not in ('complete', 'not_applied'):
-            fail('desktop_sibling_unknown')
+        ff._plain(directory.lstat(), directory=True)
+        for child in directory.iterdir():
+            ff._plain(child.lstat(), directory=True)
+            if child.name in seen:
+                fail('desktop_journal_duplicate')
+            seen.add(child.name)
+            if child.name == own:
+                continue
+            state = strict_json_load(ff.checked_path(child, 'state.json'))
+            if state.get('phase') not in ('complete', 'not_applied'):
+                fail('desktop_sibling_unknown')
 
 
 def service_absence(service, ids):
@@ -427,7 +448,7 @@ def require_bound_state(plan, profile, environment, ids):
     current = source_files(profile)
     if current == plan['evidence']['files']:
         return
-    state_path = journal_root(profile) / plan['operation_id'] / 'state.json'
+    state_path = journal_root(profile, plan['operation_id']) / plan['operation_id'] / 'state.json'
     if state_path.exists():
         state = strict_json_load(state_path)
         result = state.get('result', {})
@@ -501,8 +522,8 @@ def apply_plan(plan, authorized, *, clients_closed=False, phase_callback=lambda 
     if not clients_closed:
         fail('desktop_clients_closed_required')
     profile = validate_plan(plan, authorized)
-    directory = journal_root(profile) / plan['operation_id']
     with mutation_roots([profile]), held_lifecycle(plan['lifecycle']):
+        directory = journal_root(profile, plan['operation_id']) / plan['operation_id']
         admission(profile)
         if directory.exists():
             fail('desktop_attempt_not_replayable')
@@ -534,7 +555,7 @@ def apply_plan(plan, authorized, *, clients_closed=False, phase_callback=lambda 
 
 def status_plan(plan):
     profile = validate_plan(plan)
-    directory = journal_root(profile) / plan['operation_id']
+    directory = journal_root(profile, plan['operation_id']) / plan['operation_id']
     if not directory.exists():
         return {'goal_status': 'ready', 'goal_satisfied': False, 'operation_id': plan['operation_id'], 'attempts': 0}
     state = strict_json_load(directory / 'state.json')
@@ -551,8 +572,8 @@ def verify_plan(plan, *, clients_closed=False, recover=False):
     if not clients_closed:
         fail('desktop_clients_closed_required')
     profile = validate_plan(plan)
-    directory = journal_root(profile) / plan['operation_id']
     with mutation_roots([profile]), held_lifecycle(plan['lifecycle']):
+        directory = journal_root(profile, plan['operation_id']) / plan['operation_id']
         admission(profile, own=plan['operation_id'])
         state = strict_json_load(directory / 'state.json')
         if state.get('plan_sha256') != plan['plan_sha256']:

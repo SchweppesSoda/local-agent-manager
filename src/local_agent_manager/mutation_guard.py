@@ -506,14 +506,10 @@ def _journal_unknown(store: OperationStore) -> tuple[bool, bool]:
 
 
 def _check_siblings(scope: MutationScope, owner: OperationStore | None) -> None:
-    from .state_paths import control_directory
+    from .state_paths import operation_entries
 
     tickets = getattr(_thread, "tickets", ())
-    directory = control_directory(scope.root) / "operations"
-    _validate_directory(directory, _required_lstat(directory))
-    for entry in sorted(directory.iterdir()):
-        if entry.name == ".mutation.lock":
-            continue
+    for entry in operation_entries(scope.root):
         _validate_directory(entry, _required_lstat(entry))
         store = OperationStore(scope.root, entry.name)
         if owner is not None and store.directory == owner.directory:

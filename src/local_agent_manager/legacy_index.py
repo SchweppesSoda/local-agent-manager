@@ -989,8 +989,12 @@ def _load_backup(
     home: Path,
     backup_id: str,
 ) -> tuple[dict[str, Any], bytes, Path]:
-    from .state_paths import control_directory
-    control = control_directory(home)
+    from .state_paths import control_directories
+    controls = control_directories(home)
+    matches = [path for path in controls if (path / _BACKUP_DIRECTORY / backup_id).exists()]
+    if len(matches) > 1:
+        raise LegacyIndexSafetyError("Backup exists in both journal locations")
+    control = matches[0] if matches else controls[0]
     backup_root = control / _BACKUP_DIRECTORY
     _validate_existing_private_directory(control)
     _validate_existing_private_directory(backup_root)
@@ -1256,7 +1260,10 @@ def _ensure_control_directories(home: Path) -> tuple[Path, Path]:
     from .state_paths import control_directory
     control = control_directory(home)
     backup_root = control / _BACKUP_DIRECTORY
-    _ensure_private_directory(home, control)
+    if control.parent == home:
+        _ensure_private_directory(home, control)
+    else:
+        _validate_existing_private_directory(control)
     _ensure_private_directory(control, backup_root)
     return control, backup_root
 

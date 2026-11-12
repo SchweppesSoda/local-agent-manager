@@ -74,6 +74,55 @@ class StateMaintenanceTests(unittest.TestCase):
         self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 0)
         self.assertEqual(list(self.home.iterdir()), [])
 
+    def test_external_route_keeps_lock_and_reads_historical_journals(self):
+        old = self.terminal()
+        lock = old.directory.parent / ".mutation.lock"
+        identity = _file_identity(lock.stat())
+        base = self.root / "external"
+        base.mkdir()
+        preview = run_state_command("route", self.home, directory=base)
+        self.assertEqual(list(base.iterdir()), [])
+        result = run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(result["phase"], "complete")
+        self.assertEqual(OperationStore(self.home, old.operation_id).plan_path, old.plan_path)
+        fresh = self.terminal("new")
+        self.assertTrue(fresh.directory.is_relative_to(base))
+        self.assertEqual(_find_operation_plan("new", operation_home=self.home), fresh.plan_path)
+        inventory = run_state_command("inventory", self.home)
+        self.assertEqual(inventory["operation_count"], 2)
+        self.assertTrue(Path(inventory["control_directory"]).is_relative_to(base))
+        self.assertEqual(self.apply("cleanup")["completed"], [fresh.operation_id, old.operation_id])
+        self.assertTrue(old.receipt_path.is_file())
+        self.assertTrue(fresh.receipt_path.is_file())
+        self.assertEqual(_file_identity(lock.stat()), identity)
+
+    def test_routed_store_still_fails_closed_on_unknown_legacy_journal(self):
+        old = write_journal(self.home, "old-unknown", basic_action(self.home))
+        old.lock_path.write_text("existing lock", encoding="utf-8")
+        base = self.root / "external"
+        base.mkdir()
+        preview = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        with self.assertRaises(UnknownMutationError):
+            with mutation_guard([MutationScope(self.home, None)]):
+                self.fail("an old unknown operation must still block the store")
+        self.assertEqual(old.lock_path.read_text(encoding="utf-8"), "existing lock")
+        self.assertEqual(OperationStore(self.home, old.operation_id).plan_path, old.plan_path)
+
+    def test_routed_desktop_journal_keeps_historical_lookup(self):
+        from local_agent_manager.t3code_desktop_cleanup import admission, journal_root
+
+        previous = journal_root(self.home) / "desktop-fixture"
+        previous.mkdir(parents=True)
+        (previous / "state.json").write_text('{"phase":"complete"}', encoding="utf-8")
+        base = self.root / "external"
+        base.mkdir()
+        preview = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(journal_root(self.home, previous.name), previous.parent)
+        self.assertTrue(journal_root(self.home, "new").is_relative_to(base))
+        admission(self.home)
+
     def test_windows_path_and_handle_identity_use_the_same_creation_time(self):
         path_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=3, st_ctime_ns=30, st_birthtime_ns=20)
         handle_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=4, st_ctime_ns=40, st_birthtime_ns=20)

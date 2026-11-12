@@ -6201,7 +6201,7 @@ __all__ = ["OperationCoordinator", "OperationCoordinatorError"]
 
 def _operation_plan_path(root: Path, operation_id: str) -> Path:
     """Map one explicit store/operation root to the canonical plan path."""
-    from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, control_directory, relocated_plan_path
+    from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, operation_control, relocated_plan_path
 
     if not operation_id:
         raise OperationCoordinatorError("operation ID is required to locate a plan")
@@ -6214,7 +6214,7 @@ def _operation_plan_path(root: Path, operation_id: str) -> Path:
         return relocated_plan_path(root / operation_id / "plan.json")
     if name in {LEGACY_CONTROL, MANAGER_CONTROL}:
         return relocated_plan_path(root / "operations" / operation_id / "plan.json")
-    return control_directory(root) / "operations" / operation_id / "plan.json"
+    return operation_control(root, operation_id) / "operations" / operation_id / "plan.json"
 
 
 def _find_operation_plan(

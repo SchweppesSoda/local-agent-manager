@@ -20,7 +20,8 @@ from .operation_store import (
     plan_sha256, validate_operation_id,
 )
 from .state_paths import (
-    LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL, control_directory, read_layout_marker,
+    LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL, ROUTED_LAYOUT, control_directories, control_directory,
+    operation_entries, read_layout_marker, routed_control, validate_external_directory,
 )
 
 _DETAIL_FILES = {"plan.json", "events.jsonl", "state.json", "result.json"}
@@ -80,10 +81,10 @@ def _journal_snapshot(directory: Path) -> list[dict]:
     return [_file_snapshot(path) for path in files]
 
 
-def _inspect_operation(root: Path, control_name: str, operation_id: str) -> dict:
+def _inspect_operation(root: Path, operation_id: str) -> dict:
     row = {"operation_id": operation_id, "action": "retain"}
     try:
-        store = OperationStore(root, operation_id, _control_name=control_name)
+        store = OperationStore(root, operation_id)
         files = _journal_snapshot(store.directory)
         row.update(files=files, bytes=sum(item["size"] for item in files))
         if store.lock_exists():
@@ -133,7 +134,6 @@ def _inspect_operation(root: Path, control_name: str, operation_id: str) -> dict
 def _inspect_locked(root: Path) -> dict:
     control = control_directory(root)
     operations = control / "operations"
-    rows = []
     if _optional_lstat(control) is not None:
         _validate_directory(control, _required_lstat(control))
     if _optional_lstat(operations) is not None:
@@ -142,20 +142,22 @@ def _inspect_locked(root: Path) -> dict:
             if path.name == ".mutation.lock":
                 _validate_regular_file(path, _required_lstat(path))
                 continue
-            rows.append(_inspect_operation(root, control.name, path.name))
+    rows = [_inspect_operation(root, path.name) for path in operation_entries(root)]
     extras = []
     empty_directories = []
-    if control.exists():
-        for path in sorted(control.iterdir()):
+    for location in control_directories(root):
+        if not location.exists():
+            continue
+        for path in sorted(location.iterdir()):
             if path.name == "operations":
                 continue
-            if path.name == "legacy-index.lock" and control.name == LEGACY_CONTROL:
+            if path.name == "legacy-index.lock" and location == root / LEGACY_CONTROL:
                 _validate_regular_file(path, _required_lstat(path))
                 continue
             extras.append(path.name)
             if path.name in _ROLLBACK_DIRECTORIES:
                 _validate_directory(path, _required_lstat(path))
-                if not any(path.iterdir()):
+                if location == control and not any(path.iterdir()):
                     empty_directories.append(path.name)
     return {"schema_version": "lam.state-inventory.v1", "root": str(root),
             "control_directory": str(control), "coordination_lock": str(
@@ -264,6 +266,8 @@ def _validate_migration_contents(root: Path, plan: dict) -> list[tuple[Path, Pat
 def _migrate_locked(root: Path, *, apply: bool = False, approved_hash: str | None = None) -> dict:
     marker = read_layout_marker(root)
     if marker is not None:
+        if marker.get("schema_version") == ROUTED_LAYOUT:
+            raise OperationStoreError("This store already uses an external journal location")
         if marker["phase"] == "complete":
             control_directory(root)
             return {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "migrate",
@@ -311,18 +315,61 @@ def _migrate_locked(root: Path, *, apply: bool = False, approved_hash: str | Non
     return result
 
 
+def _route_locked(root: Path, directory: Path, *, apply: bool, approved_hash: str | None) -> dict:
+    validate_external_directory(root, directory)
+    source = control_directory(root)
+    target = routed_control(root, directory)
+    marker = read_layout_marker(root)
+    result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "route",
+              "phase": "planned", "modified": False, "root": str(root), "destination": str(target)}
+    if marker and marker.get("schema_version") == ROUTED_LAYOUT:
+        if source != target:
+            raise OperationStoreError("The store is already routed to a different directory")
+        return {**result, "phase": "complete"}
+    base_info = _required_lstat(directory)
+    base_identity = [base_info.st_dev, base_info.st_ino]
+    plan = {"schema_version": "lam.state-route-plan.v1", "root": str(root), "source": source.name,
+            "base_identity": base_identity,
+            "base": str(directory), "destination": str(target), "previous_layout_sha256": marker and marker["plan_sha256"]}
+    for path in (target.parent, target, target / "operations"):
+        info = _optional_lstat(path)
+        if info is not None:
+            _validate_directory(path, info)
+            permitted = {target.name} if path == target.parent else {"operations"} if path == target else set()
+            if {entry.name for entry in path.iterdir()} - permitted:
+                raise OperationStoreError("The new journal location already contains state")
+    result.update(plan=plan, plan_sha256=plan_sha256(plan))
+    if not apply:
+        return result
+    _require_approval(result, approved_hash)
+    for path in (target.parent, target, target / "operations"):
+        _ensure_plain_directory(path)
+    validate_external_directory(root, target)
+    current_base = _required_lstat(directory)
+    if [current_base.st_dev, current_base.st_ino] != base_identity:
+        raise OperationStoreError("External journal base directory changed")
+    info = _required_lstat(target)
+    routing = {"schema_version": ROUTED_LAYOUT, "root": str(root), "source": source.name,
+               "base": str(directory), "destination": str(target), "identity": [info.st_dev, info.st_ino]}
+    routing["plan_sha256"] = plan_sha256(routing)
+    atomic_write_json(root / LEGACY_CONTROL / "operations" / LAYOUT_MARKER, routing)
+    if control_directory(root) != target:
+        raise OperationStoreError("External journal routing could not be verified")
+    return {**result, "phase": "complete", "modified": True}
+
+
 def run_state_command(command: str, root: Path, *, apply: bool = False,
-                      approved_hash: str | None = None) -> dict:
+                      approved_hash: str | None = None, directory: Path | None = None) -> dict:
     # Validate the explicit physical home before creating any coordination file.
     root = Path(canonical_existing_path_key(root.expanduser().resolve(strict=True)))
     _validate_directory(root, _required_lstat(root))
     exists = any(_optional_lstat(root / name) is not None for name in (LEGACY_CONTROL, MANAGER_CONTROL))
     if not exists and command == "migrate":
         raise OperationStoreError("No legacy state exists to migrate")
-    with mutation_roots((root,)) if exists else nullcontext(), _existing_index_lock(root):
+    with mutation_roots((root,)) if exists or (command == "route" and apply) else nullcontext(), _existing_index_lock(root):
         if command == "inventory":
             marker = read_layout_marker(root)
-            if marker is not None and marker["phase"] == "moving":
+            if marker is not None and marker.get("phase") == "moving":
                 return {"schema_version": "lam.state-inventory.v1", "root": str(root),
                         "phase": "moving", "plan_sha256": marker["plan"]["plan_sha256"],
                         "message": "Resume state migrate using this original hash"}
@@ -331,23 +378,27 @@ def run_state_command(command: str, root: Path, *, apply: bool = False,
             return _cleanup_locked(root, apply=apply, approved_hash=approved_hash)
         if command == "migrate":
             return _migrate_locked(root, apply=apply, approved_hash=approved_hash)
+        if command == "route" and directory is not None:
+            return _route_locked(root, directory.expanduser().absolute(), apply=apply, approved_hash=approved_hash)
     raise ValueError("Unknown state command")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="local-agent-manager state", description="Inspect and maintain manager recovery metadata")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("inventory", "cleanup", "migrate"):
+    for command in ("inventory", "cleanup", "migrate", "route"):
         child = commands.add_parser(command)
         child.add_argument("--root", type=Path, required=True, help="Exact native or frontend store root")
         child.add_argument("--json", action="store_true")
         if command != "inventory":
             child.add_argument("--apply", action="store_true", help="Apply the reviewed maintenance plan")
             child.add_argument("--plan-sha256", help="Hash returned by this command's preview")
+        if command == "route":
+            child.add_argument("--directory", type=Path, required=True, help="Existing external state directory")
     args = parser.parse_args(argv)
     try:
         result = run_state_command(args.command, args.root, apply=getattr(args, "apply", False),
-                                   approved_hash=getattr(args, "plan_sha256", None))
+                                   approved_hash=getattr(args, "plan_sha256", None), directory=getattr(args, "directory", None))
         code = 3 if result.get("phase") in {"blocked", "moving"} else 0
     except (OSError, ValueError, OperationStoreError) as exc:
         result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": args.command,

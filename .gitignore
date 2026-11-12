@@ -10,3 +10,4 @@ venv/
 .idea/
 .vscode/
 .codex-artifacts/
+.agent-manager-state/

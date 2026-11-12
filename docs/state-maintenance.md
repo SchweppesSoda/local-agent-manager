@@ -49,6 +49,29 @@ blocked command or pending migration. JSON is emitted with or without `--json`.
 
 ## Explicit layout migration
 
+### Route new journals to a shared directory
+
+Use `state route` to store future manager journals and T3 desktop cleanup
+evidence outside the selected Agent store. Create the destination directory
+first. For a local checkout, use its ignored `.agent-manager-state` directory.
+
+```powershell
+local-agent-manager state route --root '<physical store root>' --directory '<existing shared directory>' --json
+local-agent-manager state route --root '<physical store root>' --directory '<existing shared directory>' --apply --plan-sha256 '<preview hash>' --json
+```
+
+The manager allocates one destination per physical store. The root's existing
+coordination lock remains in place. Historical journals stay at their original
+paths and participate in admission, inventory, verification and cleanup under
+that same lock. The routing marker binds the external directory identity.
+Keep the destination available and use a build that understands the marker
+for every writer. Keep this directory out of Git and build-output cleanup.
+Use the original physical store root for ID-based recovery. Client-owned
+session data and short-lived sibling files needed for atomic replacement keep
+their existing locations.
+
+### Migrate an in-place layout
+
 Before migration, journal and temporary rollback paths use
 `<root>/.local-agent-record-janitor`. Migration moves validated terminal
 operation directories to `<root>/.local-agent-manager/operations`, preserving

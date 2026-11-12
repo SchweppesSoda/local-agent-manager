@@ -176,25 +176,17 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 class OperationStore:
-    def __init__(self, codex_home: Path, operation_id: str, *, _control_name: str | None = None) -> None:
-        from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, control_directory
+    def __init__(self, codex_home: Path, operation_id: str) -> None:
+        from .state_paths import LEGACY_CONTROL, operation_control
 
         self.codex_home = codex_home.expanduser().resolve()
         self.operation_id = validate_operation_id(operation_id)
-        self._layout_override = _control_name is not None
-        if _control_name is not None and _control_name not in {LEGACY_CONTROL, MANAGER_CONTROL}:
-            raise OperationStoreError("Unsupported journal layout")
-        self._control_name = _control_name or LEGACY_CONTROL
-        if not self._layout_override:
-            try:
-                self._control_name = control_directory(self.codex_home).name
-            except (OSError, OperationStoreError):
-                # Construction also validates IDs while decoding an external
-                # plan. Filesystem trust errors belong to journal access under
-                # the root gate, where callers preserve blocked/unknown results.
-                # _ensure_directory always checks the current layout again.
-                pass
-        self.directory = self.codex_home / self._control_name / "operations" / self.operation_id
+        try:
+            self._control = operation_control(self.codex_home, self.operation_id)
+        except (OSError, OperationStoreError):
+            # Layout errors are checked again at journal access, under the root gate.
+            self._control = self.codex_home / LEGACY_CONTROL
+        self.directory = self._control / "operations" / self.operation_id
         self.plan_path = self.directory / "plan.json"
         self.events_path = self.directory / "events.jsonl"
         self.state_path = self.directory / "state.json"
@@ -667,18 +659,13 @@ class OperationStore:
             _fsync_directory(self.directory)
 
     def _ensure_directory(self, *, create: bool) -> None:
-        from .state_paths import control_directory
+        from .state_paths import operation_control
 
-        if not self._layout_override and control_directory(self.codex_home).name != self._control_name:
+        if operation_control(self.codex_home, self.operation_id) != self._control:
             raise OperationStoreError("Journal layout changed; reopen the operation in its migrated location")
         _validate_directory(self.codex_home, _required_lstat(self.codex_home))
-        current = self.codex_home
-        for part in (
-            self._control_name,
-            "operations",
-            self.operation_id,
-        ):
-            candidate = current / part
+        current = self._control.parent
+        for candidate in (self._control, self.directory.parent, self.directory):
             candidate_stat = _optional_lstat(candidate)
             if candidate_stat is None:
                 if not create:
@@ -695,7 +682,7 @@ class OperationStore:
                 candidate_stat = _required_lstat(candidate)
             _validate_directory(candidate, candidate_stat)
             current = candidate
-        self._assert_within_home()
+        self._assert_within_control()
 
     def _assert_safe(self) -> None:
         self._ensure_directory(create=False)
@@ -860,9 +847,9 @@ class OperationStore:
         _fsync_directory(self.directory.parent)
         return True
 
-    def _assert_within_home(self) -> None:
+    def _assert_within_control(self) -> None:
         try:
-            home = self.codex_home.resolve(strict=True)
+            home = self._control.resolve(strict=True)
             directory = self.directory.resolve(strict=True)
             common = os.path.commonpath((os.fspath(home), os.fspath(directory)))
         except (OSError, ValueError) as exc:
@@ -870,7 +857,7 @@ class OperationStore:
                 f"Could not prove operation directory boundary: {exc}"
             ) from exc
         if os.path.normcase(common) != os.path.normcase(os.fspath(home)):
-            raise OperationStoreError("Operation directory escapes target CODEX_HOME")
+            raise OperationStoreError("Operation directory escapes its bound journal location")
 
     def _validate_plan_binding(self, plan: Mapping[str, Any]) -> None:
         target = plan.get("target")

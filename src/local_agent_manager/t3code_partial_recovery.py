@@ -101,7 +101,7 @@ def inspect(document, coordinator, *, approved_hash=None):
         if plan is None:
             continue
         profile = idb.validate_plan(plan)
-        directory = idb.journal_root(profile)/plan['operation_id']
+        directory = idb.journal_root(profile, plan['operation_id'])/plan['operation_id']
         if strict_json_load(directory/'plan.json') != plan:
             fail('desktop_binding_changed')
         checkpoint = strict_json_load(directory/'state.json')

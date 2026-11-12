@@ -36,7 +36,7 @@ from .office_runtime import processes as list_processes
 from .operation_store import OperationStore, strict_json_load, utc_now, write_new_json
 from .record_identity import canonical_path
 from .sqlite_utils import connect_readonly
-from .state_paths import control_directory
+from .state_paths import operation_entries
 from .t3code_bound_adapter import T3CodeBoundAdapter, load_manifest
 from .t3code_cleanup_flow import (CleanupFlowError, execute_cleanup, forwarded_arguments, prepare_cleanup)
 from .t3code_discovery import BindingDiscoveryError, discover_bindings
@@ -253,11 +253,8 @@ def _inspect_store_journals(coordinator: Any, roots: Sequence[Path], *, partial=
     seen_dirs: set[str] = set()
     for raw_root in roots:
         root = Path(raw_root)
-        ops_dir = control_directory(root) / "operations"
-        if not ops_dir.exists():
-            continue
-        for entry in sorted(ops_dir.iterdir()):
-            if entry.name == ".mutation.lock" or not entry.is_dir():
+        for entry in operation_entries(root):
+            if not entry.is_dir():
                 continue
             dir_key = canonical_path(entry)
             if dir_key in seen_dirs:
