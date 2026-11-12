@@ -641,9 +641,14 @@ def _running_related_process_records(
                 records[-1]['codex_home'] = read_codex_home(process_id, executable_path, item['CreationTimeTicks'])
                 records[-1]['codex_home_source'] = 'verified_process_environment'
             except (OSError, ValueError, UnicodeError):
-                # Unknown roots remain blocking; never substitute this caller's
-                # environment, a configured default or the executable's location.
-                pass
+                try:
+                    records[-1]['codex_home'] = read_codex_home(process_id, executable_path,
+                        item['CreationTimeTicks'], allow_default=True)
+                    records[-1]['codex_home_source'] = 'verified_process_profile_default'
+                except (OSError, ValueError, UnicodeError):
+                    # Unknown roots remain blocking; never substitute this caller's
+                    # environment, a configured default or the executable's location.
+                    pass
     return tuple(records)
 
 
@@ -739,10 +744,13 @@ def inspect_client_ownership(
         "processes": [{"process_id": item.get("process_id"), "parent_process_id": item.get("parent_process_id"),
             "name": item.get("name"), "executable_path": item.get("executable_path"),
             **({"codex_home": item['codex_home'], "codex_home_source": item['codex_home_source']}
-               if item.get('codex_home_source') == 'verified_process_environment' else {}),
+               if item.get('codex_home_source') in _VERIFIED_HOME_SOURCES else {}),
             "relation": "target_or_unproven" if _integer_or_minus_one(item.get("process_id")) in relevant else "separate_store"}
             for item in items],
     }
+
+
+_VERIFIED_HOME_SOURCES = {'verified_process_environment', 'verified_process_profile_default'}
 
 
 def _relevant_process_ids(
@@ -883,7 +891,7 @@ def _relevant_process_ids(
         family = {pid for pid, owner in chatgpt_roots.items() if owner == root}
         servers = [r for r in items if str(r.get('name') or '').casefold() == 'codex.exe'
                    and _integer_or_minus_one(r.get('parent_process_id')) in family]
-        if servers and all(r.get('codex_home_source') == 'verified_process_environment'
+        if servers and all(r.get('codex_home_source') in _VERIFIED_HOME_SOURCES
                            and isinstance(r.get('codex_home'), str)
                            and _same_existing_path(Path(r['codex_home']), home) is False
                            for r in servers):
@@ -915,7 +923,7 @@ def _relevant_process_ids(
                 # Keep it blocking (fail closed).
                 separate_cindy_process = False
         elif name_key == "codex.exe":
-            if not owner_is_cindy and item.get('codex_home_source') == 'verified_process_environment':
+            if not owner_is_cindy and item.get('codex_home_source') in _VERIFIED_HOME_SOURCES:
                 try:
                     from .frozen_files import checked_path
                     process_home = Path(item['codex_home'])

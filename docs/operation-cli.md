@@ -616,6 +616,11 @@ IndexedDB 预演在复制的 Chromium 运行时和缓存副本中完成，前后
 存储、选中记录文件及共享数据库/缓存；应用名、共用程序文件、时间上的巧合均不构成证据。
 `--handoff-app-pid <PID>` 也不能绕过文件占用要求；没有证据时拒绝加入名单。
 不接受 shell、uTools 或 `magpie-bun.exe` 共享 runtime 作为额外桌面身份。
+Codex 进程归属优先读取经过映像和启动时间核验的显式 `CODEX_HOME`。未设置覆盖时，
+按 [Codex 的默认 home 规则](https://github.com/openai/codex/blob/main/codex-rs/utils/home-dir/src/lib.rs)
+读取该进程用户令牌的 Windows `FOLDERID_Profile/.codex`，不套用调用者的 home 或
+`USERPROFILE` 提示；重复、空值、读取失败或进程变化仍不豁免。只有同一 ChatGPT
+进程组的所有直接 Codex 子进程都被证明使用不同存储，才将该桌面组排除出目标写入者。
 确认窗口展示占用原因，worker 关闭前再次查询原文件集合、原占用者及进程启动时间；
 占用已经释放则跳过关闭和重开，新占用者不能扩大已确认范围。
 没有查到占用不代表可以写入：原有数据库、文件和生命周期排他检查仍然生效，

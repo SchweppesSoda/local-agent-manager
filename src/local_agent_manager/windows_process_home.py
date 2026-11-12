@@ -1,10 +1,14 @@
-"""Read only CODEX_HOME from a verified live x64 Windows process.
+"""Read Codex home evidence from a verified live x64 Windows process.
 
 PEB/RTL_USER_PROCESS_PARAMETERS layout follows System Informer's phnt headers:
 https://github.com/winsiderss/phnt/blob/master/ntpebteb.h
 https://github.com/winsiderss/phnt/blob/master/ntrtl.h
 No environment block, command line or credential enters the returned evidence.
 Unsupported architectures, inaccessible or changing processes remain unproven.
+For an absent override, Codex uses dirs::home_dir: FOLDERID_Profile from the
+process user's token, plus .codex. Never use the caller's profile/environment.
+https://github.com/openai/codex/blob/main/codex-rs/utils/home-dir/src/lib.rs
+https://github.com/dirs-dev/dirs-rs/blob/master/src/win.rs
 """
 from __future__ import annotations
 
@@ -13,22 +17,56 @@ from ctypes import wintypes as w
 import os
 from pathlib import Path
 import platform
+import uuid
 
 
-def _extract_home(raw):
+def _extract_home(raw, *, default_home=None):
     text = raw.decode('utf-16-le', errors='strict')
     end = text.find('\0\0')
     if end < 0:
         raise ValueError('process_environment_unterminated')
     values = [entry.partition('=')[2] for entry in text[:end].split('\0')
               if entry.partition('=')[0].casefold() == 'codex_home']
+    if not values and default_home is not None:
+        return str(Path(default_home) / '.codex')
     if len(values) != 1 or not values[0] or any(ord(ch) < 32 for ch in values[0]):
         raise ValueError('process_home_absent_or_ambiguous')
     return values[0]
 
 
-def read_codex_home(pid, executable, creation_ticks):
-    """Return an explicit home only when image and creation identity match CIM."""
+def _profile_home(handle):
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    advapi = c.WinDLL('advapi32', use_last_error=True)
+    shell = c.WinDLL('shell32')
+    ole = c.WinDLL('ole32')
+    advapi.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, c.POINTER(w.HANDLE)]
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    shell.SHGetKnownFolderPath.argtypes = [c.c_void_p, w.DWORD, w.HANDLE, c.POINTER(c.c_void_p)]
+    shell.SHGetKnownFolderPath.restype = w.LONG
+    ole.CoTaskMemFree.argtypes = [c.c_void_p]
+    token = w.HANDLE()
+    if not advapi.OpenProcessToken(handle, 0x0008 | 0x0004, c.byref(token)):
+        raise c.WinError(c.get_last_error())
+    pointer = c.c_void_p()
+    folder = c.create_string_buffer(uuid.UUID('5e6c858f-0e22-4760-9afe-ea3317b67173').bytes_le)
+    try:
+        if shell.SHGetKnownFolderPath(folder, 0, token, c.byref(pointer)) < 0 or not pointer.value:
+            raise OSError('process_profile_unavailable')
+        home = c.wstring_at(pointer)
+        if not home or not Path(home).is_absolute():
+            raise ValueError('process_profile_unqualified')
+        return home
+    finally:
+        if pointer.value:
+            ole.CoTaskMemFree(pointer)
+        kernel.CloseHandle(token)
+
+
+def read_codex_home(pid, executable, creation_ticks, *, allow_default=False):
+    """Return a home only when image and creation identity match CIM.
+
+    Default resolution is opt-in and still rejects empty/duplicate overrides.
+    """
     if os.name != 'nt' or c.sizeof(c.c_void_p) != 8 or platform.machine().casefold() not in {'amd64', 'x86_64'}:
         raise OSError('process_environment_architecture_unsupported')
     if not executable or not creation_ticks:
@@ -96,11 +134,20 @@ def read_codex_home(pid, executable, creation_ticks):
             raise ValueError('process_environment_budget')
 
         before = snapshot()
-        home = _extract_home(before)
+        default_home = None
+        try:
+            home = _extract_home(before)
+        except ValueError:
+            if not allow_default:
+                raise
+            default_home = _profile_home(handle)
+            home = _extract_home(before, default_home=default_home)
         if (before != snapshot() or int.from_bytes(read(peb + 0x20, 8), 'little') != params
                 or int.from_bytes(read(params + 0x80, 8), 'little') != environment
                 or kernel.WaitForSingleObject(handle, 0) != 258):
             raise ValueError('process_environment_changed')
+        if default_home is not None and _profile_home(handle) != default_home:
+            raise ValueError('process_profile_changed')
         return home
     finally:
         kernel.CloseHandle(handle)
