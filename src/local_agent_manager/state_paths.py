@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 from pathlib import Path
 
@@ -16,6 +18,18 @@ LEGACY_CONTROL = ".local-agent-record-janitor"
 MANAGER_CONTROL = ".local-agent-manager"
 LAYOUT_MARKER = ".manager-layout.json"
 ROUTED_LAYOUT = "lam.state-routing.v1"
+RELOCATION_DIRECTORY = ".relocate"
+RELOCATION_MANIFEST = ".plan.json"
+_relocation_root: ContextVar[Path | None] = ContextVar("journal_relocation_root", default=None)
+
+
+@contextmanager
+def relocation_recovery(root: Path):
+    token = _relocation_root.set(root)
+    try:
+        yield
+    finally:
+        _relocation_root.reset(token)
 
 
 def routed_control(root: Path, base: Path) -> Path:
@@ -131,7 +145,11 @@ def control_directory(root: Path) -> Path:
                 raise OperationStoreError("Legacy rollback state appeared after migration; preserve it for recovery")
         elif _optional_lstat(root / MANAGER_CONTROL) is not None:
             raise OperationStoreError("Unmarked manager state directory appeared after routing")
-        return Path(marker["destination"])
+        destination = Path(marker["destination"])
+        if (_relocation_root.get() != root
+                and _optional_lstat(destination / RELOCATION_DIRECTORY / RELOCATION_MANIFEST) is not None):
+            raise OperationStoreError("Journal relocation is incomplete; resume state relocate with its original hash")
+        return destination
     if marker["phase"] != "complete":
         raise OperationStoreError("State migration is incomplete; resume state migrate with its original hash")
     legacy = root / LEGACY_CONTROL / "operations"

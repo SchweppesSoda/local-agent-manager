@@ -61,14 +61,36 @@ local-agent-manager state route --root '<physical store root>' --directory '<exi
 ```
 
 The manager allocates one destination per physical store. The root's existing
-coordination lock remains in place. Historical journals stay at their original
-paths and participate in admission, inventory, verification and cleanup under
-that same lock. The routing marker binds the external directory identity.
+coordination lock remains in place. Historical journals participate in
+admission, inventory, verification and cleanup under that same lock. The routing
+marker binds the external directory identity.
 Keep the destination available and use a build that understands the marker
 for every writer. Keep this directory out of Git and build-output cleanup.
 Use the original physical store root for ID-based recovery. Client-owned
 session data and short-lived sibling files needed for atomic replacement keep
 their existing locations.
+
+### Relocate retained journals to the shared directory
+
+```powershell
+local-agent-manager state relocate --root '<routed physical store root>' --json
+local-agent-manager state relocate --root '<routed physical store root>' --apply --plan-sha256 '<preview hash>' --json
+```
+
+Relocation accepts validated receipts and terminal journals, including historical
+checkpoints that lack a final result. It preserves operation IDs, plan hashes,
+events and receipt bytes. The manager stages and verifies the destination copy
+before removing the original journal files. Existing locks, unqualified
+journals, separate desktop cleanup journals and session stores stay in place.
+The original physical root and historical journal plan locator continue to
+resolve the record. A compact receipt proves the recorded outcome and retains
+its original expiry. Further verification still needs the applicable original
+plan and recovery evidence.
+
+During an interrupted relocation, inventory reports the original hash and
+normal operations fail closed. Resume with `state relocate --apply` and that
+hash. The command checks both copies before removing any remaining original
+files.
 
 ### Migrate an in-place layout
 

@@ -118,6 +118,28 @@ class ChildRecoveryTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "complete", result)
         self.assertEqual(self.store.plan_path.read_bytes(), original_bytes)
 
+    def test_relocated_child_status_and_verify_accept_original_exact_locator(self):
+        from local_agent_manager.state_maintenance import run_state_command
+
+        self.assertEqual(self.verify()["goal_status"], "completed_with_residuals")
+        original = self.store.plan_path
+        before = original.read_bytes()
+        base = self.root / "shared"
+        base.mkdir()
+        route = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=route["plan_sha256"])
+        preview = run_state_command("relocate", self.home)
+        done = run_state_command("relocate", self.home, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(done["completed"], [self.store.operation_id])
+        self.assertFalse(original.exists())
+        self.store = OperationStore(self.home, self.store.operation_id)
+        self.assertEqual(self.store.plan_path.read_bytes(), before)
+        self.assertEqual(self.coordinator.status_operation(**self.args)["goal_status"], "completed_with_residuals")
+        with patch.object(self.coordinator.service, "execute", side_effect=AssertionError("No record writes during recovery")):
+            result = self.coordinator.verify_operation(**self.args, plan_path=original)
+        self.assertEqual(result["goal_status"], "completed_with_residuals", result)
+        self.assertTrue(self.rollout.is_file())
+
     def test_tampered_plan_and_truncated_events_remain_unknown(self):
         original = self.store.plan_path.read_bytes()
         plan = json.loads(original)

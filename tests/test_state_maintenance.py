@@ -135,6 +135,63 @@ class StateMaintenanceTests(unittest.TestCase):
         self.assertEqual(_find_operation_plan(old.operation_id, operation_home=old.directory), migrated.plan_path)
         self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 1)
 
+    def test_relocate_preserves_receipt_and_historical_checkpoint_bytes(self):
+        compact = self.terminal("receipt")
+        self.apply("cleanup")
+        checkpoint = self.terminal("checkpoint")
+        checkpoint.result_path.unlink()
+        locked = self.terminal("locked")
+        locked.lock_path.write_text("existing lock", encoding="utf-8")
+        snapshots = {s.operation_id: self.snapshot(s.directory) for s in (compact, checkpoint, locked)}
+        lock = compact.directory.parent / ".mutation.lock"
+        identity = _file_identity(lock.stat())
+        base = self.root / "external"
+        base.mkdir()
+        route = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=route["plan_sha256"])
+        result = self.apply("relocate")
+        self.assertEqual(set(result["completed"]), {"receipt", "checkpoint"})
+        self.assertEqual(result["retained"], ["locked"])
+        for previous in (compact, checkpoint):
+            moved = OperationStore(self.home, previous.operation_id)
+            self.assertTrue(moved.directory.is_relative_to(base))
+            self.assertFalse(previous.directory.exists())
+            self.assertEqual(self.snapshot(moved.directory), snapshots[previous.operation_id])
+        self.assertEqual(self.snapshot(locked.directory), snapshots["locked"])
+        self.assertEqual(_file_identity(lock.stat()), identity)
+        self.assertEqual(_find_operation_plan("checkpoint", operation_home=checkpoint.directory),
+                         OperationStore(self.home, "checkpoint").plan_path)
+        self.assertTrue(OperationStore(self.home, "receipt").read_result(maintain=False)["compacted"])
+
+    def test_relocation_resumes_after_partial_source_unlink(self):
+        store = self.terminal()
+        original = self.snapshot(store.directory)
+        base = self.root / "external"
+        base.mkdir()
+        route = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=route["plan_sha256"])
+        plan = run_state_command("relocate", self.home)
+        unlink = Path.unlink
+
+        def interrupt(path, *args, **kwargs):
+            if path == store.state_path:
+                raise OSError("interrupted after publication")
+            return unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", interrupt):
+            with self.assertRaisesRegex(OSError, "interrupted after publication"):
+                run_state_command("relocate", self.home, apply=True, approved_hash=plan["plan_sha256"])
+        self.assertFalse(store.plan_path.exists())
+        self.assertTrue(store.state_path.exists())
+        self.assertEqual(run_state_command("inventory", self.home)["phase"], "moving")
+        with self.assertRaisesRegex(OperationStoreError, "incomplete"):
+            OperationStore(self.home, store.operation_id).read_plan()
+        with self.assertRaisesRegex(OperationStoreError, "approval"):
+            run_state_command("relocate", self.home, apply=True, approved_hash="0" * 64)
+        done = run_state_command("relocate", self.home, apply=True, approved_hash=plan["plan_sha256"])
+        self.assertEqual(done["phase"], "complete")
+        self.assertEqual(self.snapshot(OperationStore(self.home, store.operation_id).directory), original)
+
     def test_windows_path_and_handle_identity_use_the_same_creation_time(self):
         path_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=3, st_ctime_ns=30, st_birthtime_ns=20)
         handle_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=4, st_ctime_ns=40, st_birthtime_ns=20)

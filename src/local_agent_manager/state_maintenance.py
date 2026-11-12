@@ -17,16 +17,18 @@ from .path_identity import canonical_existing_path_key
 from .operation_store import (
     OperationStore, OperationStoreError, _file_identity, _optional_lstat, _parse_utc_timestamp,
     _required_lstat, _validate_directory, _validate_regular_file, atomic_write_json,
-    plan_sha256, validate_operation_id,
+    plan_sha256, strict_json_load, validate_operation_id,
 )
 from .state_paths import (
-    LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL, ROUTED_LAYOUT, control_directories, control_directory,
-    operation_entries, read_layout_marker, routed_control, validate_external_directory,
+    LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL, RELOCATION_DIRECTORY, RELOCATION_MANIFEST, ROUTED_LAYOUT,
+    control_directories, control_directory, operation_entries, read_layout_marker, relocation_recovery,
+    routed_control, validate_external_directory,
 )
 
 _DETAIL_FILES = {"plan.json", "events.jsonl", "state.json", "result.json"}
 _JOURNAL_FILES = _DETAIL_FILES | {"receipt.json", "apply.lock"}
 _ROLLBACK_DIRECTORIES = {"legacy-index-backups", "desktop-state-backups"}
+_RELOCATION = "lam.state-relocation-plan.v1"
 
 
 @contextmanager
@@ -358,6 +360,121 @@ def _route_locked(root: Path, directory: Path, *, apply: bool, approved_hash: st
     return {**result, "phase": "complete", "modified": True}
 
 
+def _publish_journal(old: Path, staged: Path, destination: Path, expected: list[dict]) -> None:
+    """Publish a verified destination before removing any original file."""
+    if _optional_lstat(destination) is None:
+        if _journal_snapshot(old) != expected:
+            raise OperationStoreError("Original journal changed before relocation")
+        _ensure_plain_directory(staged)
+        files = {item["name"]: item for item in expected}
+        for entry in staged.iterdir():
+            if entry.name not in files:
+                raise OperationStoreError("Unexpected staged journal file")
+            _validate_regular_file(entry, _required_lstat(entry))
+        for name, proof in files.items():
+            source = old / name
+            target = staged / name
+            _validate_regular_file(source, _required_lstat(source))
+            payload = source.read_bytes()
+            if len(payload) != proof["size"] or hashlib.sha256(payload).hexdigest() != proof["sha256"]:
+                raise OperationStoreError("Original journal file changed while copying")
+            if _optional_lstat(target) is not None:
+                existing = target.read_bytes()
+                if not payload.startswith(existing):
+                    raise OperationStoreError("Staged journal bytes do not match the original")
+                mode = "r+b"
+            else:
+                mode = "xb"
+            with target.open(mode) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+        if _journal_snapshot(staged) != expected or _journal_snapshot(old) != expected:
+            raise OperationStoreError("Journal copies could not be verified before publication")
+        _fsync_directory(staged)
+        os.rename(staged, destination)
+        _fsync_directory(destination.parent)
+        _fsync_directory(staged.parent)
+    if _optional_lstat(staged) is not None or _journal_snapshot(destination) != expected:
+        raise OperationStoreError("Published journal does not match the frozen manifest")
+    if _optional_lstat(old) is not None:
+        remaining = _journal_snapshot(old)
+        if any(item not in expected for item in remaining):
+            raise OperationStoreError("Original journal no longer matches the frozen manifest")
+        for item in remaining:
+            path = old / item["name"]
+            if _file_snapshot(path) != item:
+                raise OperationStoreError("Original journal changed before unlink")
+            path.unlink()
+        old.rmdir()
+        _fsync_directory(old.parent)
+
+
+def _relocate_locked(root: Path, *, apply: bool, approved_hash: str | None) -> dict:
+    controls = control_directories(root)
+    if len(controls) != 2:
+        raise OperationStoreError("Configure an external journal location with state route first")
+    destination, source = controls
+    staging = destination / RELOCATION_DIRECTORY
+    manifest = staging / RELOCATION_MANIFEST
+    if _optional_lstat(staging) is not None:
+        _validate_directory(staging, _required_lstat(staging))
+    marker = read_layout_marker(root)
+    binding = {"schema_version": _RELOCATION, "root": str(root), "source": str(source),
+               "destination": str(destination), "routing_sha256": marker["plan_sha256"]}
+    resumed = _optional_lstat(manifest) is not None
+    if resumed:
+        _validate_regular_file(manifest, _required_lstat(manifest))
+        plan = strict_json_load(manifest)
+        if (not isinstance(plan, dict) or any(plan.get(key) != value for key, value in binding.items())
+                or not isinstance(plan.get("operations"), list) or not isinstance(plan.get("retained"), list)
+                or plan.get("plan_sha256") != plan_sha256(plan)):
+            raise OperationStoreError("Relocation manifest binding or hash is invalid")
+    else:
+        rows = [row for row in _inspect_locked(root)["operations"]
+                if _optional_lstat(source / "operations" / row["operation_id"]) is not None]
+        plan = {**binding, "operations": [{"operation_id": row["operation_id"], "files": row["files"]}
+                    for row in rows if row["trusted_terminal"]],
+                "retained": [row["operation_id"] for row in rows if not row["trusted_terminal"]]}
+        plan["plan_sha256"] = plan_sha256(plan)
+    entries = {}
+    for row in plan["operations"]:
+        if not isinstance(row, dict) or not isinstance(row.get("operation_id"), str) or not isinstance(row.get("files"), list):
+            raise OperationStoreError("Relocation manifest contains an invalid journal entry")
+        operation_id = validate_operation_id(row["operation_id"])
+        files = row["files"]
+        if any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in files):
+            raise OperationStoreError("Relocation manifest contains an invalid file entry")
+        names = {item["name"] for item in files}
+        if (operation_id in entries or not names or len(names) != len(files)
+                or names - (_JOURNAL_FILES - {"apply.lock"})):
+            raise OperationStoreError("Relocation manifest contains unsupported journal members")
+        entries[operation_id] = files
+    if _optional_lstat(staging) is not None and {p.name for p in staging.iterdir()} - {RELOCATION_MANIFEST, *entries}:
+        raise OperationStoreError("Relocation staging directory contains unexpected state")
+    result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "relocate",
+              "phase": "moving" if resumed else "planned", "modified": False, "plan": plan,
+              "plan_sha256": plan["plan_sha256"], "retained": plan["retained"], "completed": []}
+    if not apply:
+        return result
+    _require_approval(result, approved_hash)
+    if entries:
+        _ensure_plain_directory(staging)
+        if not resumed:
+            atomic_write_json(manifest, plan)
+        for operation_id, files in entries.items():
+            old = source / "operations" / operation_id
+            new = destination / "operations" / operation_id
+            _publish_journal(old, staging / operation_id, new, files)
+            if not _inspect_operation(root, operation_id).get("trusted_terminal"):
+                raise OperationStoreError("Relocated journal could not be reopened")
+            result["completed"].append(operation_id)
+        manifest.unlink()
+        staging.rmdir()
+        _fsync_directory(destination)
+    return {**result, "phase": "complete", "modified": bool(entries)}
+
+
 def run_state_command(command: str, root: Path, *, apply: bool = False,
                       approved_hash: str | None = None, directory: Path | None = None) -> dict:
     # Validate the explicit physical home before creating any coordination file.
@@ -373,6 +490,13 @@ def run_state_command(command: str, root: Path, *, apply: bool = False,
                 return {"schema_version": "lam.state-inventory.v1", "root": str(root),
                         "phase": "moving", "plan_sha256": marker["plan"]["plan_sha256"],
                         "message": "Resume state migrate using this original hash"}
+            if (marker is not None and marker.get("schema_version") == ROUTED_LAYOUT
+                    and _optional_lstat(Path(marker["destination"]) / RELOCATION_DIRECTORY / RELOCATION_MANIFEST) is not None):
+                with relocation_recovery(root):
+                    report = _relocate_locked(root, apply=False, approved_hash=None)
+                return {"schema_version": "lam.state-inventory.v1", "root": str(root),
+                        "phase": "moving", "plan_sha256": report["plan_sha256"],
+                        "message": "Resume state relocate using this original hash"}
             return _inspect_locked(root)
         if command == "cleanup":
             return _cleanup_locked(root, apply=apply, approved_hash=approved_hash)
@@ -380,13 +504,16 @@ def run_state_command(command: str, root: Path, *, apply: bool = False,
             return _migrate_locked(root, apply=apply, approved_hash=approved_hash)
         if command == "route" and directory is not None:
             return _route_locked(root, directory.expanduser().absolute(), apply=apply, approved_hash=approved_hash)
+        if command == "relocate":
+            with relocation_recovery(root):
+                return _relocate_locked(root, apply=apply, approved_hash=approved_hash)
     raise ValueError("Unknown state command")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="local-agent-manager state", description="Inspect and maintain manager recovery metadata")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("inventory", "cleanup", "migrate", "route"):
+    for command in ("inventory", "cleanup", "migrate", "route", "relocate"):
         child = commands.add_parser(command)
         child.add_argument("--root", type=Path, required=True, help="Exact native or frontend store root")
         child.add_argument("--json", action="store_true")
