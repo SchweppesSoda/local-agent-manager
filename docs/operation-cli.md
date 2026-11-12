@@ -643,6 +643,19 @@ T3 的发现、数据库清理和跨客户端保护共用 `t3code_references` �
 已知线程发送工具仅将 `input.message` 视为消息正文，收件 `threadId` 与结果句柄继续保护；
 CUA 工具仅接受精确 `{type:"text",text:...}` 显示块的 text，代码输入、额外字段和未知工具仍阻挡。
 
+完整删除支持归属于选中会话的标准文件上传、已知文档文本副本和已完成的
+`t3-code.html_render` 页面。文件 ID 的会话段、扩展名、声明大小、当前消息、
+用户消息条目、文件 context 及已知事件镜像必须一致；逐个冻结实际文件身份与摘要。
+精确附件 ID 也加入数据库保留行的恢复引用检查，不能仅靠文件名前缀判断归属。
+其他会话引用、未知附件字段/来源、未资格化的图片删除、未知同名旁支文件及浏览器/
+备份/snapshot 目录仍阻挡。安装前重新核对完整数据库和文件证据，安装后冷核验附件、
+记录与镜像均不存在，并验证未选文件保持不变。
+
+`closed-views:v2` 的已关闭浏览器页仅在快照属于同一环境和会话、使用默认 profile、
+HTTP(S) 导航及 `fill` 视口时移除恢复入口。此入口只按网址新建页面；共享浏览器
+profile 不属于会话删除范围。下载句柄、自定义 profile、未知快照字段和外部文件
+仍阻挡，其他环境和未选会话的入口保持不变。
+
 隔离验收使用合成混合存储，并通过公共 CLI、独立 worker 和冷 status/verify 执行。
 `tests.test_t3code_cli_rehearsal` 中的 handoff 验收要求显式设置 `LAM_REHEARSAL_CODEX_BINARY`，
 将该程序复制到临时目录，用真实 app-server 清理合成 Codex home；其余存储、凭据目录和桌面缓存也位于临时目录。
@@ -697,7 +710,7 @@ JSON 恢复字段、未知工具引用和包含目标 ID 的未知键仍作为�
 原样保留；要求 item 的线程身份一致、附件 ID 的线程前缀匹配，并只接受对应的
 `-html.html` 文件。该格式来自 T3 `HtmlRender.publish` 与
 `threadHtmlRenderAttachmentIds` 的存储契约。未知工具、失败输出、未知附件或
-选中会话的附件仍阻挡；此支持只补充保留范围，不授予附件删除权限。
+未证明归属的附件仍阻挡；选中会话按前述附件删除检查逐项核验。
 
 V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核验。已知 Codex／Claude
 导入 cursor 和 transcript 元数据作为只读保护源，按引擎和原生 ID 保护历史来源，
@@ -708,7 +721,7 @@ V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核�
 保留恢复保护。handoff 的 delivery 原生 ID 要有同线程强引用证明，transfer 的
 source/base point 和 native-fork 结果按各自线程归属核验。handoff 摘要和历史消息
 正文按内容保留，跨线程 transfer、原生恢复句柄及未知恢复字段仍阻挡。
-其他线程的已证明上传附件及支持格式的提取文本会冻结保留。选区附件、未知同名文件、
+其他线程的已证明上传附件及支持格式的提取文本会冻结保留。不支持的选区附件、未知同名文件、
 共享附件和未证明归属的文件继续阻挡完整清理。
 
 Antigravity 记录仍使用 `unsupported:antigravity`；元数据的

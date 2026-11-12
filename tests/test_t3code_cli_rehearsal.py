@@ -297,6 +297,15 @@ class ColdCliRehearsal(unittest.TestCase):
         self._handoff_rehearsal()
 
     @unittest.skipUnless(os.environ.get('LAM_REHEARSAL_CODEX_BINARY'), 'requires copied real Codex app-server')
+    def test_handoff_with_selected_upload_and_html_attachments(self):
+        from tests.t3code_attachment_support import seed_attachments
+        paths, _, _, _ = seed_attachments(self.root, ROOTS[0])
+        local_storage(self.desktop, thread_id=CHILDREN[0], closed_browser=True)
+        self._handoff_rehearsal()
+        self.assertTrue(all(not path.exists() for path in paths))
+        local_storage(self.desktop, inspect=True, thread_id=CHILDREN[0], closed_browser=True)
+
+    @unittest.skipUnless(os.environ.get('LAM_REHEARSAL_CODEX_BINARY'), 'requires copied real Codex app-server')
     def test_partial_wal_interruption_settlement_and_fresh_handoff(self):
         self._handoff_rehearsal(recover=True)
 

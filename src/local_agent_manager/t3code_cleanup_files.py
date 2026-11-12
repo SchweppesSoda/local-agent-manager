@@ -1,4 +1,4 @@
-"""Frozen T3 database and terminal-history closure; unknown attachments block."""
+"""Frozen T3 database, terminal and qualified attachment closure."""
 import base64
 import copy
 from contextlib import closing
@@ -56,67 +56,13 @@ def _require_known_database_family(root):
             fail("recovery_database_unqualified")
 
 
-def _preserve_other_attachments(root, directory, ids):
-    """Protect proven uploads of other threads without authorizing their removal."""
-    from .t3code_store import database_path, V2, rows
-    from .t3code_database import THREAD_TABLES, _where
-    from .t3code_references import content_reference
-    with closing(connect_readonly(database_path(root))) as db:
-        db.execute('BEGIN')
-        db.create_function('lam_content_reference', 5, content_reference, deterministic=True)
-        # Selected attachment-bearing payloads still require an attachment
-        # deletion contract. Check history as well as the current messages.
-        for table in (*THREAD_TABLES, 'orchestration_events'):
-            columns = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
-            if 'payload_json' not in columns:
-                continue
-            owner = 'stream_id' if table == 'orchestration_events' else 'thread_id'
-            event_type = 't.event_type' if 'event_type' in columns else 'NULL'
-            if db.execute(f'''SELECT 1 FROM {table} AS t,json_tree(t.payload_json) AS j
-                    WHERE {_where('t.' + owner,ids)} AND
-                    ((j.key='attachments' AND (j.type!='array' OR json_array_length(j.value)>0))
-                     OR (j.key='attachmentId' AND j.type!='null'))
-                    AND NOT lam_content_reference(?, 'payload_json', t.payload_json,j.fullkey,{event_type})
-                    LIMIT 1''', tuple(ids) + (table,)).fetchone():
-                fail('attachment_closure_unqualified')
-        attachments = rows(db, f'''SELECT DISTINCT t.thread_id,json_extract(a.value,'$.id') AS id,
-                json_extract(a.value,'$.name') AS name,json_extract(a.value,'$.type') AS type
-            FROM {V2}messages AS t,json_each(t.payload_json,'$.attachments') AS a
-            WHERE a.type='object' AND json_extract(a.value,'$.type') IN ('file','image')''')
-        attachments.extend(_html_render_attachments(db))
-    allowed = set()
-    for row in attachments:
-        if row['thread_id'] in ids or not isinstance(row['id'], str):
-            continue
-        segment = re.sub(r'[^a-z0-9_-]+', '-', row['thread_id'].strip().lower())
-        segment = re.sub('-+', '-', segment).strip('-_')[:80].rstrip('-_')
-        segment = '_pending' if segment == 'pending' else segment
-        pattern = re.escape(segment) + r'-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:-([a-z0-9]{1,10}))?'
-        match = re.fullmatch(pattern, row['id'], re.IGNORECASE)
-        if not segment or match is None:
-            continue
-        extension = match[1]
-        if extension is None:
-            extension = Path(row['name']).suffix.lstrip('.').lower() if isinstance(row['name'], str) else ''
-            if row['type'] != 'image' or extension not in {
-                    'avif', 'bmp', 'gif', 'heic', 'heif', 'ico', 'jpeg', 'jpg', 'png', 'svg', 'tiff', 'webp'}:
-                continue
-        primary = row['id'] + '.' + extension.lower()
-        qualified = {primary}
-        if extension.lower() in {'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'rtf', 'epub', 'ipynb'}:
-            qualified.add(primary + '.txt')
-        allowed.update(set(directory.get('entries', ())) & qualified)
-    if set(directory.get('entries', ())) != allowed:
-        fail('attachment_closure_unqualified')
-    return [frozen_files.read_file(root, directory['path'] + '/' + name)[0] for name in sorted(allowed)]
-
-
 def _html_render_attachments(db):
-    """Known completed HTML render outputs are retained thread-owned uploads.
+    """Describe known completed HTML render outputs and their owning threads.
 
     T3's HtmlRender.publish writes <createAttachmentId(threadId, 'html')>.html;
-    threadHtmlRenderAttachmentIds requires the same thread segment. This only
-    proves preservation of other threads' files, never authorizes deletion.
+    threadHtmlRenderAttachmentIds requires the same thread segment. Selected
+    deletion also requires exact metadata and retained-reference checks in
+    t3code_attachments; this descriptor alone grants no removal.
     """
     from .environment_config import _unique_object
     from .t3code_store import V2, rows
@@ -150,16 +96,19 @@ def freeze(root, ids, *, native_ids=()):
     root = Path(root)
     ids = sorted({identifier(i) for i in ids})
     _require_known_database_family(root)
-    db = database.freeze(root, ids, native_ids=native_ids)
     all_ids = tuple(read_database(root)["threads"])
     directories = [_names(root, relative) for relative in
         (TERMINALS, "userdata/attachments", "userdata/browser-artifacts", "userdata/backups", "userdata/snapshots")]
-    # Shared and uploaded attachments need their own proven reference graph.
-    # Do not silently remove just a DB pointer and claim full local deletion.
+    # Unknown browser, backup and snapshot families remain unqualified.
     if any(d.get("entries") for d in directories[2:]):
         fail("attachment_closure_unqualified")
-    changes = []
-    preserved = _preserve_other_attachments(root, directories[1], ids) if directories[1].get('entries') else []
+    from .t3code_attachments import freeze as attachment_closure
+    changes, preserved, attachment_ids = attachment_closure(root, directories[1], ids)
+    # Protect exact attachment handles in retained rows, including sanitized
+    # thread prefixes which need not contain the original selected thread ID.
+    db = database.freeze(root, ids, native_ids=sorted(set(native_ids) | set(attachment_ids)))
+    if (changes, preserved, attachment_ids) != attachment_closure(root, directories[1], ids):
+        fail('attachment_reference_changed')
     for name in directories[0].get("entries", ()):
         relative = TERMINALS + "/" + name
         proof, _ = frozen_files.read_file(root, relative)

@@ -38,6 +38,22 @@ const closed = transform('t3code:closed-views:v2', { version: 2, state: { entrie
 ] } }).value
 assert.deepEqual(closed.state.entries.map(e => e.id), ['b'])
 assert.throws(() => transform('t3code:closed-views:v2', { version: 2, state: { entries: [{ kind: 'browser', id: 'a', threadRef: ref, snapshot: {} }] } }), /browser_restore_closure_unqualified/)
+const browser = { kind: 'browser', id: 'closed-tab', threadRef: ref, snapshot: {
+  threadId: ref.threadId, tabId: 'tab_1', navStatus: { _tag: 'Success', url: 'https://example.invalid', title: 'PRIVATE' },
+  canGoBack: false, canGoForward: false, viewport: { _tag: 'fill' }, profileId: 'default', runtime: 'desktop', updatedAt: '2026-11-12'
+} }
+const closeViews = entries => transform('t3code:closed-views:v2', { version: 2, state: { entries } })
+const foreign = { ...browser, id: 'foreign', threadRef: { ...ref, environmentId: 'env-2' } }
+const kept = { ...browser, id: 'kept', threadRef: { ...ref, threadId: 'keeper' }, snapshot: { ...browser.snapshot, threadId: 'keeper' } }
+assert.deepEqual(closeViews([browser, foreign, kept]).value.state.entries, [foreign, kept])
+for (const snapshot of [
+  { ...browser.snapshot, threadId: 'keeper' },
+  { ...browser.snapshot, file: 'external' },
+  { ...browser.snapshot, profileId: 'custom-profile' },
+  { ...browser.snapshot, viewport: { _tag: 'fill', screenshot: 'external' } },
+  { ...browser.snapshot, navStatus: { ...browser.snapshot.navStatus, url: 'file:///outside' } },
+  { ...browser.snapshot, navStatus: { _tag: 'LoadFailed', url: 'https://example.invalid', title: '', code: -1, description: '', download: { id: 'd', fileName: 'file' } } }
+]) assert.throws(() => closeViews([{ ...browser, snapshot }]), /browser_restore_closure_unqualified/)
 assert.throws(() => transform('t3code:right-panel-state:v2', { version: 14, state: { byThreadKey: { 'env-1:keeper': { kind: 'side-chat', threadId: 'thread-1' } } } }), /shared_ui_reference/)
 assert.throws(() => transform('t3code:composer-drafts:v1', { version: 9, state: { draftsByThreadKey: { 'thread-1': {} } } }), /unscoped_ui_reference/)
 assert.throws(() => transform('t3code:renderer-state:v8', {}), /legacy_ui_unqualified/)

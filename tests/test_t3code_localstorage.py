@@ -8,7 +8,7 @@ import unittest
 from local_agent_record_janitor import t3code_localstorage as storage, office_leveldb as level
 
 
-def local_storage(root, *, inspect=False, attachment=False, thread_id='thread-1'):
+def local_storage(root, *, inspect=False, attachment=False, thread_id='thread-1', closed_browser=False):
     node, dependency, helper = level.runtime()
     path = Path(root) / storage.RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,16 +28,25 @@ const db=new ClassicLevel(q.path,{keyEncoding:'buffer',valueEncoding:'buffer',cr
  {type:'put',key:key('opaque-settings'),value:Buffer.from('KEEP_OPAQUE')},
  {type:'put',key:Buffer.concat([Buffer.from('_https://other.example\0'),h.encodeString('foreign')]),value:Buffer.from('KEEP_FOREIGN')},
  {type:'put',key:Buffer.from('META:t3code://app'),value:Buffer.concat([Buffer.from([8]),h.varint(13000000000000000n),Buffer.from([16]),h.varint(100000n)])}
- ],{sync:true});await db.compactRange(Buffer.from(''),Buffer.from([255]),{keyEncoding:'buffer'});
+ ],{sync:true});
+ if(q.closed_browser) await db.put(key('t3code:closed-views:v2'),h.encodeString(JSON.stringify({version:2,state:{entries:[
+  {kind:'browser',id:'closed-tab',threadRef:{environmentId:'env-1',threadId:q.thread_id},snapshot:{threadId:q.thread_id,tabId:'tab_1',
+   navStatus:{_tag:'Success',url:'https://example.invalid',title:'PRIVATE'},canGoBack:false,canGoForward:false,
+   viewport:{_tag:'fill'},profileId:'default',runtime:'desktop',updatedAt:'2026-11-12'}},
+  {kind:'panel-tab',id:'keeper',threadRef:{environmentId:'env-1',threadId:'keeper'},surface:{kind:'diff',id:'diff'}}
+ ]}})));
+ await db.compactRange(Buffer.from(''),Buffer.from([255]),{keyEncoding:'buffer'});
 }else{
  delete draft.state.draftsByThreadKey['env-1:'+q.thread_id];delete draft.state.logicalProjectDraftThreadKeyByLogicalProjectKey['env-1:project-1'];
  assert.deepEqual(JSON.parse(h.decodeString(await db.get(key('t3code:composer-drafts:v1')))),draft);
  assert.equal((await db.get(key('opaque-settings'))).toString(),'KEEP_OPAQUE');
  assert.equal((await db.get(Buffer.concat([Buffer.from('_https://other.example\0'),h.encodeString('foreign')]))).toString(),'KEEP_FOREIGN');
+ if(q.closed_browser) assert.deepEqual(JSON.parse(h.decodeString(await db.get(key('t3code:closed-views:v2')))).state.entries,
+  [{kind:'panel-tab',id:'keeper',threadRef:{environmentId:'env-1',threadId:'keeper'},surface:{kind:'diff',id:'diff'}}]);
 }await db.close();console.log(JSON.stringify({verified:true}));})().catch(e=>{console.error(e);process.exitCode=1});
 '''
     result = subprocess.run([str(node), "-e", script, str(helper)],
-        input=json.dumps({"path": str(path), "inspect": inspect, "attachment": attachment, 'thread_id': thread_id}).encode(),
+        input=json.dumps({"path": str(path), "inspect": inspect, "attachment": attachment, 'thread_id': thread_id, 'closed_browser': closed_browser}).encode(),
         capture_output=True, cwd=dependency, env=level._environment(dependency), timeout=30)
     if result.returncode or json.loads(result.stdout).get("verified") is not True:
         raise AssertionError("Synthetic T3 storage seed/readback failed: " + result.stderr.decode(errors="replace"))
@@ -86,6 +95,14 @@ class T3CodeLocalStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(level.OfficeLevelDBError, "attachment_closure_unqualified"):
             storage.freeze(self.root, "env-1", ["thread-1"])
         self.assertEqual(level._snapshot(self.root, storage.RELATIVE), before)
+
+    def test_closed_browser_rewrite_and_cold_readback(self):
+        local_storage(self.root, closed_browser=True)
+        evidence = storage.freeze(self.root, 'env-1', ['thread-1'])
+        with storage.prepared(evidence) as family:
+            storage.install(evidence, family, phase_callback=lambda _: None)
+        self.assertEqual(storage.remaining(evidence), 0)
+        local_storage(self.root, inspect=True, closed_browser=True)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows LevelDB lock file')
     def test_online_snapshot_keeps_original_lock_held(self):

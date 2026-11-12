@@ -53,6 +53,41 @@ module.exports = ({ decodeString, encodeString, mapEntries, fail }) => {
           attachmentGuard(child)
         }
       }
+      function closedBrowser (entry) {
+        // Installed PreviewSessionSnapshot / closed-view restore: a URL and
+        // viewport reopen a new tab. Downloads, external profiles and unknown
+        // fields may own additional artifacts and remain unqualified.
+        const invalid = () => bad('browser_restore_closure_unqualified')
+        const exact = (v, required, optional = []) => {
+          if (!v || Array.isArray(v) || typeof v !== 'object' ||
+              required.some(k => !(k in v)) || Object.keys(v).some(k => !required.concat(optional).includes(k))) invalid()
+        }
+        exact(entry, ['kind', 'threadRef', 'snapshot', 'id'])
+        const v = entry.snapshot
+        exact(v, ['threadId', 'tabId', 'navStatus', 'canGoBack', 'canGoForward', 'updatedAt'],
+          ['viewport', 'profileId', 'runtime'])
+        if (v.threadId !== entry.threadRef.threadId || typeof v.tabId !== 'string' || !v.tabId ||
+            typeof v.updatedAt !== 'string' || !v.updatedAt ||
+            typeof v.canGoBack !== 'boolean' || typeof v.canGoForward !== 'boolean' ||
+            'profileId' in v && v.profileId !== 'default' ||
+            'runtime' in v && !['desktop', 'server'].includes(v.runtime)) invalid()
+        const nav = v.navStatus
+        if (nav?._tag === 'Idle') exact(nav, ['_tag'])
+        else {
+          if (!['Loading', 'Success', 'LoadFailed'].includes(nav?._tag)) invalid()
+          exact(nav, ['_tag', 'url', 'title'].concat(nav._tag === 'LoadFailed' ? ['code', 'description'] : []))
+          if (typeof nav.url !== 'string' || typeof nav.title !== 'string') invalid()
+          let url
+          try { url = new URL(nav.url) } catch { invalid() }
+          if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) invalid()
+          if (nav._tag === 'LoadFailed' && (!Number.isInteger(nav.code) || typeof nav.description !== 'string')) invalid()
+        }
+        if ('viewport' in v) {
+          // The fill viewport owns no screenshot, recording or external file.
+          exact(v.viewport, ['_tag'])
+          if (v.viewport._tag !== 'fill') invalid()
+        }
+      }
       for (const field of keyed) {
         if (!(field in state)) continue
         const values = map(state[field])
@@ -77,10 +112,12 @@ module.exports = ({ decodeString, encodeString, mapEntries, fail }) => {
         state.entries = state.entries.filter(entry => {
           object(entry, ['kind', 'threadRef', 'surface', 'snapshot', 'id'])
           object(entry.threadRef, ['environmentId', 'threadId'])
+          if (typeof entry.threadRef.environmentId !== 'string' || !entry.threadRef.environmentId ||
+              typeof entry.threadRef.threadId !== 'string' || !entry.threadRef.threadId || typeof entry.id !== 'string') bad()
           if (entry.threadRef.environmentId !== environment || !ids.has(entry.threadRef.threadId)) return true
           if (!['panel-tab', 'browser'].includes(entry.kind)) bad()
           attachmentGuard(entry)
-          if (entry.kind === 'browser') bad('browser_restore_closure_unqualified')
+          if (entry.kind === 'browser') closedBrowser(entry)
           pairs.push([entry.threadRef.threadId])
           return false
         })
@@ -97,7 +134,11 @@ module.exports = ({ decodeString, encodeString, mapEntries, fail }) => {
           references(child, keyed.includes(key))
         }
       }
-      references(state)
+      // Closed snapshots inherit their explicit threadRef environment. Do not
+      // reinterpret another environment's snapshot.threadId as a local link.
+      references(name === 't3code:closed-views:v2'
+        ? { ...state, entries: state.entries.filter(e => e.threadRef.environmentId === environment) }
+        : state)
       return { after: pairs.length ? encodeString(JSON.stringify(value), raw[0]) : raw, pairs }
     }
   }
