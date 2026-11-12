@@ -199,7 +199,7 @@ class T3DiscoveryTests(unittest.TestCase):
         self.assertTrue(any(row['thread_id'] == child and row['native_id'] == 'native-claude' for row in refs))
 
     def test_known_import_cursors_are_read_only_protection_sources(self):
-        entry = {'birthtimeMs': 1, 'device': 1, 'filePath': str(self.home/'sessions/source.jsonl'),
+        entry = {'birthtimeMs': 1, 'device': 1, 'filePath': str(self.home/'sessions'/('rollout-2026-11-10-'+NATIVE+'.jsonl')),
                  'inode': '12345678901234567890', 'mtimeMs': 1, 'provider': 'codex',
                  'providerInstanceId': 'codex', 'providerSessionId': NATIVE, 'size': 1}
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
@@ -217,6 +217,59 @@ class T3DiscoveryTests(unittest.TestCase):
             db.commit()
         with self.assertRaisesRegex(ValueError, 'legacy_restore_closure_unqualified'):
             T3CodeBoundAdapter(manifest).snapshot_references()
+
+    def test_imported_claude_uses_recorded_source_after_instance_removal(self):
+        source = self.base / 'old-claude'
+        source.mkdir()
+        path = source / 'projects' / 'fixture' / (NATIVE + '.jsonl')
+        entry = {'birthtimeMs': 1, 'device': 1, 'filePath': str(path), 'inode': '123',
+                 'mtimeMs': 1, 'provider': 'claudeAgent', 'providerInstanceId': 'retired-claude',
+                 'providerSessionId': NATIVE, 'size': 1}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            add_thread(db, 'imported', native=NATIVE, driver='claudeAgent')
+            for table in (V2+'threads', V2+'provider_threads'):
+                db.execute(f'UPDATE {table} SET provider_instance_id=? WHERE thread_id=?', ('retired-claude', 'imported'))
+            insert(db, 'provider_session_runtime', thread_id='imported', provider_name='claudeAgent',
+                   provider_instance_id='retired-claude', adapter_key='import', status='stopped',
+                   resume_cursor_json=json.dumps({'threadId': 'imported', 'resume': NATIVE}),
+                   runtime_payload_json=json.dumps({'cwd': str(self.base), 'importedTranscripts': [entry]}))
+            db.commit()
+        manifest = discover_bindings(self.root)
+        bound = next(b for b in manifest['native_stores'] if b['thread_id'] == 'imported')
+        self.assertEqual(bound, {'thread_id': 'imported', 'engine': 'claude', 'root': str(source)})
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f"UPDATE {V2}provider_threads SET payload_json=json_set(payload_json,'$.nativeThreadRef.nativeId',?) WHERE thread_id=?",
+                       ('44444444-4444-4444-8444-444444444444', 'imported'))
+            db.commit()
+        with self.assertRaises(BindingDiscoveryError) as raised:
+            discover_bindings(self.root)
+        self.assertEqual(raised.exception.blockers[0]['blocker_code'], 'import_provider_binding_unproven')
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f"UPDATE {V2}provider_threads SET payload_json=json_set(payload_json,'$.nativeThreadRef.nativeId',?) WHERE thread_id=?",
+                       (NATIVE, 'imported'))
+            db.commit()
+        # An existing but unrecognized original cannot be treated as absent.
+        path.parent.mkdir(parents=True)
+        path.write_text('unrecognized original')
+        with self.assertRaises(BindingDiscoveryError):
+            discover_bindings(self.root)
+
+    def test_model_switch_mirror_is_supported_but_cannot_hide_restore_handles(self):
+        payload = {'type': 'user_message', 'modelSwitch': {
+            'from': {'model': 'old'}, 'to': {'model': 'new'}}}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db, 'orchestration_events', event_id='switch', aggregate_kind='thread',
+                   stream_id=THREAD, event_type='turn-item.updated', metadata_json='{}',
+                   payload_json=json.dumps(payload))
+            db.commit()
+        self.assertTrue(discover_bindings(self.root))
+        payload['modelSwitch']['unexpectedRestore'] = {'nativeThreadId': 'other-native'}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute('UPDATE orchestration_events SET payload_json=? WHERE event_id=?',
+                       (json.dumps(payload), 'switch'))
+            db.commit()
+        with self.assertRaisesRegex(ValueError, 'legacy_restore_closure_unqualified'):
+            discover_bindings(self.root)
 
     def test_read_tool_native_handles_and_invalid_shapes_stay_audit_content_in_both_mirrors(self):
         for native_ref in ({'driver': 'codex', 'nativeId': 'unrelated', 'strength': 'strong'}, ['invalid-shape']):
@@ -397,7 +450,7 @@ class T3DiscoveryTests(unittest.TestCase):
         observer_thread = "22222222-2222-4222-8222-222222222222"
         observer_native = "55555555-5555-4555-8555-555555555555"
         add_native_record(self.home, observer_native)
-        deleted_transcript = self.home / "sessions/2026/11/01/rollout-missing.jsonl"
+        deleted_transcript = self.home / 'sessions/2026/11/01' / ('rollout-2026-11-01-' + missing_native + '.jsonl')
         entry = {
             "birthtimeMs": 1,
             "device": 1,

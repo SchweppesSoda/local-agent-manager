@@ -1,9 +1,11 @@
 """Synthetic reopen changes. Never launches an Agent or touches a user home."""
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
+import unittest
 
 from local_agent_manager import antigravity_cli_cleanup as native
 from local_agent_manager import antigravity_cli_restore as restore
@@ -44,7 +46,12 @@ def initial_sources(root):
     for name in ('log', 'crashes'):
         (root/name).mkdir(exist_ok=True)
     (root/'log/cli-original.log').write_bytes(b'original diagnostic')
-    (root/'cli.log').symlink_to('log/cli-original.log')
+    try:
+        (root/'cli.log').symlink_to('log/cli-original.log')
+    except OSError as exc:
+        if os.name == 'nt' and getattr(exc, 'winerror', None) == 1314:
+            raise unittest.SkipTest('Windows diagnostic-symlink recovery requires symlink privilege') from exc
+        raise
     mirrors(root)
 
 

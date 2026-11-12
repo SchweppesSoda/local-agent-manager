@@ -76,7 +76,10 @@ def _binding(entry, settings, cache):
             raise ValueError("provider_command_requires_explicit_binding")
         if backend == "codex" and Path(command[0]).is_absolute():
             binary = local_root(command[0])
-            _plain(binary)
+            try:
+                _plain(binary)
+            except FileNotFoundError as exc:
+                raise ValueError('configured_codex_binary_missing') from exc
             binding["codex_binary"] = str(binary)
     key = backend, canonical_path(root), canonical_path(home)
     if key not in cache:

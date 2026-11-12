@@ -385,7 +385,17 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
         if any(engines and adapter.bindings[i]["engine"] not in engines for i in thread_ids):
             files.fail("selector_engine_mismatch")
         if set(thread_ids) & adapter.legacy_import_ids:
-            files.fail('legacy_import_selected_cleanup_unqualified')
+            # The immutable database evidence freezes these exact cursors and
+            # source paths too. A current account/default home cannot replace
+            # their recorded source, even with an explicit binding manifest.
+            from .t3code_discovery import _load_import_provenance, imported_root
+            imported = _load_import_provenance(adapter.profile_root)
+            for thread_id in set(thread_ids) & adapter.legacy_import_ids:
+                proofs = [p for (tid, _, _), p in imported.items() if tid == thread_id]
+                bound = adapter.bindings[thread_id]
+                if (len(proofs) != 1 or proofs[0]['engine'] != bound['engine']
+                        or canonical_path(imported_root(proofs[0])) != canonical_path(bound['root'])):
+                    files.fail('import_source_binding_unproven')
         grouped = {}
         for ref in references:
             if ref.frontend_id not in thread_ids:

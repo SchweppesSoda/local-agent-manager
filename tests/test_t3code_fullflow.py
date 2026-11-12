@@ -103,6 +103,60 @@ class T3CodeFullflowTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM orchestration_v2_message_search WHERE text MATCH 'selected'").fetchone(), (0,))
             self.assertEqual(db.execute("SELECT count(*) FROM orchestration_v2_message_search WHERE text MATCH 'keeper'").fetchone(), (1,))
 
+    def add_import(self, *, source, driver='codex'):
+        entry = {'birthtimeMs': 1, 'device': 1, 'filePath': str(source), 'inode': '123',
+                 'mtimeMs': 1, 'provider': driver, 'providerInstanceId': driver,
+                 'providerSessionId': NATIVE, 'size': 1}
+        cursor = {'threadId': NATIVE} if driver == 'codex' else {'threadId': THREAD, 'resume': NATIVE}
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            insert(db, 'provider_session_runtime', thread_id=THREAD, provider_name=driver,
+                   provider_instance_id=driver, adapter_key='import', status='stopped',
+                   resume_cursor_json=json.dumps(cursor),
+                   runtime_payload_json=json.dumps({'cwd': str(self.base), 'importedTranscripts': [entry]}))
+            db.commit()
+
+    def test_imported_absent_original_cold_apply_and_source_root_mismatch(self):
+        source = self.home/'sessions'/('rollout-2026-11-10-'+NATIVE+'.jsonl')
+        self.add_import(source=source)
+        wrong = self.base/'another-home'
+        wrong.mkdir()
+        create_native_schema(wrong)
+        manifest = copy.deepcopy(self.manifest)
+        manifest['native_stores'][0]['root'] = str(wrong)
+        blocked = self.coordinator().plan_operation(client='t3code', record_ids=[THREAD],
+            adapters=(T3CodeBoundAdapter(manifest),), plan_path=self.base/'bad-import.json')
+        self.assertEqual(blocked['goal_status'], 'blocked', blocked)
+        self.assertIn('t3code_import_source_binding_unproven', {b['blocker_code'] for b in blocked['blockers']})
+        plan = self.plan()
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+            plan_path=self.plan_path)['goal_satisfied'])
+
+    def test_imported_claude_deletes_native_and_import_cursor_preserving_keeper(self):
+        home = self.base/'historical-claude'
+        source = home/'projects/fixture'/(NATIVE+'.jsonl')
+        source.parent.mkdir(parents=True)
+        source.write_text(json.dumps({'sessionId': NATIVE, 'message': 'synthetic original'})+'\n')
+        keeper = source.with_name(OTHER+'.jsonl')
+        keeper.write_text(json.dumps({'sessionId': OTHER, 'message': 'keep original'})+'\n')
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            db.execute(f'DELETE FROM {V2}provider_threads WHERE thread_id=?', (THREAD,))
+            db.execute(f'DELETE FROM {V2}messages WHERE thread_id=?', (THREAD,))
+            db.execute(f'DELETE FROM {V2}threads WHERE thread_id=?', (THREAD,))
+            db.execute('DELETE FROM orchestration_v2_events WHERE thread_id=?', (THREAD,))
+            add_thread(db, THREAD, native=NATIVE, driver='claudeAgent')
+        self.add_import(source=source, driver='claudeAgent')
+        self.manifest['native_stores'][0] = {'thread_id': THREAD, 'engine': 'claude', 'root': str(home)}
+        self.adapter = T3CodeBoundAdapter(self.manifest)
+        plan = self.coordinator().plan_operation(client='t3code', record_ids=[THREAD],
+            adapters=(self.adapter,), plan_path=self.plan_path)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertFalse(source.exists())
+        self.assertTrue(keeper.exists())
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+            plan_path=self.plan_path)['goal_satisfied'])
+
     def test_full_plan_freezes_chromium_before_service_deletion(self):
         from local_agent_manager import t3code_desktop_cleanup as d
         from tests.test_t3code_desktop_writer import fixture, ENV, IDS

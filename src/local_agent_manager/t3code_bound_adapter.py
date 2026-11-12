@@ -245,7 +245,7 @@ _LEGACY_EVENT_FIELDS = {
         attachments input output exitCode streaming toolName subagentId origin driver providerInstanceId childThreadId
         prompt result progress promptSequence viewedImagePath checkpointId scopeId files patterns results fileName
         diffStr toolSurface toolSource changes planId steps explanation requestId questions responseMode questionAnswer
-        failure retry source outcome summary detail senderThreadId workflowScript message unresponsiveAt''',
+        failure retry source outcome summary detail senderThreadId workflowScript message unresponsiveAt modelSwitch''',
 }
 
 

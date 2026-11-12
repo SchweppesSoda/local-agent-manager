@@ -31,16 +31,23 @@ def names_for(row):
 
 
 def selected_upload(value, owner):
-    # Installed ChatFileAttachment; external/snapshot sources and images are
-    # still unsupported for removal. They must never be treated as plain files.
+    # Installed ChatFileAttachment/ChatImageAttachment without an external or
+    # snapshot source. Such sources require a different ownership contract.
     fields = {'type', 'id', 'name', 'mimeType', 'sizeBytes'}
-    if (not isinstance(value, dict) or set(value) != fields or value['type'] != 'file'
+    if (not isinstance(value, dict) or set(value) != fields or value['type'] not in {'file', 'image'}
             or any(not isinstance(value[k], str) or not value[k] for k in ('id', 'name', 'mimeType'))
             or type(value['sizeBytes']) is not int or value['sizeBytes'] <= 0):
         fail('attachment_closure_unqualified')
     row = dict(value, thread_id=owner)
     names = names_for(row)
     extension = Path(value['name']).suffix.lower()
+    if value['type'] == 'image':
+        formats = {'png': {'png'}, 'jpeg': {'jpg','jpeg'}, 'gif': {'gif'}, 'webp': {'webp'},
+                   'avif': {'avif'}, 'bmp': {'bmp'}, 'heic': {'heic'}, 'heif': {'heif'},
+                   'tiff': {'tiff'}, 'svg+xml': {'svg'}, 'x-icon': {'ico'}, 'vnd.microsoft.icon': {'ico'}}
+        mime = value['mimeType'].lower()
+        if not mime.startswith('image/') or extension.lstrip('.') not in formats.get(mime[6:], set()):
+            fail('attachment_closure_unqualified')
     if extension == '.part' or not re.fullmatch(r'\.[a-z0-9]{1,10}', extension):
         extension = '.bin'
     if not names or value['id'] + extension not in names:
@@ -68,7 +75,7 @@ def check_reference(row, declared, html):
     if user and match:
         record = item['context']['records'][int(match[1])]
         if (not isinstance(record, dict) or set(record) != {'version','contextId','label','kind','attachmentId','name','mimeType','sizeBytes'}
-                or type(record['version']) is not int or record['version'] != 1 or record['kind'] != 'file'
+                or type(record['version']) is not int or record['version'] != 1 or record['kind'] not in {'file', 'image'}
                 or not isinstance(record['contextId'], str) or not isinstance(record['label'], str)):
             fail('attachment_closure_unqualified')
         value = dict(type=record['kind'], id=record['attachmentId'], name=record['name'],
@@ -89,7 +96,11 @@ def check_reference(row, declared, html):
                 and isinstance(render.get('attachmentId'), str)
                 and (owner, render.get('attachmentId')) in html):
             heights = render.get('heights', {})
-            if isinstance(heights, dict) and all(type(v) in (int,float) for v in heights.values()):
+            if (isinstance(heights, dict) and all(type(v) in (int,float) for v in heights.values())
+                    or isinstance(heights, list) and len(heights) <= 20000
+                    and all(isinstance(pair, list) and len(pair) == 2
+                            and all(type(v) is int for v in pair) and pair[0] > 0 and pair[1] >= 0
+                            for pair in heights)):
                 return
     fail('attachment_closure_unqualified')
 

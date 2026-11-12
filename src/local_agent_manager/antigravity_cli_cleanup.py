@@ -234,16 +234,19 @@ def _rows(db):
     return rows
 
 
-def _closure(rows, requested):
+def _closure(rows, requested, *, absent=()):
     selected = set(requested)
-    if not selected or not selected <= rows.keys():
+    absent = set(absent)
+    if (not selected or not selected <= rows.keys() | absent
+            or absent - selected or absent & rows.keys()):
         fail('selected_session_missing')
     while True:
         expanded = selected | {sid for sid, r in rows.items() if r['parent_conversation_id'] in selected}
         if expanded == selected:
             break
         selected = expanded
-    if any(rows[sid]['parent_conversation_id'] and rows[sid]['parent_conversation_id'] not in selected for sid in selected):
+    if any(rows[sid]['parent_conversation_id'] and rows[sid]['parent_conversation_id'] not in selected
+           for sid in selected if sid not in absent):
         fail('unselected_parent_reference')
     return sorted(selected)
 
@@ -295,14 +298,35 @@ def _reject_trajectory_reference(raw, ids):
 
 
 def _log_link(root):
-    """Preserve only the CLI's relative diagnostic-log symlink, without following it."""
+    """Preserve the CLI log alias; Windows also uses a two-name hard link."""
     path = root/'cli.log'
     try:
         before = path.lstat()
     except FileNotFoundError:
         return None
     if not path.is_symlink():
-        fail('log_link_unqualified')
+        import stat
+        if (not stat.S_ISREG(before.st_mode) or getattr(before, 'st_file_attributes', 0) & 0x400
+                or before.st_nlink != 2):
+            fail('log_link_unqualified')
+        directory = ff.checked_path(root, 'log')
+        ff._plain(directory.lstat(), directory=True)
+        names = sorted(directory.iterdir())
+        if len(names) > ff.MAX_ENTRIES:
+            fail('profile_budget_exceeded')
+        matches = []
+        for target in names:
+            info = target.lstat()
+            if ff._identity(info) == ff._identity(before):
+                if (not target.name.startswith('cli-') or target.suffix != '.log'
+                        or not stat.S_ISREG(info.st_mode) or info.st_nlink != 2
+                        or getattr(info, 'st_file_attributes', 0) & 0x400):
+                    fail('log_link_unqualified')
+                matches.append('log/' + target.name)
+        if len(matches) != 1 or ff._revision(path.lstat()) != ff._revision(before):
+            fail('log_link_unqualified')
+        return {'kind': 'hardlink', 'identity': ff._identity(before),
+                'mtime_ns': before.st_mtime_ns, 'target': matches[0]}
     target = os.readlink(path)
     normalized = target.replace('\\', '/')
     if (not normalized.startswith('log/') or len(normalized.split('/')) != 2
@@ -313,6 +337,48 @@ def _log_link(root):
     if ff._revision(path.lstat()) != ff._revision(before):
         fail('log_link_changed')
     return {'identity': ff._identity(before), 'mtime_ns': before.st_mtime_ns, 'target': target}
+
+
+def _preserved_tree(root, relative, link):
+    if relative == 'skills':
+        from .antigravity_acp_cleanup import _skills
+        skills = _skills(root)
+        if any('link' in entry for entry in skills):
+            return {'kind': 'preserve_skills', 'path': 'skills', 'entries': skills}
+    def reader(root, name, *, content=False, limit=ff.MAX_BYTES):
+        if not link or link.get('kind') != 'hardlink' or name != link['target']:
+            return ff.read_file(root, name, content=content, limit=limit)
+        # This exception is read-only and private to the preserved log tree.
+        # Session/removal/shared-file readers retain their single-link rule.
+        if _log_link(root) != link:
+            fail('log_link_changed')
+        path = ff.checked_path(root, name)
+        before = path.lstat()
+        if before.st_size > limit:
+            fail('profile_budget_exceeded')
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
+        fd = os.open(path, flags)
+        try:
+            if ff._revision(os.fstat(fd)) != ff._revision(before):
+                fail('log_link_changed')
+            digest, size, chunks = hashlib.sha256(), 0, []
+            while data := os.read(fd, min(1024 * 1024, limit - size + 1)):
+                size += len(data)
+                if size > limit:
+                    fail('profile_budget_exceeded')
+                digest.update(data)
+                if content:
+                    chunks.append(data)
+            if ff._revision(os.fstat(fd)) != ff._revision(before):
+                fail('log_link_changed')
+        finally:
+            os.close(fd)
+        if ff._revision(path.lstat()) != ff._revision(before) or _log_link(root) != link:
+            fail('log_link_changed')
+        return {'path': name, 'identity': ff._identity(before), 'size': size,
+                'mode': ff._mode(before), 'mtime_ns': before.st_mtime_ns,
+                'sha256': digest.hexdigest()}, b''.join(chunks) if content else None
+    return ff.freeze_remove(root, relative, reader=reader if relative == 'log' else None)
 
 
 def _qualify_sessions(root, rows, selected, directories, *, reader=None, reference_check=None):
@@ -375,7 +441,7 @@ def _qualify_sessions(root, rows, selected, directories, *, reader=None, referen
                             reject(raw, selected)
 
 
-def freeze(root, ids, *, binary):
+def freeze(root, ids, *, binary, allow_absent=False):
     from . import antigravity_cli_restore as restore
     root = root_path(root)
     requested = sorted({native_id(s) for s in ids})
@@ -391,7 +457,8 @@ def freeze(root, ids, *, binary):
         _check(db, CONTRACT)
         summary_schema_sha256 = _schema_hash(_objects(db))
         rows = _rows(db)
-        selected = _closure(rows, requested)
+        absent = sorted(set(requested) - rows.keys()) if allow_absent else []
+        selected = _closure(rows, requested, absent=absent)
         # Raw protobuf is not used to infer ownership. A known other session
         # embedded in a remaining summary is conservatively protected.
         for sid, row in rows.items():
@@ -428,7 +495,7 @@ def freeze(root, ids, *, binary):
     for name in names:
         if name not in {'conversations', 'brain', 'cache', 'annotations', 'presence', 'cli.log',
                         restore.PROTO, *(SUMMARY+s for s in SIDECARS)}:
-            proof = ff.freeze_remove(root, name)
+            proof = _preserved_tree(root, name, log_link)
             # Logs are diagnostics, not restoration sources; retained in full.
             if name not in {'log', 'crashes', 'builtin', 'skills'}:
                 _protect_reference(root, proof, selected)
@@ -441,6 +508,8 @@ def freeze(root, ids, *, binary):
                 'summary_raw_hashes': raw_hashes, 'rewrites': rewrites,
                 'log_link': log_link,
                 'cache': cache, 'directories': directories, 'changes': changes, 'preserved': preserved}
+    if absent:
+        evidence['absent_ids'] = absent
     remaining(evidence)
     return evidence
 
@@ -455,6 +524,10 @@ def validate(evidence):
     root = root_path(evidence['root'])
     ids = sorted({native_id(s) for s in evidence['ids']})
     if ids != evidence['ids'] or not set(evidence['requested_ids']) <= set(ids):
+        fail('scope_invalid')
+    absent = evidence.get('absent_ids', [])
+    if (not isinstance(absent, list) or absent != sorted(set(absent))
+            or not set(absent) <= set(evidence['requested_ids']) or set(absent) & evidence['parents'].keys()):
         fail('scope_invalid')
     allowed = ({f'conversations/{s}.db{x}' for s in ids for x in SIDECARS} | {'brain/'+s for s in ids}
                | {f'annotations/{s}.pbtxt' for s in ids} | {f'presence/{s}.lock' for s in ids})
@@ -525,7 +598,7 @@ def remaining(evidence):
         if _names(root, directory['path']) != expected:
             fail('session_set_changed')
     for proof in evidence['preserved']:
-        if ff.freeze_remove(root, proof['path']) != proof:
+        if _preserved_tree(root, proof['path'], evidence['log_link']) != proof:
             fail('preserved_file_changed')
     if not count:
         for suffix in SIDECARS[1:]:
@@ -640,7 +713,7 @@ def apply(evidence, *, phase_callback, recovery_dir, census=None):
             if _log_link(root) != evidence['log_link']:
                 fail('log_link_changed')
             for proof in evidence['preserved']:
-                if ff.freeze_remove(root, proof['path']) != proof:
+                if _preserved_tree(root, proof['path'], evidence['log_link']) != proof:
                     fail('preserved_file_changed')
             recovery_dir.mkdir(mode=0o700, exist_ok=False)
             originals = []

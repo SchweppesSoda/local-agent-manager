@@ -79,6 +79,15 @@ class PaseoDiscoveryTests(unittest.TestCase):
         with patch("local_agent_manager.paseo_discovery.discover_bindings", side_effect=AssertionError("readonly guard")):
             create_default_adapters(args)
 
+    def test_missing_configured_codex_binary_has_specific_blocker(self):
+        missing = self.base/'retired-version'/'codex.exe'
+        write(self.root/'config.json', {'version': 1, 'agents': {'providers': {
+            'codex': {'command': [str(missing)]}}}})
+        with self.assertRaises(BindingDiscoveryError) as raised:
+            discover_bindings(self.root)
+        self.assertEqual(raised.exception.blockers, [
+            {'blocker_code': 'configured_codex_binary_missing', 'agent_id': AGENT}])
+
     @unittest.skipUnless(os.name == "nt", "Paseo full cleanup uses the Windows lifecycle")
     def test_automatic_claude_and_pi_full_cleanup_through_cli(self):
         for backend in ("claude", "pi"):

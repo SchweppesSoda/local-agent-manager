@@ -41,8 +41,20 @@ def references(value):
     result.append(('persistence/sessionId', sid))
     metadata = persistence.get('metadata')
     if metadata is not None:
-        if not isinstance(metadata, dict) or set(metadata) != {'pluginProviderPersistence'}:
+        if (not isinstance(metadata, dict) or 'pluginProviderPersistence' not in metadata
+                or set(metadata) - {'pluginProviderPersistence', 'cwd'}):
             fail('paseo_handle_shape_unqualified')
+        if 'cwd' in metadata:
+            # Core AgentStorage also saves the agent's working directory beside
+            # the plugin envelope. It is neither a native home nor a handle.
+            from .paseo_store import local_root
+            from .record_identity import canonical_path
+            try:
+                same = canonical_path(local_root(metadata['cwd'])) == canonical_path(local_root(value.get('cwd')))
+            except (TypeError, ValueError, OSError):
+                same = False
+            if not same:
+                fail('paseo_handle_shape_unqualified')
         other = conversation(metadata['pluginProviderPersistence'])
         if other != sid:
             fail('paseo_handle_conflict')

@@ -122,7 +122,10 @@ def reservation_blockers(document):
 
 def freeze_target(manifest, bound, ids, client):
     selected = binding.selection(manifest, bound, client)
-    evidence = native.freeze(bound['root'], ids, binary=bound['cli_binary'])
+    # The frontend supplies exact native IDs even after a native deletion.
+    # Full namespace/session qualification still rejects orphan files or
+    # unproved restoration sources; absent IDs never authorize another record.
+    evidence = native.freeze(bound['root'], ids, binary=bound['cli_binary'], allow_absent=True)
     if evidence['runtime'] != selected['runtime']:
         native.fail('runtime_changed')
     return evidence, selected
@@ -141,7 +144,7 @@ def validate_target(target, manifest):
         native.fail('joint_target_scope_changed')
     # Child closure must be derivable from the frozen summary relationships.
     rows = {sid: {'parent_conversation_id': parent} for sid, parent in evidence['parents'].items()}
-    if native._closure(rows, evidence['requested_ids']) != evidence['ids']:
+    if native._closure(rows, evidence['requested_ids'], absent=evidence.get('absent_ids', ())) != evidence['ids']:
         native.fail('joint_child_scope_changed')
 
 

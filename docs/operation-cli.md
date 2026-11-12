@@ -653,11 +653,13 @@ T3 的发现、数据库清理和跨客户端保护共用 `t3code_references` �
 已知线程发送工具仅将 `input.message` 视为消息正文，收件 `threadId` 与结果句柄继续保护；
 CUA 工具仅接受精确 `{type:"text",text:...}` 显示块的 text，代码输入、额外字段和未知工具仍阻挡。
 
-完整删除支持归属于选中会话的标准文件上传、已知文档文本副本和已完成的
+完整删除支持归属于选中会话的标准文件/图片上传、已知文档文本副本和已完成的
 `t3-code.html_render` 页面。文件 ID 的会话段、扩展名、声明大小、当前消息、
 用户消息条目、文件 context 及已知事件镜像必须一致；逐个冻结实际文件身份与摘要。
 精确附件 ID 也加入数据库保留行的恢复引用检查，不能仅靠文件名前缀判断归属。
-其他会话引用、未知附件字段/来源、未资格化的图片删除、未知同名旁支文件及浏览器/
+图片的 MIME、扩展名、大小、会话前缀和消息/context 引用必须一致；外部和 snapshot 来源
+仍不接受。HTML 响应高度同时支持旧字典和新版 `[width,height]` 整数对数组。
+其他会话引用、未知附件字段/来源、未知同名旁支文件及浏览器/
 备份/snapshot 目录仍阻挡。安装前重新核对完整数据库和文件证据，安装后冷核验附件、
 记录与镜像均不存在，并验证未选文件保持不变。
 
@@ -723,8 +725,11 @@ JSON 恢复字段、未知工具引用和包含目标 ID 的未知键仍作为�
 未证明归属的附件仍阻挡；选中会话按前述附件删除检查逐项核验。
 
 V2 线程事件在 `orchestration_events` 中的镜像也参与原生引用核验。已知 Codex／Claude
-导入 cursor 和 transcript 元数据作为只读保护源，按引擎和原生 ID 保护历史来源，
-即使当前 provider home 已改变。直接选择这些导入记录进行完整删除仍会阻挡。
+导入 cursor 和 transcript 元数据按引擎和原生 ID 保护历史来源，即使当前 provider home
+已改变。明确选择导入记录做完整删除时，必须从已验证的导入 transcript 路径独立确定原生
+根，核对会话 ID、实例、当前句柄及文件格式，并将原生来源与导入副本纳入同一冻结计划。
+原实例配置已移除或来源文件已不存在时仍保留原导入路径证据；当前账号或默认 home 不能
+替代它。来源不明、混合根、未知 cursor、现存但不被原生扫描器识别的文件继续阻挡。
 恢复依赖检查覆盖完整原生删除范围，包括原生发现的后代。所有保留的 provider session
 和历史对象均参与检查。未知旧事件类型、字段或恢复 cursor 继续阻挡。
 已知 `context-handoff.updated` 和 `context-transfer.created/updated` 镜像及投影
@@ -944,6 +949,9 @@ Paseo 的已知插件格式把 `{version:1,data:{conversationId:"<UUID>"}}` 序�
 若存在也必须解出同一 UUID。这里的 `version:1` 标识持久化格式；Paseo 产品版本不参与准入。
 字段形状及恢复关系按契约校验，裸 UUID、旧 ACP 自定义序列化、
 `nativeHandle` 变体、额外 metadata 和相互冲突的恢复句柄明确阻挡。
+核心存储附带的 `metadata.cwd` 可在它与同一 agent 的工作目录一致时保留；它不参与原生
+目录或会话身份推断，其他未知 metadata 仍阻挡。配置的 Codex 程序已不存在时，prepare
+明确返回 `configured_codex_binary_missing`，不自动改用其他客户端或账号的程序。
 依据：[provider 持久对象](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/plugins/antigravity-provider/server/internal/session.ts)
 与 [核心序列化及恢复](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/packages/server/src/server/agent/plugin-provider.ts)。
 
@@ -959,6 +967,14 @@ after-state 得到确认才解除占用，不能通过重建计划或删除管�
 
 旧托管 ACP 的 manifest 和冻结 evidence 继续由原适配器处理，不自动升级成 CLI 绑定。
 未选会话、凭据、配置、skills、工作目录和未授权前端 profile 不在删除范围。
+已绑定前端提供的完整原生 ID 已不在 CLI 摘要时，联合计划可冻结其缺失状态，仍逐项校验
+整个会话文件集合、原生格式、恢复镜像和引用；无摘要的残留文件、未知恢复引用或计划后
+重新出现的原生对象继续阻挡。独立 CLI 删除仍要求目标存在，不以缺失 ID 扩大选择范围。
+
+Windows CLI 的 `cli.log` 支持指向 `log/` 直接子文件的符号链接，或与唯一 `log/cli-*.log`
+构成双名称硬链接；额外硬链接和外部目标不接受。日志只读冻结并完整保留，原生会话和
+可写共享文件仍禁止硬链接。Skills 目录内的链接仅核对链接身份与目标字符串，不跟随到
+共享 Skill 源，也不删除链接或目标。
 
 ## 独立 Antigravity CLI 原生清理
 

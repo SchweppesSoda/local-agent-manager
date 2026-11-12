@@ -151,6 +151,52 @@ def _native_id_proven_in_root(thread_id, backend, instance_id, native_id, ids, r
     return _import_paths_under_root(backend, provenance["transcript_paths"], root)
 
 
+def imported_root(provenance):
+    """Resolve a recorded transcript home independently of today's provider."""
+    backend, native = provenance['engine'], provenance['native_id']
+    roots = set()
+    for path in provenance['transcript_paths']:
+        if path.suffix.casefold() != '.jsonl' or '..' in path.parts:
+            raise ValueError('import_transcript_root_unproven')
+        if backend == 'claude':
+            if path.stem != native or path.parent.parent.name != 'projects':
+                raise ValueError('import_transcript_root_unproven')
+            candidate = path.parent.parent.parent
+        else:
+            if not path.name.startswith('rollout-') or not path.stem.endswith('-' + native):
+                raise ValueError('import_transcript_root_unproven')
+            candidates = [p.parent for p in path.parents if p.name in {'sessions', 'archived_sessions'}]
+            if len(candidates) != 1:
+                raise ValueError('import_transcript_root_unproven')
+            candidate = candidates[0]
+        candidate = _plain_directory(candidate)
+        if not _import_paths_under_root(backend, (path,), candidate):
+            raise ValueError('import_transcript_root_unproven')
+        roots.add(canonical_path(candidate))
+    if len(roots) != 1:
+        raise ValueError('import_transcript_root_unproven')
+    return Path(roots.pop())
+
+
+def _import_binding(thread_id, provenance, cache):
+    root = imported_root(provenance)
+    binding = {'thread_id': thread_id, 'engine': provenance['engine'], 'root': str(root)}
+    key = binding['engine'], canonical_path(root)
+    if key not in cache:
+        try:
+            cache[key] = _catalog_ids(binding)
+        except NativeInventoryError as exc:
+            cache[key] = exc
+    if isinstance(cache[key], NativeInventoryError):
+        raise cache[key]
+    # Missing transcripts retain their recorded ownership. An existing source
+    # must still be recognized by the owning native scanner before deletion.
+    if (any(path.exists() for path in provenance['transcript_paths'])
+            and provenance['native_id'] not in cache[key]):
+        raise ValueError('import_transcript_native_identity_unproven')
+    return binding
+
+
 def _native_binding(row, providers, instance, cache, imports=None):
     driver = row["default_provider"]
     if driver == "pi":
@@ -311,6 +357,17 @@ def discover_bindings(root=None):
                 raise ValueError("legacy_thread_binding_unverified")
             row = copies[0]
             instance_id = row["provider_instance_id"] or row["default_provider"]
+            imported = [p for (tid, _, _), p in imports.items() if tid == thread_id]
+            if imported:
+                if (len(imported) != 1 or imported[0]['provider_instance_id'] != instance_id
+                        or imported[0]['engine'] != thread_engine(row, data['providers'])
+                        or any(p['native_id'] not in (None, imported[0]['native_id'])
+                               for p in data['providers'] if p['thread_id'] == thread_id)):
+                    raise ValueError('import_provider_binding_unproven')
+                binding = _import_binding(thread_id, imported[0], cache)
+                bindings.append(binding)
+                instances_by_thread[thread_id] = instance_id
+                continue
             instance = instances.get(instance_id)
             if (not isinstance(instance, dict)
                     or row["default_provider"] not in {instance.get("driver"), instance_id}):

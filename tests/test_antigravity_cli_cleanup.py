@@ -266,6 +266,38 @@ class CliFormatTests(unittest.TestCase):
         self.assertEqual(result['goal_status'], 'blocked')
         self.assertEqual(result['schema_version'], 'larj.operation-result.v1')
         self.assertEqual(result['document_type'], 'operation_result')
+
+    def test_diagnostic_hardlink_pair_is_preserved_and_third_alias_is_rejected(self):
+        directory = self.root/'log'
+        directory.mkdir()
+        target = directory/'cli-fixture.log'
+        target.write_text(SECRET)
+        link = self.root/'cli.log'
+        os.link(target, link)
+        evidence = self.freeze()
+        self.assertEqual(evidence['log_link']['kind'], 'hardlink')
+        self.assertEqual(evidence['log_link']['target'], 'log/cli-fixture.log')
+        self.assertNotIn(SECRET, json.dumps(evidence))
+        third = self.base/'outside.log'
+        os.link(target, third)
+        with self.assertRaisesRegex(agy.CleanupError, 'log_link_unqualified'):
+            agy.remaining(evidence)
+        third.unlink()
+        target.write_text('changed diagnostic log')
+        with self.assertRaisesRegex(agy.CleanupError, 'log_link_changed'):
+            agy.remaining(evidence)
+
+    def test_explicit_joint_absence_cannot_hide_unindexed_native_files(self):
+        missing = '44444444-4444-4444-8444-444444444444'
+        with self.assertRaisesRegex(agy.CleanupError, 'selected_session_missing'):
+            agy.freeze(self.root, [missing], binary=self.binary)
+        evidence = agy.freeze(self.root, [missing], binary=self.binary, allow_absent=True)
+        self.assertEqual(evidence['absent_ids'], [missing])
+        orphan = self.root/'conversations'/(missing+'.db')
+        orphan.write_bytes(b'unindexed session')
+        with self.assertRaisesRegex(agy.CleanupError, 'summary_session_set_mismatch'):
+            agy.freeze(self.root, [missing], binary=self.binary, allow_absent=True)
+
         result = self.coordinator().plan_operation(client='antigravity', record_ids=[TARGET], antigravity_root=self.root)
         self.assertEqual(result['blockers'][0]['blocker_code'], 'antigravity_cli_explicit_runtime_required')
 

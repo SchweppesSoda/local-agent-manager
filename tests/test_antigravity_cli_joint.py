@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -39,6 +40,25 @@ class PersistenceTests(unittest.TestCase):
         self.assertTrue(row['antigravity_handle_qualified'])
         self.assertEqual({h['value'] for h in row['references']}, {TARGET})
         self.assertEqual(len(row['references']), 3)
+
+    def test_core_metadata_cwd_qualifies_without_becoming_native_identity(self):
+        value = paseo_agent(FRONT, TARGET, Path.cwd())
+        value['persistence']['metadata']['cwd'] = str(Path.cwd())
+        row = paseo_store._project(value)
+        self.assertTrue(row['antigravity_handle_qualified'])
+        self.assertEqual({h['value'] for h in row['references']}, {TARGET})
+        self.assertEqual(len(row['references']), 3)
+
+    def test_unknown_metadata_or_conflicting_cwd_remain_opaque(self):
+        for cwd in (None, 123, 'relative', str(Path.cwd()/'other-workspace')):
+            with self.subTest(cwd=cwd):
+                value = paseo_agent(FRONT, TARGET, Path.cwd())
+                value['persistence']['metadata']['cwd'] = cwd
+                self.assertFalse(paseo_store._project(value)['antigravity_handle_qualified'])
+        value = paseo_agent(FRONT, TARGET, Path.cwd())
+        value['persistence']['metadata']['cwd'] = str(Path.cwd())
+        value['persistence']['metadata']['resume'] = KEEP
+        self.assertFalse(paseo_store._project(value)['antigravity_handle_qualified'])
 
     def test_custom_acp_raw_uuid_and_conflicting_metadata_remain_opaque(self):
         for shape in ('scalar', 'object', 'metadata', 'runtime', 'runtime_extra', 'nativeHandle', 'version', 'duplicate'):
@@ -182,6 +202,83 @@ class JointTests(unittest.TestCase):
 
     def test_paseo_fullflow_cold_apply_child_closure_and_no_replay(self):
         self.assert_fullflow('paseo')
+
+    def test_paseo_core_metadata_cwd_full_plan_apply_and_cold_verify(self):
+        adapter = self.setup_client('paseo')
+        path = self.paseo/'agents'/f'{FRONT}.json'
+        value = json.loads(path.read_bytes())
+        value['persistence']['metadata']['cwd'] = value['cwd']
+        write(path, value)
+        plan = self.plan('paseo', adapter)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertFalse(path.exists())
+        self.assertFalse((self.native/'conversations'/f'{TARGET}.db').exists())
+        self.assertTrue((self.native/'conversations'/f'{KEEP}.db').exists())
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+            plan_path=self.plan_path)['goal_satisfied'])
+
+    def test_t3_diagnostic_hardlinks_survive_joint_apply_and_cold_verify(self):
+        adapter = self.setup_client('t3code')
+        directory = self.native/'log'
+        directory.mkdir()
+        target = directory/'cli-fixture.log'
+        target.write_text('preserved diagnostic log')
+        link = self.native/'cli.log'
+        os.link(target, link)
+        plan = self.plan('t3code', adapter)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertEqual(target.read_text(), 'preserved diagnostic log')
+        self.assertTrue(os.path.samefile(link, target))
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+            plan_path=self.plan_path)['goal_satisfied'])
+
+    def test_t3_missing_native_cleans_exact_cache_and_frontend_preserving_native_peers(self):
+        from tests.t3code_support import V2
+        missing = '44444444-4444-4444-8444-444444444444'
+        adapter = self.setup_client('t3code')
+        with closing(sqlite3.connect(self.t3/'userdata/statev2.sqlite')) as db:
+            db.execute(f"UPDATE {V2}provider_threads SET payload_json=json_set(payload_json,'$.nativeThreadRef.nativeId',?) WHERE thread_id=?", (missing, FRONT))
+            db.commit()
+        cache_path = self.native/native.CACHE
+        cache = json.loads(cache_path.read_text())
+        workspace = str(self.base/'missing-workspace')
+        cache[workspace] = missing
+        cache_path.write_text(json.dumps(cache))
+        keeper = (self.native/'conversations'/f'{TARGET}.db').read_bytes()
+        plan = self.plan('t3code', adapter)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        evidence = t3code_cleanup.evidence_from_document(plan)
+        self.assertEqual(evidence['native_targets'][0]['native_files']['absent_ids'], [missing])
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertEqual((self.native/'conversations'/f'{TARGET}.db').read_bytes(), keeper)
+        self.assertNotIn(workspace, json.loads(cache_path.read_text()))
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+            plan_path=self.plan_path)['goal_satisfied'])
+
+    def test_t3_linked_skills_are_preserved_without_following_shared_target(self):
+        adapter = self.setup_client('t3code')
+        shared = self.base/'shared-skill'
+        shared.mkdir()
+        marker = shared/'SKILL.md'
+        marker.write_text('shared skill ' + TARGET)
+        directory = self.native/'skills'
+        directory.mkdir()
+        link = directory/'fixture'
+        if os.name == 'nt':
+            subprocess.run(['cmd.exe','/d','/c','mklink','/J',str(link),str(shared)],
+                           check=True,capture_output=True)
+        else:
+            link.symlink_to(shared, target_is_directory=True)
+        self.addCleanup(link.rmdir if os.name == 'nt' else link.unlink)
+        plan = self.plan('t3code', adapter)
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertEqual(marker.read_text(), 'shared skill ' + TARGET)
+        self.assertTrue(link.exists())
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+            plan_path=self.plan_path)['goal_satisfied'])
 
     def test_t3_unselected_native_child_and_historical_restore_block(self):
         adapter = self.setup_client('t3code')
