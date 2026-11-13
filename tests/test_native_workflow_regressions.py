@@ -384,15 +384,13 @@ class NativeWorkflowRegressions(unittest.TestCase):
             kept = OperationCoordinator._coalesce_manual_candidates((parent, child, outside), manual)
         self.assertEqual([item.action_id for item in kept], ["orphan-root", "record-x"])
 
-    def test_routed_store_keeps_plans_and_run_receipts_with_its_journals(self):
+    def test_all_operation_evidence_stays_in_manager_state(self):
         from local_agent_record_janitor.operation_coordinator import _find_operation_plan
-        from local_agent_record_janitor.state_maintenance import run_state_command
+        from local_agent_record_janitor.state_paths import control_directory
 
         self.fixture([("delete", "work", None), ("keep", "work", None)])
-        base = self.root / "project-state"
-        base.mkdir()
-        preview = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        base = Path(os.environ["LAM_STATE_DIR"])
+        store_before = {path.name for path in self.home.iterdir()}
         legacy = self.root / "localappdata"
         calls = []
         with patch.dict(os.environ, {"LOCALAPPDATA": str(legacy), "XDG_STATE_HOME": str(legacy), "CODEX_HOME": str(self.home)}), \
@@ -406,10 +404,13 @@ class NativeWorkflowRegressions(unittest.TestCase):
                 self.assertEqual(Path(round_["plan_path"]).parent, plans)
             self.assertEqual(Path(result["run_receipt_path"]).parent, plans)
             self.assertTrue(Path(result["run_receipt_path"]).is_file())
-            # An operation ID alone resolves through the default routed home.
+            # An operation ID alone resolves without naming a store.
             located = _find_operation_plan(result["run_operation_id"])
             self.assertEqual(located, plans / f"{result['run_operation_id']}.json")
+            self.assertTrue((control_directory(self.home) / "operations").is_dir())
         self.assertFalse(legacy.exists())
+        # Nothing manager-owned was added to the Agent's own data directory.
+        self.assertEqual({path.name for path in self.home.iterdir()} - store_before, set())
 
     def test_deleted_parent_guardian_can_be_explicitly_deleted_with_exact_evidence(self):
         self.fixture([("child", "work", "deleted-parent"), ("keep", "work", None)])

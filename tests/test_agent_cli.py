@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import hashlib
 import json
 import os
@@ -148,8 +150,7 @@ class AgentCliTests(unittest.TestCase):
 
     def operation_directory(self, document: dict[str, object]) -> Path:
         return (
-            self.codex_home
-            / ".local-agent-record-janitor"
+            control_directory(self.codex_home)
             / "operations"
             / str(document["operation_id"])
         )
@@ -445,8 +446,7 @@ class AgentCliTests(unittest.TestCase):
     def test_child_operation_plan_is_read_only_in_legacy_queries(self) -> None:
         operation_id = "child-op"
         operation_directory = (
-            self.codex_home
-            / ".local-agent-record-janitor"
+            control_directory(self.codex_home)
             / "operations"
             / operation_id
         )
@@ -523,7 +523,7 @@ class AgentCliTests(unittest.TestCase):
                     self.assertEqual(after, before)
                     self.assertEqual(store_plan_path.read_bytes(), plan_before)
 
-    def test_agent_plan_defaults_to_user_state_directory(self) -> None:
+    def test_agent_plan_defaults_to_manager_state_directory(self) -> None:
         state_root = self.root / "user-state"
         environment = (
             {"LOCALAPPDATA": str(state_root)}
@@ -545,7 +545,8 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         path = Path(summary["plan_path"])
         self.assertTrue(path.is_file())
-        self.assertEqual(path.parent, state_root / "local-agent-record-janitor" / "plans")
+        self.assertEqual(path.parent, Path(os.environ["LAM_STATE_DIR"]) / "plans")
+        self.assertFalse(state_root.exists())
         self.assertNotEqual(path.parent, Path.cwd())
 
     def test_apply_requires_hash_and_clients_closed_without_mutation(self) -> None:
@@ -648,8 +649,7 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(status["goal_status"], "complete")
 
         operation_dir = (
-            self.codex_home
-            / ".local-agent-record-janitor"
+            control_directory(self.codex_home)
             / "operations"
             / operation_id
         )
@@ -1177,7 +1177,8 @@ class AgentCliTests(unittest.TestCase):
         plan_path, document, rollout = self.make_plan("symlink-guard")
         outside = self.root / "outside-operation-store"
         outside.mkdir()
-        journal = self.codex_home / ".local-agent-record-janitor"
+        journal = control_directory(self.codex_home)
+        journal.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.symlink(outside, journal, target_is_directory=True)
         except (OSError, NotImplementedError) as exc:

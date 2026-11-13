@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import json
 import os
 import sqlite3
@@ -150,19 +152,14 @@ class CodexDesktopStateTests(unittest.TestCase):
         self.assertFalse(result.backup_directory.exists())
         self.assertFalse(any(s.present for s in read_desktop_state(self.codex_home, targets).threads.values()))
 
-    def test_cleanup_after_state_migration_uses_new_temporary_backup_path(self) -> None:
-        from local_agent_manager.mutation_guard import mutation_roots
-        from local_agent_manager.state_maintenance import run_state_command
-
-        with mutation_roots((self.codex_home,)):
-            pass
-        preview = run_state_command("migrate", self.codex_home)
-        run_state_command("migrate", self.codex_home, apply=True, approved_hash=preview["plan_sha256"])
+    def test_cleanup_keeps_temporary_backup_in_manager_state(self) -> None:
         state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
         result = execute_desktop_state_cleanup(self.codex_home,
             {THREAD_ID: state.snapshot_fingerprint}, client_inspector=lambda *_: ())
         self.assertEqual(result.deleted_catalog_rows, 1)
-        self.assertIn(".local-agent-manager", result.backup_directory.parts)
+        self.assertTrue(result.backup_directory.is_relative_to(control_directory(self.codex_home)))
+        self.assertEqual(sorted(path.name for path in self.codex_home.iterdir()
+                                if path.name.startswith(".local-agent")), [])
         self.assertFalse(result.backup_directory.exists())
         self.assertFalse(read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID].present)
 
@@ -251,7 +248,7 @@ class CodexDesktopStateTests(unittest.TestCase):
                 {THREAD_ID: state.snapshot_fingerprint}, client_inspector=lambda *_: ())
         self.assertEqual(self._database_dump(self.database), before[self.database])
         self.assertEqual(self._database_dump(second), external_change[0])
-        self.assertTrue(list((self.codex_home / ".local-agent-record-janitor" / "desktop-state-backups").iterdir()))
+        self.assertTrue(list((control_directory(self.codex_home) / "desktop-state-backups").iterdir()))
 
     def test_good_catalog_cannot_hide_invalid_second_known_catalog(self) -> None:
         second = self.database.with_name("codex.db")

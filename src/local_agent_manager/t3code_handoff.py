@@ -660,16 +660,10 @@ def start_t3code_handoff(
         t3_root = local_root(roots[0]) if roots else default_root()
 
         explicit_out = getattr(args, "out", None)
-        from .state_paths import routed_state_base
+        from .state_paths import HANDOFFS_DIRECTORY, manager_state_base
 
-        # A routed T3 store keeps its handoff evidence with its journals.
-        routed_base = routed_state_base((t3_root,))
-        handoff_dir = (
-            (routed_base / "handoffs" if routed_base is not None else
-             Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData/Local"))
-             / "local-agent-manager" / "handoffs")
-            / handoff_id
-        )
+        # Handoff evidence lives with all other manager operation state.
+        handoff_dir = manager_state_base() / HANDOFFS_DIRECTORY / handoff_id
         receipt_path = Path(explicit_out).expanduser().resolve() if explicit_out is not None else (handoff_dir / "receipt.json")
         if receipt_path.exists():
             raise HandoffError("receipt_output_exists", f"输出回执路径已存在：{receipt_path}", retryable=False)

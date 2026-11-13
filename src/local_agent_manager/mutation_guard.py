@@ -338,9 +338,16 @@ def frozen_operation_roots(document: Mapping[str, Any]) -> tuple[Path, ...]:
 
 
 def _operations_directory(root: Path) -> Path:
+    """The store's lock directory in manager state, never inside the store."""
+    from .state_paths import control_directory, ensure_state_base, validate_external_directory
+
     _validate_directory(root, _required_lstat(root))
-    current = root
-    for part in (".local-agent-record-janitor", "operations"):
+    base = ensure_state_base()
+    validate_external_directory(root, base)
+    control = control_directory(root)
+    expected = control / "operations"
+    current = base
+    for part in expected.relative_to(base).parts:
         candidate = current / part
         if _optional_lstat(candidate) is None:
             try:
@@ -350,8 +357,10 @@ def _operations_directory(root: Path) -> Path:
                 pass
         _validate_directory(candidate, _required_lstat(candidate))
         current = candidate
-    if current.resolve(strict=True) != root / ".local-agent-record-janitor" / "operations":
-        raise OperationStoreError("Mutation lock directory escapes the trusted root")
+    if current.resolve(strict=True) != expected:
+        raise OperationStoreError("Mutation lock directory escapes the manager state directory")
+    from .state_paths import record_store_root
+    record_store_root(root, control)
     return current
 
 

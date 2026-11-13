@@ -1181,14 +1181,10 @@ def _exclusive_home_lock(home: Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def _legacy_index_lock(home: Path) -> Iterator[None]:
-    from .state_paths import LEGACY_CONTROL
-
-    _ensure_control_directories(home)
-    # Preserve the original lock identity across journal/rollback migration.
-    # Older standalone index repair callers use this same OS lock.
-    legacy_control = home / LEGACY_CONTROL
-    _ensure_private_directory(home, legacy_control)
-    lock_path = legacy_control / _LOCK_FILE
+    # The index lock lives with the store's other manager state, outside the
+    # store itself.
+    control, _backup_root = _ensure_control_directories(home)
+    lock_path = control / _LOCK_FILE
     existing = _optional_lstat(lock_path, description="Janitor lock")
     if existing is not None:
         _validate_regular_unique(lock_path, existing)
@@ -1257,13 +1253,12 @@ def _unlock_descriptor(descriptor: int) -> None:
 
 
 def _ensure_control_directories(home: Path) -> tuple[Path, Path]:
-    from .state_paths import control_directory
-    control = control_directory(home)
+    from .mutation_guard import _operations_directory
+
+    # Creates and validates the store's manager-owned control directory.
+    control = _operations_directory(home).parent
+    _validate_existing_private_directory(control)
     backup_root = control / _BACKUP_DIRECTORY
-    if control.parent == home:
-        _ensure_private_directory(home, control)
-    else:
-        _validate_existing_private_directory(control)
     _ensure_private_directory(control, backup_root)
     return control, backup_root
 

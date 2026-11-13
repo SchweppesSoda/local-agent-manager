@@ -279,21 +279,23 @@ def helpers_fingerprint():
 
 
 def _journal_roots(profile):
-    from .state_paths import LEGACY_CONTROL, ROUTED_LAYOUT, control_directory, read_layout_marker
+    from .state_paths import LEGACY_CONTROL, control_directory
 
+    # New journals live in manager state; the old in-store location is read
+    # only to find history written by earlier versions.
     profile = Path(profile).resolve()
     legacy = ff.checked_path(profile, LEGACY_CONTROL + '/desktop-cleanups')
-    marker = read_layout_marker(profile)
-    if marker is not None and marker.get('schema_version') == ROUTED_LAYOUT:
-        return ff.checked_path(control_directory(profile), 'desktop-cleanups'), legacy
-    return (legacy,)
+    control = control_directory(profile)
+    current = ff.checked_path(control, 'desktop-cleanups') if control.is_dir() else control / 'desktop-cleanups'
+    return current, legacy
 
 
 def journal_root(profile, operation_id=None):
     roots = _journal_roots(profile)
     if operation_id is None:
         return roots[0]
-    present = [root for root in roots if ff.checked_path(root.parent, root.name + '/' + operation_id).exists()]
+    present = [root for root in roots
+               if root.parent.is_dir() and ff.checked_path(root.parent, root.name + '/' + operation_id).exists()]
     if len(present) > 1:
         fail('desktop_journal_duplicate')
     return present[0] if present else roots[0]

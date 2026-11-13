@@ -101,7 +101,8 @@ jobs:
           LARJ_REQUIRE_PASEO_BROWSER_TESTS: "1"
           # Keep fixtures on the runner's physical temp root, outside macOS /var aliases.
           TMPDIR: ${{ runner.temp }}
-        run: python -m unittest discover -s tests -v
+        # -t . loads tests as a package so tests/__init__.py isolates manager state.
+        run: python -m unittest discover -s tests -t . -v
 
       - name: Set up pinned Rust fingerprint oracle
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'

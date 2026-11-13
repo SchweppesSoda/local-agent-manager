@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import hashlib
 import json
 import os
@@ -263,22 +265,21 @@ class LegacyIndexTests(unittest.TestCase):
         self.assertFalse(result.manifest_path.exists())
         self.assertFalse(result.backup_path.parent.exists())
 
-    def test_repair_after_state_migration_uses_new_backup_path_and_original_index_lock(self) -> None:
+    def test_repair_keeps_backup_and_index_lock_in_manager_state(self) -> None:
         from local_agent_manager.mutation_guard import mutation_roots
         from local_agent_manager.state_maintenance import run_state_command
 
         with mutation_roots((self.codex_home,)):
             pass
-        preview = run_state_command("migrate", self.codex_home)
-        run_state_command("migrate", self.codex_home, apply=True, approved_hash=preview["plan_sha256"])
         index = self._write_index(b'{"id":"gone"}\n{"id":"live"}\n')
         inventory = inventory_legacy_index(self.codex_home)
         repaired = repair_legacy_index(self.codex_home, approved_snapshot_fingerprint=inventory.snapshot_fingerprint)
         self.assertEqual(index.read_bytes(), b'{"id":"live"}\n')
-        self.assertIn(".local-agent-manager", repaired.backup_path.parts)
+        self.assertTrue(repaired.backup_path.is_relative_to(control_directory(self.codex_home)))
         self.assertFalse(repaired.backup_path.exists())
-        self.assertTrue((self.codex_home / ".local-agent-record-janitor" / "legacy-index.lock").exists())
-        self.assertFalse((self.codex_home / ".local-agent-manager" / "legacy-index.lock").exists())
+        self.assertTrue((control_directory(self.codex_home) / "legacy-index.lock").exists())
+        self.assertFalse((self.codex_home / ".local-agent-record-janitor").exists())
+        self.assertFalse((self.codex_home / ".local-agent-manager").exists())
 
     def test_snapshot_drift_blocks_before_backup_or_replacement(self) -> None:
         original = b'{"id":"gone"}\n'
@@ -294,8 +295,7 @@ class LegacyIndexTests(unittest.TestCase):
 
         self.assertEqual(index.read_bytes(), original)
         backup_root = (
-            self.codex_home
-            / ".local-agent-record-janitor"
+            control_directory(self.codex_home)
             / "legacy-index-backups"
         )
         self.assertEqual(list(backup_root.iterdir()), [])
@@ -441,8 +441,7 @@ class LegacyIndexTests(unittest.TestCase):
         self.assertIsNotNone(error.backup_id)
         self.assertEqual(index.read_bytes(), original)
         backup = (
-            self.codex_home
-            / ".local-agent-record-janitor"
+            control_directory(self.codex_home)
             / "legacy-index-backups"
             / str(error.backup_id)
             / "session_index.jsonl.before"

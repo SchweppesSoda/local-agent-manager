@@ -160,8 +160,8 @@ class CodexAppServer:
                 "initialize",
                 {
                     "clientInfo": {
-                        "name": "local-agent-record-janitor",
-                        "title": "Local Agent Record Janitor",
+                        "name": "local-agent-manager",
+                        "title": "Local Agent Manager",
                         "version": self.client_version,
                     },
                     "capabilities": {},

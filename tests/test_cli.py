@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import json
 import os
 import subprocess
@@ -1200,8 +1202,7 @@ class MainFlowTests(unittest.TestCase):
             self.assertEqual(legacy_path.read_text(encoding="utf-8"), "")
             self.assertIn("批量清理完成：1 批，1 个动作", output.getvalue())
             backup_root = (
-                codex_home
-                / ".local-agent-record-janitor"
+                control_directory(codex_home)
                 / "legacy-index-backups"
             )
             self.assertFalse(backup_root.exists())

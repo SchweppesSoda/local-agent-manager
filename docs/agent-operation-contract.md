@@ -102,10 +102,12 @@ never offer `repair_index_path` or `quarantine_artifacts`. Shared-file rollback
 copies are temporary and removed immediately after successful verification; receipts are
 not backups. Recovery must prove the frozen state before completion or evidence removal.
 
-The permanent `operations/.mutation.lock` serializes cooperating processes for
-one trusted local root, from journal admission through mutation and result
-publication. Verification and receipt cleanup use the same root lock. Never
-delete or replace it. This root lock does not prove that an older writer holding
+The permanent `operations/.mutation.lock` in the root's directory of the
+manager state directory serializes cooperating processes for one trusted
+local root, from journal admission through mutation and result publication.
+Verification and receipt cleanup use the same root lock. Never delete or
+replace it. Manager state is never written inside an Agent store; old in-store
+history is moved out only through `state relocate`. This root lock does not prove that an older writer holding
 `apply.lock` has exited; that operation remains unknown even with a terminal
 receipt. Unknown journals have no expiry. Missing or untrusted journal scope
 blocks the whole affected root. Exact frozen IDs and artifact paths allow

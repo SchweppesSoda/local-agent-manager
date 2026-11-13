@@ -20,9 +20,8 @@ from .operation_store import (
     plan_sha256, strict_json_load, validate_operation_id,
 )
 from .state_paths import (
-    LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL, RELOCATION_DIRECTORY, RELOCATION_MANIFEST, ROUTED_LAYOUT,
-    control_directories, control_directory, operation_entries, read_layout_marker, relocation_recovery,
-    routed_control, validate_external_directory,
+    LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL, RELOCATION_DIRECTORY, RELOCATION_MANIFEST,
+    control_directories, control_directory, manager_state_base, operation_entries, relocation_recovery,
 )
 
 _DETAIL_FILES = {"plan.json", "events.jsonl", "state.json", "result.json"}
@@ -32,9 +31,25 @@ _RELOCATION = "lam.state-relocation-plan.v1"
 
 
 @contextmanager
-def _existing_index_lock(root: Path):
-    """Exclude older index writers without changing their lock's payload."""
-    path = root / LEGACY_CONTROL / "legacy-index.lock"
+def _existing_index_lock(root: Path, *, include_store: bool = True):
+    """Exclude current and older index writers without changing lock payloads.
+
+    Relocation removes the old in-store lock itself and proves it is free
+    immediately before unlinking, so it does not hold that file open.
+    """
+    from contextlib import ExitStack
+
+    paths = [control_directory(root) / "legacy-index.lock"]
+    if include_store:
+        paths.append(root / LEGACY_CONTROL / "legacy-index.lock")
+    with ExitStack() as stack:
+        for path in paths:
+            stack.enter_context(_held_index_lock(path))
+        yield
+
+
+@contextmanager
+def _held_index_lock(path: Path):
     before = _optional_lstat(path)
     if before is None:
         yield
@@ -153,17 +168,21 @@ def _inspect_locked(root: Path) -> dict:
         for path in sorted(location.iterdir()):
             if path.name == "operations":
                 continue
-            if path.name == "legacy-index.lock" and location == root / LEGACY_CONTROL:
+            if path.name == "legacy-index.lock":
                 _validate_regular_file(path, _required_lstat(path))
+                continue
+            if location != control and path.name == "desktop-cleanups":
                 continue
             extras.append(path.name)
             if path.name in _ROLLBACK_DIRECTORIES:
                 _validate_directory(path, _required_lstat(path))
                 if location == control and not any(path.iterdir()):
                     empty_directories.append(path.name)
+    historical = [str(path) for path in control_directories(root)[1:] if path.exists()]
     return {"schema_version": "lam.state-inventory.v1", "root": str(root),
             "control_directory": str(control), "coordination_lock": str(
-                root / LEGACY_CONTROL / "operations" / ".mutation.lock"),
+                control / "operations" / ".mutation.lock"),
+            "historical_controls": historical,
             "operations": rows, "unmanaged_entries": extras, "empty_directories": empty_directories,
             "operation_count": len(rows), "bytes": sum(row.get("bytes", 0) for row in rows)}
 
@@ -234,154 +253,6 @@ def _ensure_plain_directory(path: Path) -> None:
     _validate_directory(path, _required_lstat(path))
 
 
-def _validate_migration_contents(root: Path, plan: dict) -> list[tuple[Path, Path]]:
-    source = root / LEGACY_CONTROL / "operations"
-    destination = root / MANAGER_CONTROL / "operations"
-    expected = {item["operation_id"] for item in plan["operations"]}
-    if {path.name for path in (root / LEGACY_CONTROL).iterdir()} - {"operations", "legacy-index.lock"}:
-        raise OperationStoreError("Legacy rollback or unrecognized state must be resolved before migration")
-    if {path.name for path in source.iterdir()} - expected - {".mutation.lock", LAYOUT_MARKER}:
-        raise OperationStoreError("Legacy operations changed during migration")
-    if _optional_lstat(root / MANAGER_CONTROL) is not None:
-        _validate_directory(root / MANAGER_CONTROL, _required_lstat(root / MANAGER_CONTROL))
-        if {path.name for path in (root / MANAGER_CONTROL).iterdir()} - {"operations"}:
-            raise OperationStoreError("Migration destination contains unexpected state")
-    if _optional_lstat(destination) is not None:
-        _validate_directory(destination, _required_lstat(destination))
-        if {path.name for path in destination.iterdir()} - expected:
-            raise OperationStoreError("Migration destination contains conflicting operations")
-    moves = []
-    for row in plan["operations"]:
-        operation_id = validate_operation_id(row["operation_id"])
-        old, new = source / operation_id, destination / operation_id
-        old_exists, new_exists = _optional_lstat(old) is not None, _optional_lstat(new) is not None
-        if old_exists == new_exists:
-            raise OperationStoreError(f"Migration requires exactly one copy of {operation_id}")
-        current = old if old_exists else new
-        if _journal_snapshot(current) != row["files"]:
-            raise OperationStoreError(f"Migration evidence changed for {operation_id}")
-        if old_exists:
-            moves.append((old, new))
-    return moves
-
-
-def _migrate_locked(root: Path, *, apply: bool = False, approved_hash: str | None = None) -> dict:
-    marker = read_layout_marker(root)
-    if marker is not None:
-        if marker.get("schema_version") == ROUTED_LAYOUT:
-            raise OperationStoreError("This store already uses an external journal location")
-        if marker["phase"] == "complete":
-            control_directory(root)
-            return {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "migrate",
-                    "plan_sha256": marker["migration_plan_sha256"], "modified": False, "phase": "complete"}
-        plan = marker["plan"]
-    else:
-        plan = _maintenance_plan(root, "migration")
-    blockers = [row["operation_id"] for row in plan["operations"] if not row.get("trusted_terminal")]
-    if plan["unmanaged_entries"]:
-        blockers.extend(plan["unmanaged_entries"])
-    result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "migrate",
-              "plan": plan, "plan_sha256": plan["plan_sha256"], "modified": False,
-              "phase": "moving" if marker else "planned", "blockers": blockers,
-              "retained_legacy_entries": ["operations/.mutation.lock", "operations/" + LAYOUT_MARKER]}
-    if _optional_lstat(root / LEGACY_CONTROL / "legacy-index.lock") is not None:
-        result["retained_legacy_entries"].append("legacy-index.lock")
-    if blockers:
-        result["phase"] = "blocked"
-        return result
-    # Validate both sides before publishing an intent or moving the first journal.
-    moves = _validate_migration_contents(root, plan)
-    if not apply:
-        return result
-    _require_approval(plan, approved_hash)
-    marker_path = root / LEGACY_CONTROL / "operations" / LAYOUT_MARKER
-    if marker is None:
-        marker = {"schema_version": "lam.state-layout.v1", "phase": "moving", "plan": plan}
-        atomic_write_json(marker_path, marker)
-    _ensure_plain_directory(root / MANAGER_CONTROL)
-    _ensure_plain_directory(root / MANAGER_CONTROL / "operations")
-    for old, new in moves:
-        os.rename(old, new)
-        _fsync_directory(old.parent)
-        _fsync_directory(new.parent)
-    if _validate_migration_contents(root, plan):
-        raise OperationStoreError("Migration verification found unmoved journals")
-    # Retain only layout identity after success. Historical operation IDs and
-    # per-file snapshots are needed for interrupted moves, not permanent layout.
-    marker = {"schema_version": "lam.state-layout.v1", "phase": "complete", "root": str(root),
-              "destination": MANAGER_CONTROL, "migration_plan_sha256": plan["plan_sha256"]}
-    marker["plan_sha256"] = plan_sha256(marker)
-    atomic_write_json(marker_path, marker)
-    control_directory(root)
-    result.update(modified=True, phase="complete")
-    return result
-
-
-def _routed_destination_journals(target: Path) -> list[str]:
-    """Validated operation IDs already present in a store's routed location."""
-    for path in (target.parent, target, target / "operations"):
-        info = _optional_lstat(path)
-        if info is None:
-            return []
-        _validate_directory(path, info)
-        permitted = {target.name} if path == target.parent else {"operations"} if path == target else None
-        if permitted is not None and {entry.name for entry in path.iterdir()} - permitted:
-            raise OperationStoreError("The new journal location already contains state")
-    names = []
-    for entry in sorted((target / "operations").iterdir()):
-        try:
-            validate_operation_id(entry.name)
-        except (ValueError, OperationStoreError) as exc:
-            raise OperationStoreError("The routed journal location contains unmanaged state") from exc
-        _validate_directory(entry, _required_lstat(entry))
-        names.append(entry.name)
-    return names
-
-
-def _route_locked(root: Path, directory: Path, *, apply: bool, approved_hash: str | None) -> dict:
-    validate_external_directory(root, directory)
-    source = control_directory(root)
-    target = routed_control(root, directory)
-    marker = read_layout_marker(root)
-    result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "route",
-              "phase": "planned", "modified": False, "root": str(root), "destination": str(target)}
-    if marker and marker.get("schema_version") == ROUTED_LAYOUT:
-        if source != target:
-            raise OperationStoreError("The store is already routed to a different directory")
-        return {**result, "phase": "complete"}
-    base_info = _required_lstat(directory)
-    base_identity = [base_info.st_dev, base_info.st_ino]
-    plan = {"schema_version": "lam.state-route-plan.v1", "root": str(root), "source": source.name,
-            "base_identity": base_identity,
-            "base": str(directory), "destination": str(target), "previous_layout_sha256": marker and marker["plan_sha256"]}
-    existing = _routed_destination_journals(target)
-    if existing:
-        # The destination name is derived from this root's identity. When the
-        # store lost its routing marker, re-attach the journals already
-        # written there instead of starting a second history in the store.
-        plan["existing_operations"] = existing
-    result.update(plan=plan, plan_sha256=plan_sha256(plan))
-    if not apply:
-        return result
-    _require_approval(result, approved_hash)
-    if _routed_destination_journals(target) != existing:
-        raise OperationStoreError("The routed journal location changed after the approved preview")
-    for path in (target.parent, target, target / "operations"):
-        _ensure_plain_directory(path)
-    validate_external_directory(root, target)
-    current_base = _required_lstat(directory)
-    if [current_base.st_dev, current_base.st_ino] != base_identity:
-        raise OperationStoreError("External journal base directory changed")
-    info = _required_lstat(target)
-    routing = {"schema_version": ROUTED_LAYOUT, "root": str(root), "source": source.name,
-               "base": str(directory), "destination": str(target), "identity": [info.st_dev, info.st_ino]}
-    routing["plan_sha256"] = plan_sha256(routing)
-    atomic_write_json(root / LEGACY_CONTROL / "operations" / LAYOUT_MARKER, routing)
-    if control_directory(root) != target:
-        raise OperationStoreError("External journal routing could not be verified")
-    return {**result, "phase": "complete", "modified": True}
-
-
 def _publish_journal(old: Path, staged: Path, destination: Path, expected: list[dict]) -> None:
     """Publish a verified destination before removing any original file."""
     if _optional_lstat(destination) is None:
@@ -432,36 +303,111 @@ def _publish_journal(old: Path, staged: Path, destination: Path, expected: list[
         _fsync_directory(old.parent)
 
 
+_REMOVABLE_FILES = {("operations", ".mutation.lock"), ("operations", LAYOUT_MARKER), ("legacy-index.lock",)}
+_REMOVABLE_DIRECTORIES = {("operations",), ("desktop-cleanups",), *((name,) for name in _ROLLBACK_DIRECTORIES)}
+
+
+def _store_control_manifest(control: Path, moving: set[str]) -> list[dict] | None:
+    """Entries of an old in-store control directory that may be removed.
+
+    Only coordination files (lock, layout marker, legacy index lock) and empty
+    containers qualify; journals planned to move are excluded. Anything else
+    keeps the directory in place.
+    """
+    entries: list[dict] = []
+    for current, directories, files in os.walk(control, followlinks=False):
+        relative = Path(current).relative_to(control).parts
+        for name in list(directories):
+            path = Path(current) / name
+            _validate_directory(path, _required_lstat(path))
+            parts = (*relative, name)
+            if parts[:1] == ("operations",) and len(parts) == 2 and name in moving:
+                directories.remove(name)
+                continue
+            if parts not in _REMOVABLE_DIRECTORIES:
+                return None
+            entries.append({"path": "/".join(parts), "kind": "directory"})
+        for name in files:
+            path = Path(current) / name
+            info = _required_lstat(path)
+            _validate_regular_file(path, info)
+            parts = (*relative, name)
+            if parts not in _REMOVABLE_FILES:
+                return None
+            entries.append({"path": "/".join(parts), "kind": "file", "size": info.st_size})
+    return sorted(entries, key=lambda item: item["path"])
+
+
+def _remove_store_control(control: Path, manifest: list[dict]) -> None:
+    if _store_control_manifest(control, set()) != manifest:
+        raise OperationStoreError(f"Old in-store state changed after the approved preview: {control}")
+    for item in manifest:
+        if item["kind"] != "file":
+            continue
+        path = control / item["path"]
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        fd = os.open(path, flags)
+        try:
+            try:
+                _os_lock(fd)
+            except OSError as exc:
+                raise MutationRootLockedError(f"An older manager process still holds {path}") from exc
+            _os_lock(fd, unlock=True)
+        finally:
+            os.close(fd)
+        path.unlink()
+    for item in sorted((item for item in manifest if item["kind"] == "directory"),
+                       key=lambda item: -item["path"].count("/")):
+        (control / item["path"]).rmdir()
+    control.rmdir()
+    _fsync_directory(control.parent)
+
+
 def _relocate_locked(root: Path, *, apply: bool, approved_hash: str | None) -> dict:
-    controls = control_directories(root)
-    if len(controls) != 2:
-        raise OperationStoreError("Configure an external journal location with state route first")
-    destination, source = controls
+    """Move old journals into manager state and remove old in-store directories."""
+    destination, *sources = control_directories(root)
     staging = destination / RELOCATION_DIRECTORY
     manifest = staging / RELOCATION_MANIFEST
     if _optional_lstat(staging) is not None:
         _validate_directory(staging, _required_lstat(staging))
-    marker = read_layout_marker(root)
-    binding = {"schema_version": _RELOCATION, "root": str(root), "source": str(source),
-               "destination": str(destination), "routing_sha256": marker["plan_sha256"]}
+    binding = {"schema_version": _RELOCATION, "root": str(root), "destination": str(destination),
+               "sources": [str(source) for source in sources]}
     resumed = _optional_lstat(manifest) is not None
     if resumed:
         _validate_regular_file(manifest, _required_lstat(manifest))
         plan = strict_json_load(manifest)
         if (not isinstance(plan, dict) or any(plan.get(key) != value for key, value in binding.items())
                 or not isinstance(plan.get("operations"), list) or not isinstance(plan.get("retained"), list)
+                or not isinstance(plan.get("remove_controls"), list)
                 or plan.get("plan_sha256") != plan_sha256(plan)):
             raise OperationStoreError("Relocation manifest binding or hash is invalid")
     else:
-        rows = [row for row in _inspect_locked(root)["operations"]
-                if _optional_lstat(source / "operations" / row["operation_id"]) is not None]
-        plan = {**binding, "operations": [{"operation_id": row["operation_id"], "files": row["files"]}
-                    for row in rows if row["trusted_terminal"]],
-                "retained": [row["operation_id"] for row in rows if not row["trusted_terminal"]]}
+        rows = []
+        for row in _inspect_locked(root)["operations"]:
+            source = next((item for item in sources
+                           if _optional_lstat(item / "operations" / row["operation_id"]) is not None), None)
+            if source is not None:
+                rows.append({**row, "source": str(source)})
+        moving = {row["operation_id"] for row in rows if row["trusted_terminal"]}
+        removable = []
+        for source in sources:
+            if source.parent != root:
+                continue
+            entries = _store_control_manifest(source, moving)
+            if entries is not None:
+                removable.append({"path": str(source), "entries": entries})
+        plan = {**binding,
+                "operations": [{"operation_id": row["operation_id"], "source": row["source"], "files": row["files"]}
+                               for row in rows if row["trusted_terminal"]],
+                "retained": [row["operation_id"] for row in rows if not row["trusted_terminal"]],
+                "remove_controls": removable,
+                "retained_controls": [str(source) for source in sources
+                                      if str(source) not in {item["path"] for item in removable}]}
         plan["plan_sha256"] = plan_sha256(plan)
     entries = {}
     for row in plan["operations"]:
-        if not isinstance(row, dict) or not isinstance(row.get("operation_id"), str) or not isinstance(row.get("files"), list):
+        if (not isinstance(row, dict) or not isinstance(row.get("operation_id"), str)
+                or not isinstance(row.get("files"), list) or row.get("source") not in binding["sources"]):
             raise OperationStoreError("Relocation manifest contains an invalid journal entry")
         operation_id = validate_operation_id(row["operation_id"])
         files = row["files"]
@@ -471,20 +417,23 @@ def _relocate_locked(root: Path, *, apply: bool, approved_hash: str | None) -> d
         if (operation_id in entries or not names or len(names) != len(files)
                 or names - (_JOURNAL_FILES - {"apply.lock"})):
             raise OperationStoreError("Relocation manifest contains unsupported journal members")
-        entries[operation_id] = files
+        entries[operation_id] = (Path(row["source"]), files)
     if _optional_lstat(staging) is not None and {p.name for p in staging.iterdir()} - {RELOCATION_MANIFEST, *entries}:
         raise OperationStoreError("Relocation staging directory contains unexpected state")
     result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": "relocate",
               "phase": "moving" if resumed else "planned", "modified": False, "plan": plan,
-              "plan_sha256": plan["plan_sha256"], "retained": plan["retained"], "completed": []}
+              "plan_sha256": plan["plan_sha256"], "retained": plan["retained"], "completed": [],
+              "removed_controls": []}
     if not apply:
         return result
     _require_approval(result, approved_hash)
     if entries:
+        for path in (destination.parent, destination, destination / "operations"):
+            _ensure_plain_directory(path)
         _ensure_plain_directory(staging)
         if not resumed:
             atomic_write_json(manifest, plan)
-        for operation_id, files in entries.items():
+        for operation_id, (source, files) in entries.items():
             old = source / "operations" / operation_id
             new = destination / "operations" / operation_id
             _publish_journal(old, staging / operation_id, new, files)
@@ -494,26 +443,40 @@ def _relocate_locked(root: Path, *, apply: bool, approved_hash: str | None) -> d
         manifest.unlink()
         staging.rmdir()
         _fsync_directory(destination)
-    return {**result, "phase": "complete", "modified": bool(entries)}
+    for item in plan["remove_controls"]:
+        control = Path(item["path"])
+        if control.parent != root or control.name not in (LEGACY_CONTROL, MANAGER_CONTROL):
+            raise OperationStoreError("Relocation may only remove old in-store control directories")
+        if _optional_lstat(control) is None:
+            continue
+        _remove_store_control(control, item["entries"])
+        result["removed_controls"].append(str(control))
+    modified = bool(entries) or bool(result["removed_controls"])
+    return {**result, "phase": "complete", "modified": modified}
 
 
 def run_state_command(command: str, root: Path, *, apply: bool = False,
                       approved_hash: str | None = None, directory: Path | None = None) -> dict:
+    if command in {"migrate", "route"}:
+        raise OperationStoreError(
+            f"state {command} is retired: manager state lives in {manager_state_base()}; "
+            "use state relocate to move old in-store history there")
     # Validate the explicit physical home before creating any coordination file.
     root = Path(canonical_existing_path_key(root.expanduser().resolve(strict=True)))
     _validate_directory(root, _required_lstat(root))
-    exists = any(_optional_lstat(root / name) is not None for name in (LEGACY_CONTROL, MANAGER_CONTROL))
-    if not exists and command == "migrate":
-        raise OperationStoreError("No legacy state exists to migrate")
-    with mutation_roots((root,)) if exists or (command == "route" and apply) else nullcontext(), _existing_index_lock(root):
+    # Inventory and relocate must be able to see an interrupted relocation.
+    recovering = relocation_recovery(root) if command in {"inventory", "relocate"} else nullcontext()
+    with recovering:
+        exists = any(_optional_lstat(path) is not None for path in control_directories(root))
+        return _run_state_locked(command, root, exists, apply=apply, approved_hash=approved_hash)
+
+
+def _run_state_locked(command: str, root: Path, exists: bool, *, apply: bool, approved_hash: str | None) -> dict:
+    with (mutation_roots((root,)) if exists else nullcontext(),
+          _existing_index_lock(root, include_store=command != "relocate")):
         if command == "inventory":
-            marker = read_layout_marker(root)
-            if marker is not None and marker.get("phase") == "moving":
-                return {"schema_version": "lam.state-inventory.v1", "root": str(root),
-                        "phase": "moving", "plan_sha256": marker["plan"]["plan_sha256"],
-                        "message": "Resume state migrate using this original hash"}
-            if (marker is not None and marker.get("schema_version") == ROUTED_LAYOUT
-                    and _optional_lstat(Path(marker["destination"]) / RELOCATION_DIRECTORY / RELOCATION_MANIFEST) is not None):
+            current = control_directory(root)
+            if _optional_lstat(current / RELOCATION_DIRECTORY / RELOCATION_MANIFEST) is not None:
                 with relocation_recovery(root):
                     report = _relocate_locked(root, apply=False, approved_hash=None)
                 return {"schema_version": "lam.state-inventory.v1", "root": str(root),
@@ -522,10 +485,6 @@ def run_state_command(command: str, root: Path, *, apply: bool = False,
             return _inspect_locked(root)
         if command == "cleanup":
             return _cleanup_locked(root, apply=apply, approved_hash=approved_hash)
-        if command == "migrate":
-            return _migrate_locked(root, apply=apply, approved_hash=approved_hash)
-        if command == "route" and directory is not None:
-            return _route_locked(root, directory.expanduser().absolute(), apply=apply, approved_hash=approved_hash)
         if command == "relocate":
             with relocation_recovery(root):
                 return _relocate_locked(root, apply=apply, approved_hash=approved_hash)
@@ -535,24 +494,24 @@ def run_state_command(command: str, root: Path, *, apply: bool = False,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="local-agent-manager state", description="Inspect and maintain manager recovery metadata")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("inventory", "cleanup", "migrate", "route", "relocate"):
-        child = commands.add_parser(command)
+    for command in ("inventory", "cleanup", "relocate", "migrate", "route"):
+        child = commands.add_parser(command, help=("retired" if command in {"migrate", "route"} else None))
         child.add_argument("--root", type=Path, required=True, help="Exact native or frontend store root")
         child.add_argument("--json", action="store_true")
         if command != "inventory":
             child.add_argument("--apply", action="store_true", help="Apply the reviewed maintenance plan")
             child.add_argument("--plan-sha256", help="Hash returned by this command's preview")
         if command == "route":
-            child.add_argument("--directory", type=Path, required=True, help="Existing external state directory")
+            child.add_argument("--directory", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         result = run_state_command(args.command, args.root, apply=getattr(args, "apply", False),
-                                   approved_hash=getattr(args, "plan_sha256", None), directory=getattr(args, "directory", None))
+                                   approved_hash=getattr(args, "plan_sha256", None))
         code = 3 if result.get("phase") in {"blocked", "moving"} else 0
     except (OSError, ValueError, OperationStoreError) as exc:
         result = {"schema_version": "lam.state-result.v1", "command": "state", "subcommand": args.command,
                   "phase": "blocked", "modified": None, "error": str(exc),
-                  "message": "Inspect state inventory and re-plan; an interrupted migration must resume with its original hash"}
+                  "message": "Inspect state inventory and re-plan; an interrupted relocation must resume with its original hash"}
         code = 3
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return code

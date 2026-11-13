@@ -848,7 +848,7 @@ class _JanitorWindow:
         self.operation: str | None = None
         self.closed = False
 
-        self.root.title("Local Agent Record Janitor — Codex 对话管理")
+        self.root.title("Local Agent Manager — Codex 对话管理")
         self.root.geometry("1180x760")
         self.root.minsize(880, 600)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -1079,7 +1079,7 @@ class _JanitorWindow:
 
         self.worker = threading.Thread(
             target=work,
-            name=f"local-agent-record-janitor-{operation}",
+            name=f"local-agent-manager-{operation}",
             daemon=False,
         )
         self.worker.start()

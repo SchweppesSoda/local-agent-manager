@@ -1,7 +1,9 @@
-"""Select an explicitly configured journal layout without changing its OS lock.
+"""Locate manager-owned operation state outside every Agent data directory.
 
-The legacy lock remains at its original inode and pathname. A regular marker
-inside its operations directory makes older sibling scanners fail closed.
+Each physical store gets its own directory below one manager state base.
+Older in-store layouts (``.local-agent-record-janitor``/``.local-agent-manager``)
+and routing markers are read only as history until ``state relocate`` moves
+their journals out and removes them.
 """
 from __future__ import annotations
 
@@ -125,83 +127,162 @@ def read_layout_marker(root: Path) -> dict | None:
     return marker
 
 
-def control_directory(root: Path) -> Path:
-    from .operation_store import (
-        OperationStoreError, _optional_lstat, _required_lstat, _validate_directory,
-    )
+STATE_ENVIRONMENT = "LAM_STATE_DIR"
+CHECKOUT_STATE = ".agent-manager-state"
+USER_STATE = "local-agent-manager"
+LEGACY_USER_STATE = "local-agent-record-janitor"
+PLANS_DIRECTORY = "plans"
+HANDOFFS_DIRECTORY = "handoffs"
+_HISTORICAL_CONTROLS = (LEGACY_CONTROL, MANAGER_CONTROL)
+
+
+def user_state_root() -> Path:
+    """The per-user application state root (LOCALAPPDATA / XDG_STATE_HOME)."""
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"])
+    if os.environ.get("XDG_STATE_HOME"):
+        return Path(os.environ["XDG_STATE_HOME"])
+    return Path.home() / ("AppData/Local" if os.name == "nt" else ".local/state")
+
+
+def source_checkout() -> Path | None:
+    """The local-agent-manager checkout this package runs from, if any."""
+    package = Path(__file__).resolve().parent
+    root = package.parent.parent
+    project = root / "pyproject.toml"
+    if package.parent.name != "src" or not project.is_file():
+        return None
+    try:
+        text = project.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return root if re.search(r'^name\s*=\s*"local-agent-manager"\s*$', text, re.MULTILINE) else None
+
+
+def manager_state_base() -> Path:
+    """One manager-owned directory for all operation state.
+
+    Journals, locks, rollback copies, plans, run receipts and handoff evidence
+    live here, partitioned per physical store. Nothing is written inside an
+    Agent's own data directory. ``LAM_STATE_DIR`` selects the directory
+    explicitly; a source checkout uses its ignored ``.agent-manager-state``;
+    an installed package uses the per-user ``local-agent-manager/state``.
+    """
+    configured = os.environ.get(STATE_ENVIRONMENT)
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            from .operation_store import OperationStoreError
+            raise OperationStoreError(f"{STATE_ENVIRONMENT} must be an absolute path")
+        return path.absolute()
+    checkout = source_checkout()
+    if checkout is not None:
+        return checkout / CHECKOUT_STATE
+    return user_state_root() / USER_STATE / "state"
+
+
+STORE_RECORD = "store.json"
+STORE_RECORD_SCHEMA = "lam.state-store.v1"
+
+
+def record_store_root(root: Path, control: Path) -> None:
+    """Name the physical store a per-store state directory belongs to."""
+    from .operation_store import OperationStoreError, _optional_lstat, write_new_json
+
+    record = control.parent / STORE_RECORD
+    if _optional_lstat(record) is None:
+        try:
+            # Exclusive create: the record is written once and never replaced.
+            write_new_json(record, {"schema_version": STORE_RECORD_SCHEMA, "root": str(root)})
+        except OperationStoreError:
+            if _optional_lstat(record) is None:
+                raise
+
+
+def store_root_for_control(control: Path) -> Path | None:
+    """Map a manager-state control directory back to its store root."""
+    from .operation_store import _optional_lstat, strict_json_load
+
+    record = control.parent / STORE_RECORD
+    if _optional_lstat(record) is None:
+        return None
+    value = strict_json_load(record)
+    if not isinstance(value, dict) or value.get("schema_version") != STORE_RECORD_SCHEMA:
+        return None
+    root = Path(str(value.get("root", "")))
+    if not root.is_absolute() or not root.is_dir():
+        return None
+    try:
+        if os.path.normcase(str(routed_control(root, control.parent.parent))) != os.path.normcase(str(control)):
+            return None
+    except OSError:
+        return None
+    return root
+
+
+def journal_store_root(control: Path) -> Path:
+    """The store root for a journal control directory, new or historical."""
+    return store_root_for_control(control) or control.parent
+
+
+def ensure_state_base() -> Path:
+    from .operation_store import _required_lstat, _validate_directory
+
+    base = manager_state_base()
+    base.mkdir(parents=True, exist_ok=True)
+    _validate_directory(base, _required_lstat(base))
+    return base
+
+
+def _historical_marker(root: Path) -> dict | None:
+    """Validate an old in-store layout marker; unfinished moves fail closed."""
+    from .operation_store import OperationStoreError, _optional_lstat
 
     marker = read_layout_marker(root)
     if marker is None:
-        if _optional_lstat(root / MANAGER_CONTROL) is not None:
-            raise OperationStoreError("Unmarked manager state directory requires state migrate inspection")
-        return root / LEGACY_CONTROL
+        return None
     if marker.get("schema_version") == ROUTED_LAYOUT:
-        if marker["source"] == MANAGER_CONTROL:
-            _validate_directory(root / MANAGER_CONTROL, _required_lstat(root / MANAGER_CONTROL))
-            legacy = root / LEGACY_CONTROL
-            if {path.name for path in (legacy / "operations").iterdir()} != {".mutation.lock", LAYOUT_MARKER}:
-                raise OperationStoreError("Legacy state changed after migration; preserve it for recovery")
-            if {path.name for path in legacy.iterdir()} - {"operations", "legacy-index.lock"}:
-                raise OperationStoreError("Legacy rollback state appeared after migration; preserve it for recovery")
-        elif _optional_lstat(root / MANAGER_CONTROL) is not None:
-            raise OperationStoreError("Unmarked manager state directory appeared after routing")
         destination = Path(marker["destination"])
         if (_relocation_root.get() != root
                 and _optional_lstat(destination / RELOCATION_DIRECTORY / RELOCATION_MANIFEST) is not None):
             raise OperationStoreError("Journal relocation is incomplete; resume state relocate with its original hash")
-        return destination
-    if marker["phase"] != "complete":
-        raise OperationStoreError("State migration is incomplete; resume state migrate with its original hash")
-    legacy = root / LEGACY_CONTROL / "operations"
-    if {path.name for path in legacy.iterdir()} != {".mutation.lock", LAYOUT_MARKER}:
-        raise OperationStoreError("Legacy state changed after migration; preserve it for recovery")
-    if {path.name for path in legacy.parent.iterdir()} - {"operations", "legacy-index.lock"}:
-        raise OperationStoreError("Legacy rollback state appeared after migration; preserve it for recovery")
-    destination = root / MANAGER_CONTROL
-    for path in (destination, destination / "operations"):
-        _validate_directory(path, _required_lstat(path))
-    return destination
+        return marker
+    if marker.get("phase") != "complete":
+        raise OperationStoreError("An old in-store state migration is incomplete; preserve it for recovery")
+    return marker
 
 
-PLANS_DIRECTORY = "plans"
+def control_directory(root: Path) -> Path:
+    """The manager-owned control directory for one physical store."""
+    from .operation_store import OperationStoreError, _optional_lstat
+
+    _historical_marker(root)
+    target = routed_control(root, manager_state_base())
+    if _relocation_root.get() != root and _optional_lstat(target / RELOCATION_DIRECTORY / RELOCATION_MANIFEST) is not None:
+        raise OperationStoreError("Journal relocation is incomplete; resume state relocate with its original hash")
+    return target
 
 
-def routed_state_base(roots) -> Path | None:
-    """Return the shared external base when every store root routes to it.
+def historical_controls(root: Path) -> tuple[Path, ...]:
+    """Old journal locations that may still hold history for this store."""
+    from .operation_store import _optional_lstat
 
-    Top-level plans and run receipts follow the routed journal location so a
-    configured project state directory keeps all operation evidence together.
-    A root without routing, a missing root or routes to different bases keep
-    the per-user default; an invalid routing marker fails closed.
-    """
-    bases: dict[str, Path] = {}
-    roots = tuple(roots)
-    if not roots:
-        return None
-    for root in roots:
-        root = Path(root)
-        if not root.is_dir():
-            return None
-        marker = read_layout_marker(root)
-        if marker is None or marker.get("schema_version") != ROUTED_LAYOUT:
-            return None
-        base = Path(marker["base"])
-        bases[os.path.normcase(str(base))] = base
-    return next(iter(bases.values())) if len(bases) == 1 else None
-
-
-def routed_plans_directory(roots) -> Path | None:
-    base = routed_state_base(roots)
-    return None if base is None else base / PLANS_DIRECTORY
+    current = control_directory(root)
+    found: list[Path] = []
+    marker = _historical_marker(root)
+    if marker is not None and marker.get("schema_version") == ROUTED_LAYOUT:
+        destination = Path(marker["destination"])
+        if os.path.normcase(str(destination)) != os.path.normcase(str(current)) and _optional_lstat(destination) is not None:
+            found.append(destination)
+    for name in _HISTORICAL_CONTROLS:
+        if _optional_lstat(root / name) is not None:
+            found.append(root / name)
+    return tuple(found)
 
 
 def control_directories(root: Path) -> tuple[Path, ...]:
-    """Find both the configured write location and any in-place historical journals."""
-    current = control_directory(root)
-    marker = read_layout_marker(root)
-    if marker is not None and marker.get("schema_version") == ROUTED_LAYOUT:
-        return current, root / marker["source"]
-    return (current,)
+    """The current write location first, then any historical journal locations."""
+    return (control_directory(root), *historical_controls(root))
 
 
 def operation_control(root: Path, operation_id: str) -> Path:
@@ -232,7 +313,7 @@ def operation_entries(root: Path):
         if info is not None:
             _validate_directory(directory, info)
             for path in sorted(directory.iterdir()):
-                if path.name == ".mutation.lock" or (path.name == LAYOUT_MARKER and control == root / LEGACY_CONTROL):
+                if path.name == ".mutation.lock" or (path.name == LAYOUT_MARKER and control.parent == root):
                     continue
                 key = os.path.normcase(path.name)
                 if key in entries:
@@ -247,7 +328,7 @@ def relocated_plan_path(path: Path) -> Path:
     if (path.name == "plan.json" and path.parent.parent.name == "operations"
             and path.parent.parent.parent.name in {LEGACY_CONTROL, MANAGER_CONTROL}
             and not path.exists()):
-        root = path.parent.parent.parent.parent.resolve(strict=True)
+        root = journal_store_root(path.parent.parent.parent).resolve(strict=True)
         control = operation_control(root, path.parent.name)
         return control / "operations" / path.parent.name / "plan.json"
     return path

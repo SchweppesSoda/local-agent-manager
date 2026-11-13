@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import sqlite3
 import tempfile
 import unittest
@@ -273,8 +275,7 @@ class RelationCleanupTests(unittest.TestCase):
             1,
         )
         operation = (
-            self.codex_home
-            / ".local-agent-record-janitor"
+            control_directory(self.codex_home)
             / "operations"
             / plan["operation_id"]
         )

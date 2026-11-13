@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import json
 import tempfile
 import unittest
@@ -180,8 +182,7 @@ class SessionCleanupServiceTests(unittest.TestCase):
         self.assertNotIn("SECRET_OTHER_PI", rendered)
         operation_id = str(document["operation_id"])
         operation = (
-            agent_dir
-            / ".local-agent-record-janitor"
+            control_directory(agent_dir)
             / "operations"
             / operation_id
         )

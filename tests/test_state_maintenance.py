@@ -22,7 +22,7 @@ from local_agent_manager.mutation_guard import (
 from local_agent_manager.operation_coordinator import _find_operation_plan
 from local_agent_manager.operation_store import OperationStore, OperationStoreError, _file_identity, _receipt_sha256
 from local_agent_manager.state_maintenance import run_state_command
-from local_agent_manager.state_paths import LAYOUT_MARKER, LEGACY_CONTROL, MANAGER_CONTROL
+from local_agent_manager.state_paths import LEGACY_CONTROL, control_directory
 from tests.test_mutation_guard import basic_action, write_journal
 
 
@@ -74,129 +74,101 @@ class StateMaintenanceTests(unittest.TestCase):
         self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 0)
         self.assertEqual(list(self.home.iterdir()), [])
 
-    def test_external_route_keeps_lock_and_reads_historical_journals(self):
-        old = self.terminal()
-        lock = old.directory.parent / ".mutation.lock"
-        identity = _file_identity(lock.stat())
-        base = self.root / "external"
-        base.mkdir()
-        preview = run_state_command("route", self.home, directory=base)
-        self.assertEqual(list(base.iterdir()), [])
-        result = run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
-        self.assertEqual(result["phase"], "complete")
-        self.assertEqual(OperationStore(self.home, old.operation_id).plan_path, old.plan_path)
-        fresh = self.terminal("new")
-        self.assertTrue(fresh.directory.is_relative_to(base))
-        self.assertEqual(_find_operation_plan("new", operation_home=self.home), fresh.plan_path)
-        inventory = run_state_command("inventory", self.home)
-        self.assertEqual(inventory["operation_count"], 2)
-        self.assertTrue(Path(inventory["control_directory"]).is_relative_to(base))
-        self.assertEqual(self.apply("cleanup")["completed"], [fresh.operation_id, old.operation_id])
-        self.assertTrue(old.receipt_path.is_file())
-        self.assertTrue(fresh.receipt_path.is_file())
-        self.assertEqual(_file_identity(lock.stat()), identity)
-
-    def test_route_reattaches_existing_journals_after_marker_loss(self):
+    def historical(self, operation="historical", *, terminal=True):
+        """Move a journal into the old in-store layout written by earlier versions."""
         import shutil
 
-        base = self.root / "external"
-        base.mkdir()
-        preview = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
-        routed = self.terminal("routed")
-        self.assertTrue(routed.directory.is_relative_to(base))
-        # An external tool removed the store's control directory and marker.
-        shutil.rmtree(self.home / LEGACY_CONTROL)
-        preview = run_state_command("route", self.home, directory=base)
-        self.assertEqual(preview["plan"]["existing_operations"], ["routed"])
-        result = run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
-        self.assertEqual(result["phase"], "complete")
-        self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 1)
-        self.assertEqual(_find_operation_plan("routed", operation_home=self.home), routed.plan_path)
-        self.assertTrue(self.terminal("after").directory.is_relative_to(base))
+        store = self.terminal(operation) if terminal else write_journal(self.home, operation, basic_action(self.home))
+        legacy = self.home / LEGACY_CONTROL / "operations"
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / ".mutation.lock").touch()
+        shutil.move(str(store.directory), str(legacy / operation))
+        return OperationStore(self.home, operation)
 
-    def test_route_reattach_rejects_unmanaged_destination_entries(self):
-        base = self.root / "external"
-        base.mkdir()
-        target = Path(run_state_command("route", self.home, directory=base)["destination"])
-        (target / "operations" / "not a journal").mkdir(parents=True)
-        with self.assertRaises(OperationStoreError):
-            run_state_command("route", self.home, directory=base)
+    def test_state_lives_outside_the_store(self):
+        store = self.terminal()
+        base = Path(os.environ["LAM_STATE_DIR"])
+        self.assertTrue(store.directory.is_relative_to(base))
+        self.assertEqual(store.directory.parents[1], control_directory(self.home))
+        self.assertTrue((control_directory(self.home) / "operations" / ".mutation.lock").is_file())
+        self.assertEqual(list(self.home.iterdir()), [])
+        self.assertEqual(run_state_command("inventory", self.home)["historical_controls"], [])
 
-    def test_routed_store_still_fails_closed_on_unknown_legacy_journal(self):
-        old = write_journal(self.home, "old-unknown", basic_action(self.home))
-        old.lock_path.write_text("existing lock", encoding="utf-8")
-        base = self.root / "external"
-        base.mkdir()
-        preview = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+    def test_route_and_migrate_are_retired(self):
+        for command in ("route", "migrate"):
+            with self.assertRaisesRegex(OperationStoreError, "retired"):
+                run_state_command(command, self.home)
+
+    def test_relocate_moves_history_and_removes_the_in_store_directory(self):
+        compact = self.historical("receipt")
+        checkpoint = self.historical("checkpoint")
+        checkpoint.result_path.unlink()
+        legacy = self.home / LEGACY_CONTROL
+        (legacy / "legacy-index.lock").write_bytes(b"old owner")
+        (legacy / "desktop-state-backups").mkdir()
+        snapshots = {s.operation_id: self.snapshot(s.directory) for s in (compact, checkpoint)}
+        self.assertEqual(run_state_command("inventory", self.home)["historical_controls"], [str(legacy)])
+        preview = run_state_command("relocate", self.home)
+        self.assertEqual([item["path"] for item in preview["plan"]["remove_controls"]], [str(legacy)])
+        self.assertTrue(legacy.exists())
+        result = run_state_command("relocate", self.home, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(set(result["completed"]), {"receipt", "checkpoint"})
+        self.assertEqual(result["removed_controls"], [str(legacy)])
+        self.assertEqual(list(self.home.iterdir()), [])
+        for operation_id, before in snapshots.items():
+            moved = OperationStore(self.home, operation_id)
+            self.assertEqual(moved.directory.parents[1], control_directory(self.home))
+            self.assertEqual(self.snapshot(moved.directory), before)
+        self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 2)
+        self.assertFalse(self.apply("relocate")["modified"])
+
+    def test_relocate_keeps_unknown_history_and_its_directory(self):
+        locked = self.historical("locked")
+        locked.lock_path.write_text("existing lock", encoding="utf-8")
+        moved = self.historical("moved")
+        before = self.snapshot(locked.directory)
+        result = self.apply("relocate")
+        self.assertEqual(result["completed"], ["moved"])
+        self.assertEqual(result["retained"], ["locked"])
+        self.assertEqual(result["removed_controls"], [])
+        self.assertEqual(result["plan"]["retained_controls"], [str(self.home / LEGACY_CONTROL)])
+        self.assertEqual(self.snapshot(locked.directory), before)
+        self.assertFalse(moved.directory.exists())
+
+    def test_old_unknown_in_store_journal_still_blocks_mutation(self):
+        old = self.historical("old-unknown", terminal=False)
         with self.assertRaises(UnknownMutationError):
             with mutation_guard([MutationScope(self.home, None)]):
                 self.fail("an old unknown operation must still block the store")
-        self.assertEqual(old.lock_path.read_text(encoding="utf-8"), "existing lock")
-        self.assertEqual(OperationStore(self.home, old.operation_id).plan_path, old.plan_path)
+        self.assertTrue(old.plan_path.exists())
 
-    def test_routed_desktop_journal_keeps_historical_lookup(self):
-        from local_agent_manager.t3code_desktop_cleanup import admission, journal_root
+    def test_relocate_refuses_unrecognized_in_store_content(self):
+        self.historical()
+        (self.home / LEGACY_CONTROL / "keep.bin").write_bytes(b"recovery")
+        result = self.apply("relocate")
+        self.assertEqual(result["removed_controls"], [])
+        self.assertTrue((self.home / LEGACY_CONTROL / "keep.bin").exists())
 
-        previous = journal_root(self.home) / "desktop-fixture"
+    def test_historical_desktop_journal_keeps_lookup(self):
+        from local_agent_manager.t3code_desktop_cleanup import journal_root
+
+        previous = self.home / LEGACY_CONTROL / "desktop-cleanups" / "desktop-fixture"
         previous.mkdir(parents=True)
         (previous / "state.json").write_text('{"phase":"complete"}', encoding="utf-8")
-        base = self.root / "external"
-        base.mkdir()
-        preview = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
         self.assertEqual(journal_root(self.home, previous.name), previous.parent)
-        self.assertTrue(journal_root(self.home, "new").is_relative_to(base))
-        admission(self.home)
+        self.assertEqual(journal_root(self.home, "new"), control_directory(self.home) / "desktop-cleanups")
 
-    def test_routing_preserves_previously_migrated_plan_lookup(self):
-        old = self.terminal()
-        self.apply("migrate")
-        migrated = OperationStore(self.home, old.operation_id)
-        base = self.root / "repository-state"
-        base.mkdir()
-        preview = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
-        self.assertEqual(_find_operation_plan(old.operation_id, operation_home=self.home), migrated.plan_path)
-        self.assertEqual(_find_operation_plan(old.operation_id, operation_home=old.directory), migrated.plan_path)
-        self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 1)
-
-    def test_relocate_preserves_receipt_and_historical_checkpoint_bytes(self):
-        compact = self.terminal("receipt")
-        self.apply("cleanup")
-        checkpoint = self.terminal("checkpoint")
-        checkpoint.result_path.unlink()
-        locked = self.terminal("locked")
-        locked.lock_path.write_text("existing lock", encoding="utf-8")
-        snapshots = {s.operation_id: self.snapshot(s.directory) for s in (compact, checkpoint, locked)}
-        lock = compact.directory.parent / ".mutation.lock"
-        identity = _file_identity(lock.stat())
-        base = self.root / "external"
-        base.mkdir()
-        route = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=route["plan_sha256"])
-        result = self.apply("relocate")
-        self.assertEqual(set(result["completed"]), {"receipt", "checkpoint"})
-        self.assertEqual(result["retained"], ["locked"])
-        for previous in (compact, checkpoint):
-            moved = OperationStore(self.home, previous.operation_id)
-            self.assertTrue(moved.directory.is_relative_to(base))
-            self.assertFalse(previous.directory.exists())
-            self.assertEqual(self.snapshot(moved.directory), snapshots[previous.operation_id])
-        self.assertEqual(self.snapshot(locked.directory), snapshots["locked"])
-        self.assertEqual(_file_identity(lock.stat()), identity)
-        self.assertEqual(_find_operation_plan("checkpoint", operation_home=checkpoint.directory),
-                         OperationStore(self.home, "checkpoint").plan_path)
-        self.assertTrue(OperationStore(self.home, "receipt").read_result(maintain=False)["compacted"])
+    def test_old_plan_lookup_reads_previous_user_state_directory(self):
+        legacy = self.root / "local"
+        plans = legacy / "local-agent-record-janitor" / "plans"
+        plans.mkdir(parents=True)
+        (plans / "old-plan.json").write_text("{}", encoding="utf-8")
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(legacy), "XDG_STATE_HOME": str(legacy)}):
+            self.assertEqual(_find_operation_plan("old-plan"), plans / "old-plan.json")
 
     def test_relocation_resumes_after_partial_source_unlink(self):
-        store = self.terminal()
+        store = self.historical()
         original = self.snapshot(store.directory)
-        base = self.root / "external"
-        base.mkdir()
-        route = run_state_command("route", self.home, directory=base)
-        run_state_command("route", self.home, directory=base, apply=True, approved_hash=route["plan_sha256"])
         plan = run_state_command("relocate", self.home)
         unlink = Path.unlink
 
@@ -218,6 +190,7 @@ class StateMaintenanceTests(unittest.TestCase):
         done = run_state_command("relocate", self.home, apply=True, approved_hash=plan["plan_sha256"])
         self.assertEqual(done["phase"], "complete")
         self.assertEqual(self.snapshot(OperationStore(self.home, store.operation_id).directory), original)
+        self.assertFalse((self.home / LEGACY_CONTROL).exists())
 
     def test_windows_path_and_handle_identity_use_the_same_creation_time(self):
         path_stat = SimpleNamespace(st_dev=1, st_ino=2, st_ctime=3, st_ctime_ns=30, st_birthtime_ns=20)
@@ -253,8 +226,6 @@ class StateMaintenanceTests(unittest.TestCase):
         result = self.apply("cleanup")
         self.assertEqual(set(result["retained"]), {"unknown", "malformed", "unexpected", "locked"})
         self.assertEqual(before, self.snapshot(self.home))
-        self.assertEqual(self.apply("migrate")["phase"], "blocked")
-        self.assertEqual(before, self.snapshot(self.home))
         self.assertTrue(unknown.plan_path.exists())
 
     def test_cleanup_requires_current_exact_hash(self):
@@ -279,121 +250,9 @@ class StateMaintenanceTests(unittest.TestCase):
         self.apply("cleanup")
         self.assertEqual({p.name for p in store.directory.iterdir()}, {"receipt.json"})
 
-    def test_migrate_preserves_all_journal_bytes_original_lock_and_recovery_locators(self):
-        store = self.terminal()
-        original_path = store.plan_path
-        before = self.snapshot(store.directory)
-        lock = store.directory.parent / ".mutation.lock"
-        identity = lock.stat().st_ino
-        preview = run_state_command("migrate", self.home)
-        self.assertFalse((self.home / MANAGER_CONTROL).exists())
-        result = self.apply("migrate")
-        self.assertEqual(result["phase"], "complete")
-        new = OperationStore(self.home, store.operation_id)
-        self.assertEqual(self.snapshot(new.directory), before)
-        self.assertEqual(new.directory.parents[1].name, MANAGER_CONTROL)
-        self.assertEqual(lock.stat().st_ino, identity)
-        for root in (self.home, original_path.parent, original_path.parent.parent,
-                     original_path.parent.parent.parent):
-            self.assertEqual(_find_operation_plan(store.operation_id, operation_home=root), new.plan_path)
-        with self.assertRaisesRegex(OperationStoreError, "layout changed"):
-            store.read_plan()
-        self.assertFalse(self.apply("migrate")["modified"])
-        self.assertEqual(preview["plan_sha256"], result["plan_sha256"])
-        # Same lock still excludes cooperating writers after the journal move.
-        with mutation_roots((self.home,)):
-            script = "from pathlib import Path; from local_agent_manager.mutation_guard import mutation_roots; import sys\nwith mutation_roots((Path(sys.argv[1]),)): pass"
-            process = subprocess.run([sys.executable, "-c", script, str(self.home)], capture_output=True, timeout=20)
-            self.assertNotEqual(process.returncode, 0)
-            self.assertIn(b"Another process owns", process.stderr)
-        # The previous implementation rejects a regular marker during sibling scanning.
-        from local_agent_manager.operation_store import _validate_directory
-        marker = lock.parent / LAYOUT_MARKER
-        with self.assertRaises(OperationStoreError):
-            _validate_directory(marker, marker.lstat())
-
-    def test_migrated_new_unknown_still_blocks_native_mutation(self):
-        self.terminal()
-        self.apply("migrate")
-        unknown = write_journal(self.home, "new-unknown", basic_action(self.home))
-        self.assertEqual(unknown.directory.parents[1].name, MANAGER_CONTROL)
-        with self.assertRaises(UnknownMutationError):
-            with mutation_guard((MutationScope(self.home, frozenset(("synthetic-thread",))),)):
-                self.fail("New layout must retain sibling admission")
-        result = self.apply("cleanup")
-        self.assertIn("new-unknown", result["retained"])
-        self.assertTrue(unknown.plan_path.exists())
-
-    def test_migration_interruption_blocks_writers_and_resumes_only_original_plan(self):
-        stores = [self.terminal("one"), self.terminal("two")]
-        plan = run_state_command("migrate", self.home)
-        original = os.rename
-        def interrupt(source, destination):
-            if Path(source).name == "two":
-                raise OSError("interrupted")
-            original(source, destination)
-        with patch("local_agent_manager.state_maintenance.os.rename", side_effect=interrupt):
-            with self.assertRaisesRegex(OSError, "interrupted"):
-                run_state_command("migrate", self.home, apply=True, approved_hash=plan["plan_sha256"])
-        self.assertTrue((self.home / MANAGER_CONTROL / "operations" / "one" / "plan.json").exists())
-        self.assertTrue(stores[1].plan_path.exists())
-        self.assertEqual(run_state_command("inventory", self.home)["phase"], "moving")
-        with self.assertRaisesRegex(OperationStoreError, "incomplete"):
-            OperationStore(self.home, "new-writer").read_plan()
-        with self.assertRaisesRegex(OperationStoreError, "approval"):
-            run_state_command("migrate", self.home, apply=True, approved_hash="0" * 64)
-        result = run_state_command("migrate", self.home, apply=True, approved_hash=plan["plan_sha256"])
-        self.assertEqual(result["phase"], "complete")
-        self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 2)
-
-    def test_migration_conflicting_destination_and_backup_evidence_are_preserved(self):
-        store = self.terminal()
-        rollback = self.home / LEGACY_CONTROL / "desktop-state-backups"
-        rollback.mkdir()
-        (rollback / "keep.db").write_bytes(b"recovery")
-        self.assertEqual(self.apply("migrate")["phase"], "blocked")
-        (rollback / "keep.db").unlink()
-        rollback.rmdir()
-        destination = self.home / MANAGER_CONTROL
-        destination.mkdir()
-        before = self.snapshot(store.directory)
-        with self.assertRaisesRegex(OperationStoreError, "Unmarked"):
-            self.apply("migrate")
-        self.assertEqual(before, self.snapshot(store.directory))
-
-    def test_historical_terminal_checkpoint_without_result_migrates_without_compaction(self):
-        store = self.terminal()
-        store.result_path.unlink()
-        before = self.snapshot(store.directory)
-        result = self.apply("cleanup")
-        self.assertEqual(result["retained"], [store.operation_id])
-        self.assertEqual(result["after"]["operations"][0]["reason"], "terminal_result_missing")
-        self.assertEqual(self.apply("migrate")["phase"], "complete")
-        migrated = OperationStore(self.home, store.operation_id)
-        self.assertEqual(self.snapshot(migrated.directory), before)
-
-    def test_missing_or_changed_moved_evidence_does_not_complete_migration(self):
-        store = self.terminal()
-        plan = run_state_command("migrate", self.home)
-        with patch("local_agent_manager.state_maintenance.os.rename", side_effect=OSError("interrupted")):
-            with self.assertRaises(OSError):
-                run_state_command("migrate", self.home, apply=True, approved_hash=plan["plan_sha256"])
-        store.events_path.write_text("changed", encoding="utf-8")
-        with self.assertRaisesRegex(OperationStoreError, "evidence changed"):
-            run_state_command("migrate", self.home, apply=True, approved_hash=plan["plan_sha256"])
-        self.assertEqual(run_state_command("inventory", self.home)["phase"], "moving")
-
-    def test_late_legacy_journal_is_not_ignored(self):
-        self.terminal()
-        self.apply("migrate")
-        late = self.home / LEGACY_CONTROL / "operations" / "old-writer"
-        late.mkdir()
-        with self.assertRaisesRegex(OperationStoreError, "Legacy state changed"):
-            OperationStore(self.home, "new-writer").read_plan()
-
     def test_os_lock_and_thread_lock_prevent_maintenance(self):
         self.terminal()
-        lock = self.home / LEGACY_CONTROL / "operations" / ".mutation.lock"
+        lock = control_directory(self.home) / "operations" / ".mutation.lock"
         script = """import os, sys
 from pathlib import Path
 from local_agent_manager.mutation_guard import _os_lock
@@ -407,7 +266,7 @@ os.close(fd)
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             self.assertEqual(process.stdout.readline().strip(), "locked")
-            for command in ("inventory", "cleanup", "migrate"):
+            for command in ("inventory", "cleanup", "relocate"):
                 with self.assertRaises(MutationRootLockedError):
                     run_state_command(command, self.home)
         finally:
@@ -425,21 +284,20 @@ os.close(fd)
 
     def test_empty_rollback_containers_are_removable_and_index_lock_is_preserved(self):
         self.terminal()
-        control = self.home / LEGACY_CONTROL
+        control = control_directory(self.home)
         for name in ("desktop-state-backups", "legacy-index-backups"):
             (control / name).mkdir()
         index_lock = control / "legacy-index.lock"
-        index_lock.write_bytes(b"old owner metadata")
+        index_lock.write_bytes(b"owner metadata")
         identity = index_lock.stat().st_ino
         before = index_lock.read_bytes()
         result = self.apply("cleanup")
         self.assertEqual(set(result["removed_empty_directories"]), {"desktop-state-backups", "legacy-index-backups"})
-        self.assertEqual(self.apply("migrate")["phase"], "complete")
         self.assertEqual(index_lock.stat().st_ino, identity)
         self.assertEqual(index_lock.read_bytes(), before)
 
     def test_old_index_writer_excludes_state_maintenance(self):
-        self.terminal()
+        self.historical()
         index_lock = self.home / LEGACY_CONTROL / "legacy-index.lock"
         index_lock.write_bytes(b"old index lock")
         script = """import os, sys
@@ -455,9 +313,12 @@ os.close(fd)
         try:
             self.assertEqual(process.stdout.readline().strip(), "locked")
             with self.assertRaisesRegex(MutationRootLockedError, "index writer"):
-                run_state_command("migrate", self.home)
+                run_state_command("cleanup", self.home)
+            with self.assertRaisesRegex(MutationRootLockedError, "older manager process"):
+                self.apply("relocate")
         finally:
             process.communicate("done\n", timeout=20)
+        self.assertTrue(index_lock.exists())
 
     def test_cli_and_compatibility_entry_points(self):
         self.terminal()

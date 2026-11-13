@@ -11,7 +11,7 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 
 两个权威管理 Skill 是 [agent-management](skills/agent-management/SKILL.md) 与 [skill-management](skills/skill-management/SKILL.md)。后者管理各类 Skill 的创建、内容维护、发现、导入、部署、同步、验证与恢复，按所选源和客户端执行。`work-skills` 作为独立源接入，`mount-work-skills` 保留该源的兼容入口。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。各源维护自身内容、运行时与客户端配置；普通 Skill 内容修改无需先登记部署。
 
-旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量和恢复数据保留原契约。控制目录可通过 `state migrate` 显式迁移。实现和运行路径改变后，受绑定的未执行计划须重新生成。
+旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量和恢复数据保留原契约。管理器状态统一放在自身状态目录，旧版本留在数据目录内的状态用 `state relocate` 搬出并清除。实现和运行路径改变后，受绑定的未执行计划须重新生成。
 
 完整边界和迁移方法见 [整合设计](docs/manager-integration.md)。
 
@@ -22,10 +22,10 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 登录凭据或聊天正文，也不授权清理目录。
 
 ```powershell
-local-agent-record-janitor environment inventory --json
-local-agent-record-janitor environment doctor --client cindy --client t3code --json
+local-agent-manager environment inventory --json
+local-agent-manager environment doctor --client cindy --client t3code --json
 # 另一套用户目录或临时测试目录可显式指定，路径不固定到本机用户名：
-local-agent-record-janitor environment inventory --home 'D:\profiles\example' --appdata 'D:\profiles\example\AppData\Roaming' --local-appdata 'D:\profiles\example\AppData\Local' --path-value= --json
+local-agent-manager environment inventory --home 'D:\profiles\example' --appdata 'D:\profiles\example\AppData\Roaming' --local-appdata 'D:\profiles\example\AppData\Local' --path-value= --json
 ```
 
 环境清单区分独立 CLI、桌面内置程序、Cindy 托管引擎和 T3 ACP。路径中的版本号是版本
@@ -107,7 +107,7 @@ Magpie 的会话列表、解析缓存、网关历史和回收站是原生记录�
 原生会话映射生成绑定，再通过 `delete plan --magpie-bindings` 纳入同一操作。
 支持范围、关闭要求及阻挡条件见 [Magpie 关联清理](docs/operation-cli.md#magpie-关联清理)。
 
-管理器自身的日志通过 `state inventory/cleanup/migrate --root '<数据根>'` 维护。
+管理器自身的日志、锁和计划统一存放在管理器状态目录（源码仓库为 `.agent-manager-state`），不写入任何 Agent 数据目录；通过 `state inventory/cleanup/relocate --root '<数据根>'` 维护。
 清理和迁移先输出预览，应用时需要 `--apply --plan-sha256 '<预览哈希>'`。
 清理保留未解决的恢复材料，迁移保留旧位置的永久锁和布局标记。
 适用范围、中断恢复及剩余目录见 [状态维护](docs/state-maintenance.md)。
@@ -159,11 +159,11 @@ Codex Desktop 还可能维护一层宿主目录/UI 状态。它不是公开 app-
 条目、已识别的侧栏展开状态和本机旧 ID 映射。不会删除项目文件、环境脚本或云端项目。
 
 ```powershell
-local-agent-record-janitor records --client native --json
-local-agent-record-janitor delete plan --client native --record-id '<完整项目 ID>' --out .\environment-plan.json
+local-agent-manager records --client native --json
+local-agent-manager delete plan --client native --record-id '<完整项目 ID>' --out .\environment-plan.json
 # 核对计划并完全退出官方客户端后执行：
-local-agent-record-janitor delete apply --operation-id '<operation-id>' --plan .\environment-plan.json --clients-closed
-local-agent-record-janitor operation verify --operation-id '<operation-id>' --plan .\environment-plan.json
+local-agent-manager delete apply --operation-id '<operation-id>' --plan .\environment-plan.json --clients-closed
+local-agent-manager operation verify --operation-id '<operation-id>' --plan .\environment-plan.json
 ```
 
 计划冻结两份配置的文件集合、哈希和精确修改项；不支持的字段、额外引用、不可用的卷、
@@ -177,11 +177,11 @@ local-agent-record-janitor operation verify --operation-id '<operation-id>' --pl
 清单只输出会话 ID、项目路径、状态、时间、归属和文件指纹，不展示标题或聊天正文。
 
 ```powershell
-local-agent-record-janitor records --client workbuddy --workbuddy-root "$HOME\.workbuddy" --inspect-clients --json
-local-agent-record-janitor delete plan --client workbuddy --workbuddy-root "$HOME\.workbuddy" --record-id '<完整 session UUID>' --out .\workbuddy-plan.json
+local-agent-manager records --client workbuddy --workbuddy-root "$HOME\.workbuddy" --inspect-clients --json
+local-agent-manager delete plan --client workbuddy --workbuddy-root "$HOME\.workbuddy" --record-id '<完整 session UUID>' --out .\workbuddy-plan.json
 # 核对计划、退出 WorkBuddy 及相关后台进程后执行：
-local-agent-record-janitor delete apply --plan .\workbuddy-plan.json --clients-closed
-local-agent-record-janitor operation verify --operation-id '<operation-id>' --plan .\workbuddy-plan.json
+local-agent-manager delete apply --plan .\workbuddy-plan.json --clients-closed
+local-agent-manager operation verify --operation-id '<operation-id>' --plan .\workbuddy-plan.json
 ```
 
 当前 writer 限定为已识别的 WorkBuddy 5.6.2 本地 schema 和已证明的记录副本、UI 引用。
@@ -202,9 +202,9 @@ local-agent-record-janitor operation verify --operation-id '<operation-id>' --pl
 profile 与 SDK 数据根分别处理，不与千问网页聊天混用。
 
 ```powershell
-local-agent-record-janitor records --client qwenwork --json
+local-agent-manager records --client qwenwork --json
 # 自定义 profile 可重复指定；SDK 根也可显式指定：
-local-agent-record-janitor records --client qwenwork --qwenwork-root 'D:\profiles\QwenWorkCN' --qwenwork-sdk-root 'D:\sdk\.qwenworkcn' --json
+local-agent-manager records --client qwenwork --qwenwork-root 'D:\profiles\QwenWorkCN' --qwenwork-sdk-root 'D:\sdk\.qwenworkcn' --json
 ```
 
 当前支持 QwenWorkCN 1.2.5 的已核实 schema。本地会话可通过
@@ -222,8 +222,8 @@ local-agent-record-janitor records --client qwenwork --qwenwork-root 'D:\profile
 全部来源并报告不完整，不自动选择一个副本覆盖其他副本。
 
 ```powershell
-local-agent-record-janitor records --client paseo --json
-local-agent-record-janitor records --client paseo --paseo-root 'D:\profiles\paseo' --engine codex --json
+local-agent-manager records --client paseo --json
+local-agent-manager records --client paseo --paseo-root 'D:\profiles\paseo' --engine codex --json
 ```
 
 适配覆盖 Paseo `0.11.0-beta.3` 与 `0.15.3` 的已知注册格式；当前清单范围为 `persisted_agent_registry`。
@@ -237,7 +237,7 @@ Windows 上，[`--paseo-only` 操作](docs/operation-cli.md#只删-paseo-会话)
 local-agent-manager delete run --client paseo --paseo-only --record-id '<Paseo ID 1>' --record-id '<Paseo ID 2>' --yes --progress --json
 local-agent-manager environment paseo-cleanup prepare --json
 local-agent-manager delete plan --client paseo --record-id '<Paseo agent ID>' --out plan.json --json
-local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
+local-agent-manager delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
 ```
 
 计划先列出 Codex/Pi/Claude 原生动作，再清理注册副本、已完成的创建/发送回执、调度中的会话内容及绑定桌面的
@@ -255,11 +255,11 @@ provider 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固
 覆盖 `0.1.8-nightly.20261107.4301` 和 `0.1.8-nightly.20261108.4353`，未知结构阻挡。
 
 ```powershell
-local-agent-record-janitor records --client t3code --json
+local-agent-manager records --client t3code --json
 local-agent-manager delete run --client t3code --t3code-only --record-id '<完整 T3 ID 1>' --record-id '<完整 T3 ID 2>' --yes --progress --json
 local-agent-manager environment t3-cleanup prepare --json
-local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json
-local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
+local-agent-manager delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json
+local-agent-manager delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
 ```
 
 `--t3code-only` 按完整 ID 调用运行中的本机 T3 服务自带删除，支持 Codex、Claude、Pi、Antigravity，
@@ -384,7 +384,7 @@ broken 的完整发现仍走 anomaly scan，不保证从 `records` 统一进入�
 - Claude Code 的普通 `~/.claude`/`CLAUDE_CONFIG_DIR` 清单和逐项删除可在 Windows、macOS 和 Linux 使用；Cindy profile 的自动发现仍受上一条 Windows 边界约束。
 - WorkBuddy 的本地元数据清单使用其独立 root；当前删除需要 Windows 上完整的已知 writer 进程探测，其他系统只读盘点并阻止写入。
 
-安装后通常使用 `local-agent-record-janitor` 命令。如果 pip 安装的 console script 尚未进入 `PATH`，所有示例都可以改用 `python -m local_agent_record_janitor`（macOS/Linux 常用 `python3 -m local_agent_record_janitor`）。
+安装后通常使用 `local-agent-manager` 命令（旧名 `local-agent-record-janitor` 仍可用）。如果 pip 安装的 console script 尚未进入 `PATH`，所有示例都可以改用 `python -m local_agent_manager`（macOS/Linux 常用 `python3 -m local_agent_manager`）。
 
 ### Windows PowerShell
 
@@ -393,12 +393,12 @@ git clone https://github.com/SchweppesSoda/local-agent-manager.git
 Set-Location local-agent-manager
 python -m pip install -e .
 
-local-agent-record-janitor scan --platform native
-local-agent-record-janitor clean --platform native --thread-id 0198abcd
-local-agent-record-janitor clean --platform native --thread-id 0198abcd --yes
+local-agent-manager scan --platform native
+local-agent-manager clean --platform native --thread-id 0198abcd
+local-agent-manager clean --platform native --thread-id 0198abcd --yes
 
 # PATH fallback
-python -m local_agent_record_janitor scan --platform native
+python -m local_agent_manager scan --platform native
 ```
 
 ### Windows cmd.exe
@@ -408,12 +408,12 @@ git clone https://github.com/SchweppesSoda/local-agent-manager.git
 cd /d local-agent-manager
 python -m pip install -e .
 
-local-agent-record-janitor scan --platform native
-local-agent-record-janitor clean --platform native --thread-id 0198abcd
-local-agent-record-janitor clean --platform native --thread-id 0198abcd --yes
+local-agent-manager scan --platform native
+local-agent-manager clean --platform native --thread-id 0198abcd
+local-agent-manager clean --platform native --thread-id 0198abcd --yes
 
 rem PATH fallback
-python -m local_agent_record_janitor scan --platform native
+python -m local_agent_manager scan --platform native
 ```
 
 ### macOS / Linux sh
@@ -423,12 +423,12 @@ git clone https://github.com/SchweppesSoda/local-agent-manager.git
 cd local-agent-manager
 python3 -m pip install -e .
 
-local-agent-record-janitor scan --platform native
-local-agent-record-janitor clean --platform native --thread-id 0198abcd
-local-agent-record-janitor clean --platform native --thread-id 0198abcd --yes
+local-agent-manager scan --platform native
+local-agent-manager clean --platform native --thread-id 0198abcd
+local-agent-manager clean --platform native --thread-id 0198abcd --yes
 
 # PATH fallback
-python3 -m local_agent_record_janitor scan --platform native
+python3 -m local_agent_manager scan --platform native
 ```
 
 ## 快速开始
@@ -436,13 +436,13 @@ python3 -m local_agent_record_janitor scan --platform native
 先关闭 Cindy 和正在使用同一 `CODEX_HOME` 的 Codex 客户端，再扫描：
 
 ```powershell
-local-agent-record-janitor scan
+local-agent-manager scan
 ```
 
 如果希望查看现有 Codex 对话并逐项勾选删除，可启动图形界面：
 
 ```powershell
-local-agent-record-janitor gui
+local-agent-manager gui
 ```
 
 GUI 会只读聚合原生 Codex、Cindy 记录，支持按名称、项目、路径或完整
@@ -465,7 +465,7 @@ GUI 授权范围内，相关引用会在确认窗口中明确显示为保留项�
 完全退出 Codex/ChatGPT Desktop、Cindy 后，从外部 PowerShell 运行：
 
 ```powershell
-local-agent-record-janitor purge --yes --clients-closed
+local-agent-manager purge --yes --clients-closed
 ```
 
 `purge` 不会删除正常对话，也不会触碰 Pi 或 Claude Code 会话。它按物理存储和 mutation
@@ -485,21 +485,20 @@ kind 拆成不可变批次，依次处理 thread、旧索引、Desktop 状态、
 batch。输出按项目、引擎、位置分组，只含元数据，不读取或保存聊天正文：
 
 ```powershell
-local-agent-record-janitor records --client native --all-projects --json
-local-agent-record-janitor delete plan --client native --all-projects `
+local-agent-manager records --client native --all-projects --json
+local-agent-manager delete plan --client native --all-projects `
   --out .\operation-plan.json --json
-local-agent-record-janitor delete apply --operation-id '<operation-id>' `
+local-agent-manager delete apply --operation-id '<operation-id>' `
   --plan .\operation-plan.json --clients-closed --json
-local-agent-record-janitor operation status --operation-id '<operation-id>' `
+local-agent-manager operation status --operation-id '<operation-id>' `
   --plan .\operation-plan.json --json
-local-agent-record-janitor operation verify --operation-id '<operation-id>' `
+local-agent-manager operation verify --operation-id '<operation-id>' `
   --plan .\operation-plan.json --json
 ```
 
 `--plan` 在 `delete plan --out PATH` 将计划写到显式路径时传给 apply，也传给
 operation status/verify；它必须是同一份不可变计划。省略 `--out` 时由 operation store
-解析默认计划位置：已用 `state route` 路由的存储写入路由目录下的 `plans/`，其余写入
-用户级默认目录（见[状态维护](docs/state-maintenance.md#route-new-journals-to-a-shared-directory)）。
+解析默认计划位置：管理器状态目录下的 `plans/`（见[状态维护](docs/state-maintenance.md)）。
 status/verify 使用 `--operation-home` 或 `--codex-home` 指定对应的
 operation 状态根（不把目录当作计划文件）。
 
@@ -512,14 +511,14 @@ operation 的前置门槛；目标 store 或共享引用无法证明时，相关
 由 Agent 执行旧版单 store 流程时使用专用的非交互协议，不要模拟人类提示：
 
 ```powershell
-local-agent-record-janitor agent doctor --platform native --codex-home 'D:\exact\CODEX_HOME'
-local-agent-record-janitor agent plan --operation purge --platform native `
+local-agent-manager agent doctor --platform native --codex-home 'D:\exact\CODEX_HOME'
+local-agent-manager agent plan --operation purge --platform native `
   --codex-home 'D:\exact\CODEX_HOME'
-local-agent-record-janitor agent apply --plan '<plan 输出中的 plan_path>' `
+local-agent-manager agent apply --plan '<plan 输出中的 plan_path>' `
   --authorized-plan-sha256 '<plan-sha256>' --clients-closed
-local-agent-record-janitor agent status --operation-id '<operation-id>' `
+local-agent-manager agent status --operation-id '<operation-id>' `
   --codex-home 'D:\exact\CODEX_HOME'
-local-agent-record-janitor agent verify --operation-id '<operation-id>' `
+local-agent-manager agent verify --operation-id '<operation-id>' `
   --codex-home 'D:\exact\CODEX_HOME'
 ```
 
@@ -533,10 +532,10 @@ Agent 命令只输出 JSON、不读取 stdin；计划只授权一个不可变动
 列出当前支持适配器可见的正常/异常 Codex thread 及 Cindy frontend reference：
 
 ```powershell
-local-agent-record-janitor records
-local-agent-record-janitor records --platform cindy --limit 50
-local-agent-record-janitor records --thread-id 0198abcd
-local-agent-record-janitor records --json
+local-agent-manager records
+local-agent-manager records --platform cindy --limit 50
+local-agent-manager records --thread-id 0198abcd
+local-agent-manager records --json
 ```
 
 `records` 只读聚合 `state_5.sqlite`、活动/归档 rollout、旧索引、可探测的 Codex
@@ -565,7 +564,7 @@ Herdr 的全部 writer、Pi/Claude 运行时、任意 node/server 和非 Windows
 本机 profile：
 
 ```powershell
-local-agent-record-janitor records --client orca --orca-root 'D:\OrcaProfile' --json
+local-agent-manager records --client orca --orca-root 'D:\OrcaProfile' --json
 ```
 
 当前 reader 验证 journal schema4 / record schema2，保留所有 current/history handles，
@@ -592,7 +591,7 @@ SQL，但 WAL 读锁可能创建或更新侧文件；这不是文件系统零写
 Herdr 默认盘点持久化 `session.json` 及已识别的 `session-snapshots`/`session-backups`：
 
 ```powershell
-local-agent-record-janitor records --client herdr --herdr-root 'D:\HerdrConfig' --json
+local-agent-manager records --client herdr --herdr-root 'D:\HerdrConfig' --json
 ```
 
 `--herdr-root` 可重复；省略时按 Herdr 的配置路径规则发现 release/dev 默认目录。
@@ -602,7 +601,7 @@ local-agent-record-janitor records --client herdr --herdr-root 'D:\HerdrConfig' 
 可显式附带已知本机 session 的在线 metadata：
 
 ```powershell
-local-agent-record-janitor records --client herdr --herdr-root 'D:\HerdrConfig' --inspect-clients --json
+local-agent-manager records --client herdr --herdr-root 'D:\HerdrConfig' --inspect-clients --json
 ```
 
 查询仅发送 `ping` 和 `session.snapshot`，不启动、attach 或恢复 Herdr。live 引用与
@@ -625,9 +624,9 @@ API 请求可能触发 server 自身日志或已有事件处理，
 Pi session 使用独立清单，不会伪装成 Codex native store。只查看 Pi：
 
 ```powershell
-local-agent-record-janitor records --platform pi
-local-agent-record-janitor records --platform pi --pi-agent-dir "$HOME/.pi/agent"
-local-agent-record-janitor records --platform pi --pi-session-dir 'D:\PiSessions' --json
+local-agent-manager records --platform pi
+local-agent-manager records --platform pi --pi-agent-dir "$HOME/.pi/agent"
+local-agent-manager records --platform pi --pi-session-dir 'D:\PiSessions' --json
 ```
 
 默认或 `--platform all` 的 `records --json` 保留既有 Codex `records`、`errors` 和 `count` 字段，并另外包含 `pi_sessions`、`pi_failures`、`pi_count` 与 `total_count`。Pi 只提取结构/展示所需元数据：会话 ID、精确文件路径与状态、版本、时间、cwd、父/子会话关系、会话名称、provider/model 以及是否使用 OpenAI Codex；不保留或输出 message、thinking、tool 参数或聊天正文。默认布局只扫描 `root/<project>/*.jsonl`，自定义 sessionDir 扫描 `root/*.jsonl`；兼容模式最多检查两层，绝不无界递归。
@@ -635,9 +634,9 @@ local-agent-record-janitor records --platform pi --pi-session-dir 'D:\PiSessions
 Claude Code session 使用独立清单：
 
 ```powershell
-local-agent-record-janitor records --platform claude
-local-agent-record-janitor records --platform claude --claude-config-dir "$HOME/.claude" --json
-local-agent-record-janitor delete --platform claude --session-id 完整UUID --json
+local-agent-manager records --platform claude
+local-agent-manager records --platform claude --claude-config-dir "$HOME/.claude" --json
+local-agent-manager delete --platform claude --session-id 完整UUID --json
 ```
 
 Claude config root 按 `--claude-config-dir`、`CLAUDE_CONFIG_DIR`、`~/.claude` 解析。默认/all JSON 另含 `claude_sessions`、`claude_failures`、`claude_count`，`total_count = count + pi_count + claude_count`。Claude Code 当前没有本地逐 session 官方删除命令；官方 `claude project purge` 是项目级 purge，不能用于本工具的逐项选择。因此本工具执行精确文件 manifest 删除：除 transcript 和旧式 `<root>/<session-id>` 路径外，还支持当前的 `debug/<session-id>.txt` 与严格匹配的 `todos/<session-id>-agent-<safe-token>.json` 普通文件。相似前缀、其他 session、credentials、settings、plugins、skills、agents、commands、project memory、`CLAUDE.md`、stats cache 和共享 history/index 均保留；这不等于清空整个 Claude 配置。
@@ -651,7 +650,7 @@ Codex thread 及其 frontend reference，即使 SQLite reference 已经消失；
 TTY 中逐项选择任意记录永久删除：
 
 ```powershell
-local-agent-record-janitor delete
+local-agent-manager delete
 ```
 
 输入编号或范围（例如 `1,3-4`）；`delete` 不接受 `all`。Codex 最终计划会展示完整
@@ -662,9 +661,9 @@ Cindy frontend reference。输入专用确认句 `客户端已关闭并确认永
 非 TTY/自动化必须先明确目标做一次预览；预览退出码为 `2`，JSON 中包含所选范围的 `plan_fingerprint`：
 
 ```powershell
-local-agent-record-janitor delete --thread-id 0198abcd --json
+local-agent-manager delete --thread-id 0198abcd --json
 
-local-agent-record-janitor delete --action-id 完整动作ID `
+local-agent-manager delete --action-id 完整动作ID `
   --plan-fingerprint 完整所选计划指纹 `
   --clients-closed --yes --json
 ```
@@ -677,10 +676,10 @@ Pi 删除使用 Pi 的公开语义：永久删除一份精确批准的本地 `.j
 
 ```powershell
 # 先生成只读 JSON 预览，获得 session_id/action_id 和 plan_fingerprint
-local-agent-record-janitor delete --platform pi --session-id 完整Pi会话ID --json
+local-agent-manager delete --platform pi --session-id 完整Pi会话ID --json
 
 # 非 TTY 执行：必须绑定预览指纹并声明 Pi 客户端已关闭
-local-agent-record-janitor delete --platform pi --session-id 完整Pi会话ID `
+local-agent-manager delete --platform pi --session-id 完整Pi会话ID `
   --plan-fingerprint 完整所选计划指纹 --clients-closed --yes --json
 ```
 
@@ -689,20 +688,20 @@ TTY 可在 Pi 清单显示后输入一个临时编号；不支持 `all`。默认
 仅扫描一个来源：
 
 ```powershell
-local-agent-record-janitor scan --platform cindy
-local-agent-record-janitor scan --platform native
+local-agent-manager scan --platform cindy
+local-agent-manager scan --platform native
 ```
 
 输出机器可读 JSON：
 
 ```powershell
-local-agent-record-janitor scan --platform all --json
+local-agent-manager scan --platform all --json
 ```
 
 按完整 Codex thread ID（`thread_id`）或唯一前缀缩小范围：
 
 ```powershell
-local-agent-record-janitor scan --thread-id 0198abcd
+local-agent-manager scan --thread-id 0198abcd
 ```
 
 交互查看所有问题。输出按保存位置列出候选目标；每个目标展示 thread 名称、项目与
@@ -710,7 +709,7 @@ local-agent-record-janitor scan --thread-id 0198abcd
 索引/归档/originator、元数据来源与冲突。每个候选动作都有临时编号：
 
 ```powershell
-local-agent-record-janitor clean
+local-agent-manager clean
 ```
 
 可输入 `1,3-5` 明确选择动作；输入 `all` 只会选择允许批量纳入的 `low` 风险动作。标记为“必须逐项选择”的动作即使是 `low` 风险，也不会被 `all` 纳入。临时编号只在本次扫描和当前进程有效，不能保存给自动化使用。
@@ -723,27 +722,27 @@ TTY 交互会在同一进程中完整展示最终计划。Codex thread 硬删除
 按完整 Codex thread ID（`thread_id`）或唯一前缀选择单个目标；TTY 仍会展示最终计划并要求确认：
 
 ```powershell
-local-agent-record-janitor clean --thread-id 0198abcd
+local-agent-manager clean --thread-id 0198abcd
 ```
 
 自动化应先读取计划 JSON，再使用其中的完整稳定 action ID：
 
 ```powershell
-local-agent-record-janitor clean --json
-local-agent-record-janitor clean --action-id delete_conversation-完整动作ID
+local-agent-manager clean --json
+local-agent-manager clean --action-id delete_conversation-完整动作ID
 ```
 
 确认目标和影响范围无误后才执行：
 
 ```powershell
-local-agent-record-janitor clean --thread-id 0198abcd --yes
-local-agent-record-janitor clean --action-id delete_conversation-完整动作ID --yes
+local-agent-manager clean --thread-id 0198abcd --yes
+local-agent-manager clean --action-id delete_conversation-完整动作ID --yes
 ```
 
 非 TTY 执行 `review` 或 `high` 风险动作时，还必须把刚才计划 JSON 的完整 `plan_fingerprint` 原样传回；执行前的全局计划或所选动作范围发生变化都会停止：
 
 ```powershell
-local-agent-record-janitor clean --action-id delete_conversation-完整动作ID `
+local-agent-manager clean --action-id delete_conversation-完整动作ID `
   --plan-fingerprint 完整计划指纹 --yes
 ```
 
@@ -753,8 +752,8 @@ Cindy 后，可用计划中的兼容 action kind `repair_legacy_index` 精确移
 失效的原始整行：
 
 ```powershell
-local-agent-record-janitor clean --platform native --json
-local-agent-record-janitor clean --action-id repair_legacy_index-完整动作ID `
+local-agent-manager clean --platform native --json
+local-agent-manager clean --action-id repair_legacy_index-完整动作ID `
   --plan-fingerprint 完整计划指纹 --clients-closed --yes
 ```
 
@@ -768,9 +767,9 @@ Codex/ChatGPT Desktop、Cindy，再从外部 PowerShell 获取高风险动作和
 所以不要在关闭前复制计划指纹：
 
 ```powershell
-local-agent-record-janitor clean --platform native --json
+local-agent-manager clean --platform native --json
 
-local-agent-record-janitor clean `
+local-agent-manager clean `
   --action-id remove_desktop_state-完整动作ID `
   --plan-fingerprint 完整计划指纹 `
   --clients-closed --yes --json
@@ -786,10 +785,10 @@ local-agent-record-janitor clean `
 
 ```powershell
 $env:CODEX_HOME = 'D:\CodexData'
-local-agent-record-janitor scan --platform native
+local-agent-manager scan --platform native
 
-local-agent-record-janitor scan --platform native --codex-home 'D:\CodexData'
-local-agent-record-janitor clean --platform native --codex-home 'D:\CodexData' `
+local-agent-manager scan --platform native --codex-home 'D:\CodexData'
+local-agent-manager clean --platform native --codex-home 'D:\CodexData' `
   --codex-bin 'C:\path\to\codex.exe' --thread-id 0198abcd
 ```
 

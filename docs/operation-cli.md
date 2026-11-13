@@ -829,7 +829,7 @@ Chromium 在完整私有家族中执行 strict transaction，删除精确 thread
 随后完整逻辑重建清除历史 WAL/table 字节，仅按全 owner 图复制存活 blob，
 并用真实 Chromium 冷重开核对完整逻辑结果及未选 raw data 记录。
 
-独立 journal 位于 profile 的 `.local-agent-record-janitor/desktop-cleanups/<operation>`。
+独立 journal 位于管理器状态目录中该 profile 对应目录的 `desktop-cleanups/<operation>`；旧版本留在 profile 内 `.local-agent-record-janitor/desktop-cleanups` 的记录只作历史读取。
 永久 root mutex、运行文件独占租约和原 server-owner SQLite lock 在安装期间共同持有。
 新 journal 的 durable after image 先落盘，再改原 family。原 apply/native 删除不重放，
 旧 plan/journal/audit 不改写。中断后 `apply` 拒绝重放，`status` 为 unknown。

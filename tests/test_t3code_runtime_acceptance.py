@@ -30,7 +30,7 @@ NATIVE='33333333-3333-4333-8333-333333333333'
 
 
 def isolated_env(base):
-    env={k:v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC'}}
+    env={k:v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','LAM_STATE_DIR','LAM_TEST_STATE_DIR'}}
     env.update(USERPROFILE=str(base),HOME=str(base),APPDATA=str(base/'appdata'),LOCALAPPDATA=str(base/'local'),
                TEMP=str(base),TMP=str(base),CODEX_HOME=str(base/'codex'),CLAUDE_CONFIG_DIR=str(base/'claude'),DO_NOT_TRACK='1')
     return env

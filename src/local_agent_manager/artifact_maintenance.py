@@ -288,7 +288,8 @@ def query(path=None, *, root=None, operation_id=None, verify=False):
                     or path.parents[1].name != 'operations'
                     or path.parents[2].name not in {'.local-agent-record-janitor', '.local-agent-manager'}):
                 raise ValueError('maintenance_missing_external_plan')
-            store = OperationStore(rules.root_path(path.parents[3]), path.parent.name)
+            from .state_paths import journal_store_root
+            store = OperationStore(rules.root_path(journal_store_root(path.parents[2])), path.parent.name)
         else:
             document = strict_json_load(path)
             if (not isinstance(document, dict) or document.get('writer') != WRITER

@@ -1,26 +1,59 @@
 # Manager state maintenance
 
-`state inventory`, `state cleanup`, and `state migrate` operate on the manager's
-local recovery metadata in one explicit store root. Select the physical root
-separately for official Codex, Cindy's SDK home, and Cindy's frontend store.
-Follow the host-context checks in the Agent management skill when AppData is
-redirected by a packaged application.
+All manager state lives in one manager-owned directory, never inside an
+Agent's own data directory. Each physical store root gets its own
+subdirectory there for its journals, coordination lock, legacy index lock,
+temporary rollback copies and T3 desktop cleanup journals. Top-level plans
+and `delete run` receipts (`<operation-id>.json`, `<operation-id>.run.json`)
+go to its `plans/` directory and T3 `--handoff` evidence to `handoffs/`.
+
+The directory is chosen in this order:
+
+1. `LAM_STATE_DIR`, an absolute path;
+2. for a source checkout, its Git-ignored `.agent-manager-state`;
+3. for an installed package, the per-user
+   `local-agent-manager/state` (`%LOCALAPPDATA%` on Windows,
+   `$XDG_STATE_HOME` or `~/.local/state` elsewhere).
+
+```text
+<state directory>/
+    plans/<operation-id>.json, <operation-id>.run.json
+    handoffs/<handoff-id>/
+    <store key>/.local-agent-manager/
+        operations/.mutation.lock
+        operations/<operation-id>/
+        legacy-index.lock
+        desktop-state-backups/, legacy-index-backups/, desktop-cleanups/
+```
+
+The store key is derived from the store's canonical path, so the same store
+always maps to the same subdirectory. Keep this directory out of Git and
+build-output cleanup, and use one state directory for every writer of a
+store: processes that use different state directories do not exclude each
+other.
+
+`state inventory`, `state cleanup` and `state relocate` operate on one
+explicit store root. Select the physical root separately for official Codex,
+Cindy's SDK home, and Cindy's frontend store. Follow the host-context checks
+in the Agent management skill when AppData is redirected by a packaged
+application.
 
 ```powershell
 local-agent-manager state inventory --root '<physical store root>' --json
 local-agent-manager state cleanup --root '<physical store root>' --json
 local-agent-manager state cleanup --root '<physical store root>' --apply --plan-sha256 '<preview hash>' --json
-local-agent-manager state migrate --root '<physical store root>' --json
-local-agent-manager state migrate --root '<physical store root>' --apply --plan-sha256 '<preview hash>' --json
+local-agent-manager state relocate --root '<physical store root>' --json
+local-agent-manager state relocate --root '<physical store root>' --apply --plan-sha256 '<preview hash>' --json
 ```
 
 ## Inspection and cleanup
 
 Inventory and previews validate plans, checkpoint/event bindings, terminal
 results, receipts, and ordinary file boundaries. They preserve journal bytes
-and expired receipts. Access to an existing state root acquires its permanent
-OS coordination lock and creates that lock if this predates root locking.
-Inspecting a root with no manager state creates nothing.
+and expired receipts. Access to a store with manager state acquires its
+permanent OS coordination lock. Inspecting a root with no manager state
+creates nothing. Inventory lists old in-store locations that still exist as
+`historical_controls`.
 
 Cleanup applies the exact current preview hash while holding the root lock.
 It compacts validated terminal journals into the existing seven-day metadata
@@ -45,118 +78,44 @@ and `unmanaged_entries` for remaining evidence. A CLI failure reports
 `modified=null` because some earlier maintenance actions may have finished.
 Inventory reports use `lam.state-inventory.v1`. Exit codes are `0` for a
 successful report or application, `2` for invalid arguments, and `3` for a
-blocked command or pending migration. JSON is emitted with or without `--json`.
+blocked command or pending relocation. JSON is emitted with or without `--json`.
 
-## Explicit layout migration
+## Move old in-store state out of a store
 
-### Route new journals to a shared directory
+Earlier versions kept journals and locks inside the store, in
+`<root>/.local-agent-record-janitor` (and, after the old `state migrate`, in
+`<root>/.local-agent-manager`), optionally with a routing marker that pointed
+journals elsewhere. These locations are now read only as history: their
+journals still take part in admission, inventory, recovery and cleanup, and
+an unresolved one still blocks new mutations of that store.
 
-Use `state route` to store future manager journals and T3 desktop cleanup
-evidence outside the selected Agent store. Create the destination directory
-first. For a local checkout, use its ignored `.agent-manager-state` directory.
+`state relocate` moves that history into the manager state directory and
+then removes the old in-store directory:
 
-```powershell
-local-agent-manager state route --root '<physical store root>' --directory '<existing shared directory>' --json
-local-agent-manager state route --root '<physical store root>' --directory '<existing shared directory>' --apply --plan-sha256 '<preview hash>' --json
-```
-
-The manager allocates one destination per physical store. The root's existing
-coordination lock remains in place. Historical journals participate in
-admission, inventory, verification and cleanup under that same lock. The routing
-marker binds the external directory identity.
-Keep the destination available and use a build that understands the marker
-for every writer. If something outside the manager removes the store's
-`.local-agent-record-janitor` directory, the marker is lost and new journals
-would fall back into the store. Run `state route` again with the same
-directory: the preview lists the journals already in the store's routed
-location as `existing_operations`, and applying that hash re-attaches them.
-Any non-journal entry there blocks the route. Keep this directory out of Git and build-output cleanup.
-Use the original physical store root for ID-based recovery. Client-owned
-session data and short-lived sibling files needed for atomic replacement keep
-their existing locations.
-
-Top-level operation evidence follows the same route. When every store in a
-plan routes to one directory, new plans and `delete run` receipts
-(`<operation-id>.json`, `<operation-id>.run.json`) are written to
-`<directory>/plans`, and T3 `--handoff` evidence to `<directory>/handoffs`.
-Plans spanning unrouted stores, or stores routed to different directories, keep
-the per-user default (`%LOCALAPPDATA%\local-agent-record-janitor\plans` on
-Windows). Existing files are never moved: ID lookup checks the routed
-directory of `--operation-home`, `--codex-home` and the default `CODEX_HOME`,
-then the per-user default. For other routed clients, pass the store root as
-`--operation-home` or the exact `--plan` path.
-
-### Relocate retained journals to the shared directory
-
-```powershell
-local-agent-manager state relocate --root '<routed physical store root>' --json
-local-agent-manager state relocate --root '<routed physical store root>' --apply --plan-sha256 '<preview hash>' --json
-```
-
-Relocation accepts validated receipts and terminal journals, including historical
-checkpoints that lack a final result. It preserves operation IDs, plan hashes,
-events and receipt bytes. The manager stages and verifies the destination copy
-before removing the original journal files. Existing locks, unqualified
-journals, separate desktop cleanup journals and session stores stay in place.
-The original physical root and historical journal plan locator continue to
-resolve the record. A compact receipt proves the recorded outcome and retains
-its original expiry. Further verification still needs the applicable original
-plan and recovery evidence.
+- Validated receipts and terminal journals, including historical checkpoints
+  that lack a final result, are copied, verified and published in the
+  store's current location before the originals are removed. Operation IDs,
+  plan hashes, events and receipt bytes are preserved.
+- An old in-store directory is removed only when nothing else remains in it
+  but the old coordination lock, layout marker, legacy index lock and empty
+  containers. Each lock file is proven free (an older manager process would
+  still hold it) immediately before it is unlinked.
+- Unknown or unqualified journals and any unrecognized entry are retained;
+  their directory stays in place and is listed under `retained_controls`.
+  Resolve them with `operation status`/`verify` and run `state relocate`
+  again.
 
 During an interrupted relocation, inventory reports the original hash and
 normal operations fail closed. Resume with `state relocate --apply` and that
 hash. The command checks both copies before removing any remaining original
 files.
 
-### Migrate an in-place layout
+Plans that earlier versions wrote to the per-user
+`local-agent-record-janitor/plans` directory stay readable by operation ID;
+new plans are written only to the manager state directory.
 
-Before migration, journal and temporary rollback paths use
-`<root>/.local-agent-record-janitor`. Migration moves validated terminal
-operation directories to `<root>/.local-agent-manager/operations`, preserving
-their exact bytes, IDs, hashes, and event sequence. It requires all journals
-to be resolved and all other legacy control entries to be cleared through
-their owning recovery workflow. An unmarked destination is a conflict.
-The command preserves it for inspection. A historical terminal child checkpoint
-with validated bindings and final events can migrate intact even when its
-original writer did not publish a result document. Cleanup retains those
-details until supported verification produces a result.
-
-Migration keeps these entries at their original location permanently.
-
-```text
-<root>/.local-agent-record-janitor/operations/
-    .mutation.lock
-    .manager-layout.json
-```
-
-An existing `<root>/.local-agent-record-janitor/legacy-index.lock` also stays
-at its original location. Upgraded index writers share the root lock and
-continue using this original index lock. Maintenance additionally acquires
-an existing index lock to exclude older standalone index writers.
-
-The lock retains its original identity and continues to serialize new and
-older cooperating processes. The ordinary JSON marker makes earlier journal
-scanners reject new mutations. Upgraded readers and writers use the new
-operation and rollback paths after the completed marker is published. A
-cached upgraded store object rejects access when its layout changes. Any new
-journal appearing in the old directory blocks access pending inspection.
-Do not remove the lock or marker. This migration leaves a small coordination
-directory at the old name. It creates no junction or directory symlink.
-
-Before the first move, a durable marker records the exact approved manifest.
-Until every journal has been moved and checked, normal operations fail closed.
-`state inventory` reports the original migration hash. Resume with
-`state migrate --apply --plan-sha256 '<original hash>'`. Resume validates the
-complete manifest on both sides before moving anything else. Missing,
-duplicated, changed, or unexpected evidence blocks completion. Successful
-migration replaces the manifest with a small layout marker containing the
-root, destination, and migration hash.
-
-Recovery by exact operation ID and store root follows the new layout. An old
-exact journal plan path also resolves through the completed marker. Frozen
-operation documents and original plans remain byte-for-byte intact. An
-unexecuted record-deletion plan can still require regeneration when its
-implementation fingerprints have changed during a manager upgrade.
+`state route` and `state migrate` are retired. They return a blocked result
+that names the current state directory.
 
 ## Client artifact maintenance
 

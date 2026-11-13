@@ -378,7 +378,10 @@ class JointTests(unittest.TestCase):
         self.assertEqual(result['goal_status'], 'unknown', result)
         self.assertTrue(result['mutation_started'])
         self.assertEqual(len(calls), 1)
-        self.assertTrue(list(self.native.rglob('*.before')))
+        # Before-images are manager state: kept outside the native store.
+        from local_agent_manager.state_paths import control_directory
+        self.assertTrue(list(control_directory(self.native).rglob('*.before')))
+        self.assertFalse(list(self.native.rglob('*.before')))
         from local_agent_manager.mutation_guard import MutationScope, mutation_guard, UnknownMutationError
         with self.assertRaises(UnknownMutationError):
             with mutation_guard((MutationScope(self.native, None),)):

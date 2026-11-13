@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from local_agent_manager.state_paths import control_directory
+
 import json
 import os
 import queue
@@ -167,7 +169,7 @@ class MutationGuardTests(unittest.TestCase):
     def test_existing_lock_identity_replacement_is_rejected(self) -> None:
         with mutation_roots((self.home,)):
             pass
-        lock = self.home / ".local-agent-record-janitor" / "operations" / ".mutation.lock"
+        lock = control_directory(self.home) / "operations" / ".mutation.lock"
         original_open = os.open
         replaced = False
         def replace_before_open(path, flags, *args, **kwargs):
@@ -186,7 +188,7 @@ class MutationGuardTests(unittest.TestCase):
     def _assert_linked_lock_rejected(self, mode: str) -> None:
         with mutation_roots((self.home,)):
             pass
-        lock = self.home / ".local-agent-record-janitor" / "operations" / ".mutation.lock"
+        lock = control_directory(self.home) / "operations" / ".mutation.lock"
         outside = self.home / "other-lock"
         if mode == "hardlink":
             os.link(lock, outside)
@@ -538,7 +540,7 @@ with mutation_roots((Path(sys.argv[1]),)):
     print('ready', flush=True)
     sys.stdin.read(1)
 """)
-        lock = self.home / ".local-agent-record-janitor" / "operations" / ".mutation.lock"
+        lock = control_directory(self.home) / "operations" / ".mutation.lock"
         identity = lock.stat().st_ino
         with self.assertRaises(MutationRootLockedError):
             with mutation_guard((self.scope,)):

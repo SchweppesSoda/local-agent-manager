@@ -284,7 +284,7 @@ def _run_plan(
     output_path = (
         Path(args.out).expanduser()
         if args.out is not None
-        else _default_plan_path(operation_id, _optional_target_home(args))
+        else _default_plan_path(operation_id)
     )
     try:
         context = _scan_context(
@@ -383,39 +383,12 @@ def _run_plan(
         return EXIT_UNKNOWN
 
 
-def _optional_target_home(args: argparse.Namespace) -> Path | None:
-    try:
-        return _target_home(args)
-    except (OSError, ValueError):
-        return None
+def _default_plan_path(operation_id: str) -> Path:
+    """Return a manager-state path, never the current project directory."""
 
+    from .state_paths import PLANS_DIRECTORY, manager_state_base
 
-def _default_plan_path(operation_id: str, target_home: Path | None = None) -> Path:
-    """Return a per-user state path, never the current project directory.
-
-    A target store routed with ``state route`` keeps its plan beside its
-    journals in that external state directory.
-    """
-
-    if target_home is not None:
-        from .state_paths import routed_plans_directory
-
-        routed = routed_plans_directory((target_home,))
-        if routed is not None:
-            return routed / f"{operation_id}.json"
-    if os.name == "nt":
-        root = Path(
-            os.environ.get("LOCALAPPDATA")
-            or (Path.home() / "AppData" / "Local")
-        )
-    else:
-        configured = os.environ.get("XDG_STATE_HOME")
-        root = (
-            Path(configured).expanduser()
-            if configured
-            else Path.home() / ".local" / "state"
-        )
-    return root / "local-agent-record-janitor" / "plans" / f"{operation_id}.json"
+    return manager_state_base() / PLANS_DIRECTORY / f"{operation_id}.json"
 
 
 def _run_apply(

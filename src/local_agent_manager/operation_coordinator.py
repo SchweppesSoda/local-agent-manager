@@ -3931,21 +3931,13 @@ class OperationCoordinator:
     ) -> Path:
         if plan_path is not None:
             return Path(plan_path).expanduser().absolute()
-        # Top-level plans are user-state artifacts, not records in whichever
+        # Top-level plans are manager-state artifacts, not records in whichever
         # store happened to sort first. This gives a cross-process caller a
         # deterministic operation-id lookup and keeps plan output independent
-        # of the selected project's physical layout. Child journals remain
-        # next to their exact storage roots. When every selected store routes
-        # its journals to one external state directory (`state route`), the
-        # plan and its run receipt join them there.
-        from .state_paths import routed_plans_directory
-
-        del operation_home, codex_home, adapters
-        routed = routed_plans_directory(
-            Path(storage.path) for storage in getattr(getattr(context, "plan", None), "storages", ()) or ()
-        )
-        if routed is not None:
-            return routed / f"{operation_id}.json"
+        # of the selected project's physical layout. Child journals live in
+        # the same manager state directory, partitioned per store; the plan
+        # and its run receipt sit in its shared plans directory.
+        del operation_home, codex_home, adapters, context
         return _default_plans_directory() / f"{operation_id}.json"
 
     def _load_plan(
@@ -6233,16 +6225,17 @@ __all__ = ["OperationCoordinator", "OperationCoordinatorError"]
 
 
 def _default_plans_directory() -> Path:
-    """Per-user plan directory for stores without an external state route."""
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        state_root = Path(os.environ["LOCALAPPDATA"])
-    elif os.environ.get("XDG_STATE_HOME"):
-        state_root = Path(os.environ["XDG_STATE_HOME"])
-    else:
-        state_root = Path.home() / (
-            "AppData/Local" if os.name == "nt" else ".local/state"
-        )
-    return state_root / "local-agent-record-janitor" / "plans"
+    """Top-level plans and run receipts in the manager state directory."""
+    from .state_paths import PLANS_DIRECTORY, manager_state_base
+
+    return manager_state_base() / PLANS_DIRECTORY
+
+
+def _historical_plans_directories() -> tuple[Path, ...]:
+    """Per-user plan directories written by earlier versions (read only)."""
+    from .state_paths import LEGACY_USER_STATE, PLANS_DIRECTORY, user_state_root
+
+    return (user_state_root() / LEGACY_USER_STATE / PLANS_DIRECTORY,)
 
 
 def _operation_plan_path(root: Path, operation_id: str) -> Path:
@@ -6293,21 +6286,10 @@ def _find_operation_plan(
             base / str(operation_id) / "plan.json",
             base / "operations" / str(operation_id) / "plan.json",
         ))
-    # Routed stores keep plans beside their journals; older plans remain in
-    # the per-user default directory.
-    from .state_paths import routed_plans_directory
-
-    homes = [Path(root).expanduser().absolute() for root in (operation_home, codex_home) if root is not None]
-    default_codex = os.environ.get("CODEX_HOME")
-    homes.append(Path(default_codex).expanduser().absolute() if default_codex else Path.home() / ".codex")
-    for home in homes:
-        try:
-            routed = routed_plans_directory((home,))
-        except Exception:
-            routed = None
-        if routed is not None:
-            candidates.append(routed / f"{operation_id}.json")
+    # Current plans live in manager state; earlier versions wrote them to a
+    # per-user directory under the old project name.
     candidates.append(_default_plans_directory() / f"{operation_id}.json")
+    candidates.extend(directory / f"{operation_id}.json" for directory in _historical_plans_directories())
     seen: set[str] = set()
     for candidate in candidates:
         key = os.path.normcase(str(candidate))

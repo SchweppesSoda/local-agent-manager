@@ -212,7 +212,8 @@ class ColdCliRehearsal(unittest.TestCase):
                     'runtime_binaries': [str(self.frontend), str(binary)], 'native_stores': bindings,
                     'desktop_profiles': [{'root': str(self.desktop), 'runtime_binaries': [str(self.frontend)]}]}
         self.bindings = self.base/'bindings.json'; self.bindings.write_text(json.dumps(manifest))
-        env = {k: v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','LARJ_LEVELDB_RUNTIME','LARJ_NODE','LAM_REHEARSAL_CODEX_BINARY','LAM_REHEARSAL_PROFILE'}}
+        env = {k: v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','LARJ_LEVELDB_RUNTIME','LARJ_NODE','LAM_REHEARSAL_CODEX_BINARY','LAM_REHEARSAL_PROFILE',
+                                                                       'LAM_STATE_DIR','LAM_TEST_STATE_DIR'}}
         self.env = {**env, 'TEMP': str(self.base), 'TMP': str(self.base), 'PYTHONUTF8': '1', 'USERPROFILE': str(self.base/'profile'), 'HOME': str(self.base/'profile'),
                     'APPDATA': str(self.base/'appdata'), 'LOCALAPPDATA': str(self.base/'local'), 'CODEX_HOME': str(self.home),
                     'CLAUDE_CONFIG_DIR': str(self.claude), 'T3CODE_HOME': str(self.root), 'PASEO_HOME': str(self.base/'no-paseo'),
