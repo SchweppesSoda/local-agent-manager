@@ -5,6 +5,11 @@ Skill source/deployment management, management workflows, and record cleanup. Ge
 maintenance is maintained separately. Editing code/documentation is distinct
 from changing live software/configuration or deleting a user's live stores.
 
+This is the owner's local management tool for a few personal PCs, not a
+commercial or public product. Each PC uses one Python installation to register
+one authoritative editable checkout; record-operation locks, logs, plans and
+receipts belong to that checkout's `.agent-manager-state`.
+
 ## Source work
 
 - Use the existing `main` checkout with one writer. Inspect branch, upstream,
@@ -13,6 +18,17 @@ from changing live software/configuration or deleting a user's live stores.
 - Complete requested reversible local edits, relevant checks and scoped local
   commits without pausing after a first draft. Search affected APIs and direct
   consumers first; expand for shared protocol changes or demonstrated risk.
+- Prefer the current logic and remove obsolete command/routing compatibility;
+  do not automatically migrate or delete existing live evidence. Make the
+  smallest change for demonstrated needs rather than building general
+  registration or migration frameworks for hypothetical public deployments.
+- Preserve frozen approval scope, physical store identity, confirmed native
+  completion before frontend cleanup, atomic writes and interruption recovery.
+  Retaining frontend references after mixed native results is acceptable.
+  Recovery reports must retain cumulative mutations and completed batches.
+- Test data isolation and optional runtime validation are separate: preserve
+  runtime locations before isolating data paths, and let broken optional
+  dependencies fail only their dependent tests, not ordinary test collection.
 - Documentation needs link/diff checks. Code changes use relevant existing
   tests with temporary stores; shared deletion/authorization changes need the
   corresponding protocol regression coverage. Never use live cleanup as a test.

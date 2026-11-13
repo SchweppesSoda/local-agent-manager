@@ -64,5 +64,7 @@ if _created:
 from local_agent_manager import office_leveldb as _level
 _runtime = _level._runtime_directory()
 if os.environ.get("LARJ_LEVELDB_RUNTIME") or _runtime.exists():
-    _node, _dependency, _helper = _level.runtime()
-    os.environ["LARJ_LEVELDB_RUNTIME"] = str(_dependency)
+    # Preserve dependency discovery before tests isolate LOCALAPPDATA. Only
+    # dependent tests validate the optional runtime; ordinary tests can import
+    # with an explicitly invalid or already damaged installation.
+    os.environ["LARJ_LEVELDB_RUNTIME"] = str(_runtime)

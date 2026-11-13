@@ -301,6 +301,8 @@ class CindyCodexOperationTests(unittest.TestCase):
             first = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),),
                 clients_closed=True, app_server_factory=self.server, binary_resolver=lambda _: self.root / "codex")
         self.assertEqual(first["goal_status"], "blocked", first)
+        self.assertTrue(first["modified"])
+        self.assertTrue(first["mutation_started"])
         self.assertEqual(self.calls, ["child", "delete"])
         self.assertFalse(self.paths["delete"].exists())
         self.assertFalse(self.paths["child"].exists())
@@ -349,9 +351,16 @@ class CindyCodexOperationTests(unittest.TestCase):
             db.execute("INSERT INTO threads (id,rollout_path,source) VALUES ('delete',?,'app-server')", (str(self.paths["delete"]),))
             db.commit()
         coordinator = self.coordinator()
+        inspection = coordinator._inspect_child_states(plan)
         with patch.object(coordinator.service, "execute", side_effect=AssertionError("resurrected native released references")) as execute:
-            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True)
+            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True,
+                app_server_factory=lambda **_: self.fail("native deletion replayed"))
         self.assertEqual(result["goal_status"], "blocked", result)
+        self.assertTrue(result["modified"])
+        self.assertTrue(result["mutation_started"])
+        self.assertEqual(result["batches"], list(inspection.batches))
+        self.assertTrue(any(batch["status"] == "complete" for batch in result["batches"]))
+        self.assertEqual(self.calls, ["child", "delete"])
         execute.assert_not_called()
 
     def test_cold_reference_rebind_blocks_new_reference(self):
@@ -360,12 +369,38 @@ class CindyCodexOperationTests(unittest.TestCase):
             db.execute("INSERT INTO sessions (id,sdk_session_id,agent_kind,status) VALUES ('new-ui','child','codex','active')")
             db.commit()
         coordinator = self.coordinator()
+        inspection = coordinator._inspect_child_states(plan)
         with patch.object(coordinator.service, "execute", side_effect=AssertionError("changed closure released references")) as execute:
-            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True)
+            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True,
+                app_server_factory=lambda **_: self.fail("native deletion replayed"))
         self.assertEqual(result["goal_status"], "blocked", result)
+        self.assertTrue(result["modified"])
+        self.assertTrue(result["mutation_started"])
+        self.assertEqual(result["batches"], list(inspection.batches))
+        self.assertTrue(any(batch["status"] == "complete" for batch in result["batches"]))
+        self.assertEqual(self.calls, ["child", "delete"])
         execute.assert_not_called()
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='ui-child'").fetchone(), ("child",))
+
+    def test_cold_reference_rebind_block_before_writes_reports_no_mutation(self):
+        plan = self.plan(record_ids=("delete",))
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("INSERT INTO sessions (id,sdk_session_id,agent_kind,status) VALUES ('new-ui','child','codex','active')")
+            db.commit()
+        coordinator = self.coordinator()
+        inspection = coordinator._inspect_child_states(plan)
+        with patch.object(coordinator.service, "execute", side_effect=AssertionError("changed closure reached writer")) as execute:
+            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True,
+                app_server_factory=lambda **_: self.fail("native deletion started"))
+        self.assertEqual(result["goal_status"], "blocked", result)
+        self.assertFalse(result["modified"])
+        self.assertFalse(result["mutation_started"])
+        self.assertEqual(result["batches"], list(inspection.batches))
+        self.assertTrue(all(batch["status"] == "pending" for batch in result["batches"]))
+        self.assertEqual(self.calls, [])
+        self.assertTrue(all(path.exists() for path in self.paths.values()))
+        execute.assert_not_called()
 
     def test_frozen_reference_dependencies_are_storage_qualified_and_require_all_natives(self):
         def raw(action_id, kind, storage, affected):

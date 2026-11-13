@@ -233,5 +233,69 @@ with mutation_roots([Path(sys.argv[1])]):
         self.assertEqual(list(self.home.iterdir()), [])
 
 
+class BootstrapRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.environment = dict(os.environ, LOCALAPPDATA=str(self.root / "local"))
+        for name in ("_LAM_TEST_INSTALLATION", "LARJ_LEVELDB_RUNTIME", "LARJ_REQUIRE_LEVELDB_TESTS"):
+            self.environment.pop(name, None)
+
+    def child(self, arguments, **environment):
+        return subprocess.run([sys.executable, *arguments], cwd=Path(__file__).resolve().parents[1],
+            env={**self.environment, **environment}, capture_output=True, text=True, timeout=30)
+
+    def test_invalid_optional_runtime_does_not_block_ordinary_test_entrypoints(self):
+        for arguments in (("-m", "unittest", "tests.test_core_types"),
+                          ("-m", "unittest", "discover", "-s", "tests", "-p", "test_core_types.py"),
+                          ("tests/test_core_types.py",)):
+            with self.subTest(arguments=arguments):
+                result = self.child(arguments, LARJ_LEVELDB_RUNTIME=str(self.root / "missing-runtime"))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("OK", result.stderr)
+
+    def test_related_tests_keep_optional_runtime_failure_and_skip_gates(self):
+        arguments = ("-m", "unittest", "tests.test_office_leveldb.OfficeLevelDBTests")
+        broken = self.root / "broken" / "local-agent-manager/runtimes/leveldb-v1"
+        broken.mkdir(parents=True)
+        cases = (
+            ({}, True),
+            ({"LARJ_LEVELDB_RUNTIME": str(self.root / "missing-runtime")}, False),
+            ({"LOCALAPPDATA": str(self.root / "broken")}, False),
+            ({"LARJ_REQUIRE_LEVELDB_TESTS": "1"}, False),
+        )
+        for environment, skipped in cases:
+            with self.subTest(environment=environment):
+                result = self.child(arguments, **environment)
+                if skipped:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("skipped=1", result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("office_leveldb_dependency_unavailable", result.stderr)
+                    self.assertNotIn("skipped=", result.stderr)
+
+    def test_default_runtime_location_survives_localappdata_isolation(self):
+        runtime = self.root / "local/local-agent-manager/runtimes/leveldb-v1"
+        runtime.mkdir(parents=True)
+        code = """from tests import bootstrap
+import json, os, sys
+from local_agent_manager import office_leveldb
+from tests.runtime_support import require_leveldb
+os.environ['LOCALAPPDATA'] = sys.argv[1]
+try:
+    require_leveldb()
+except office_leveldb.OfficeLevelDBError as exc:
+    print(json.dumps([os.environ['LARJ_LEVELDB_RUNTIME'], str(office_leveldb._runtime_directory()), exc.kind]))
+else:
+    raise AssertionError('damaged optional runtime was accepted')
+"""
+        result = self.child(("-c", code, str(self.root / "isolated-local")))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout),
+            [str(runtime), str(runtime), "office_leveldb_dependency_unavailable"])
+
+
 if __name__ == "__main__":
     unittest.main()

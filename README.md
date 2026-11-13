@@ -1,6 +1,6 @@
 # Local Agent Manager / 本地 Agent 管理器
 
-`local-agent-manager` 是统一的发行包和 CLI，Python 模块为 `local_agent_manager`。工具包含环境盘点与接入、Skill 源与部署、记录管理三个模块。
+`local-agent-manager` 是本人在少数几台 PC 上使用的本地管理工具，非商业或面向公众的产品。发行包和 CLI 统一为 `local-agent-manager`，Python 模块为 `local_agent_manager`，包含环境盘点与接入、Skill 源与部署、记录管理三个模块。
 
 ```powershell
 local-agent-manager environment inventory --json
@@ -11,7 +11,7 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 
 两个权威管理 Skill 是 [agent-management](skills/agent-management/SKILL.md) 与 [skill-management](skills/skill-management/SKILL.md)。后者管理各类 Skill 的创建、内容维护、发现、导入、部署、同步、验证与恢复，按所选源和客户端执行。`work-skills` 作为独立源接入，`mount-work-skills` 保留该源的兼容入口。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。各源维护自身内容、运行时与客户端配置；普通 Skill 内容修改无需先登记部署。
 
-主命令与 Python 模块统一使用 `local-agent-manager` 和 `local_agent_manager`。现行 `larj.*` journal/schema、`LARJ_*` 运行时变量和恢复证据保持原契约。每机使用一个 Python 安装登记的权威 editable 仓库，全部协调状态固定在该仓库 `.agent-manager-state`；运行其他 checkout 或设置状态目录环境变量不会另起锁与日志。详见[状态维护](docs/state-maintenance.md)。
+主命令与 Python 模块统一使用 `local-agent-manager` 和 `local_agent_manager`。现行 `larj.*` journal/schema、`LARJ_*` 运行时变量和恢复证据保持原契约。每机使用一个 Python 安装登记的权威 editable 仓库，记录操作的协调状态固定在该仓库 `.agent-manager-state`；运行其他 checkout 或设置状态目录环境变量不会另起锁与日志。详见[状态维护](docs/state-maintenance.md)。
 
 完整设计和入口边界见 [整合设计](docs/manager-integration.md)。
 
@@ -114,7 +114,7 @@ Magpie 的会话列表、解析缓存、网关历史和回收站是原生记录�
 
 ### 安装登记与入口
 
-只使用当前项目命令与模块；旧项目 CLI 和 package 别名已移除。每台电脑以一个 Python 安装登记一个权威 editable checkout，所有记录操作均由该登记定位 `.agent-manager-state`，未登记或登记冲突时拒绝操作。其他 checkout 使用同一解释器即可共享协调状态。
+只使用当前项目命令与模块；旧项目 CLI 和 package 别名已移除。每台电脑以一个 Python 安装登记一个权威 editable checkout，记录操作的锁、日志、计划和回执都归该仓库 `.agent-manager-state`，未登记或登记冲突时拒绝操作。其他 checkout 使用同一解释器即可共享协调状态。
 
 当前 store key、journal 与 receipt 格式不变，原仓库现用状态可继续读取。旧目录 marker、旧用户计划目录和 `state route/migrate/relocate` 不再参与查找，不自动迁删旧文件。实现和运行路径改变后，受绑定的未执行计划重新生成。
 
@@ -929,7 +929,7 @@ python tests/test_legacy_index.py
 
 测试 subprocess 校验并复用父登记，只有创建者清理临时仓库。测试数据、journal 和锁都在临时目录中，测试不会写真实仓库 `.agent-manager-state` 或 Agent 数据目录。`LAM_STATE_DIR`、`LAM_TEST_STATE_DIR` 均不选择测试或生产状态。
 
-LevelDB 集成测试复用已配置的固定运行时，与测试数据隔离分别管理。可用 `LARJ_LEVELDB_RUNTIME` 指定已安装的 pinned runtime；父子进程沿用同一路径。仅未配置且默认路径不存在时跳过；显式路径错误、已存在但损坏的依赖都会失败。CI 设置 `LARJ_REQUIRE_LEVELDB_TESTS=1` 强制运行，并单独准备其精确依赖。真实桌面/CLI rehearsal 仍通过各自显式运行时选项启用，不把可选运行时缺失扩成整类普通恢复测试的跳过。
+LevelDB 集成测试复用已配置的固定运行时，与测试数据隔离分别管理。可用 `LARJ_LEVELDB_RUNTIME` 指定已安装的 pinned runtime；bootstrap 只在隔离 `LOCALAPPDATA` 前保留运行时位置，父子进程沿用同一路径，由真正依赖 LevelDB 的测试或 helper 校验。仅未配置且默认路径不存在时跳过；显式路径错误、已存在但损坏的依赖使相关测试失败，普通测试仍可收集和运行。CI 设置 `LARJ_REQUIRE_LEVELDB_TESTS=1` 强制相关测试运行，并单独准备其精确依赖。真实桌面/CLI rehearsal 仍通过各自显式运行时选项启用，不把可选运行时缺失扩成整类普通恢复测试的跳过。
 
 贡献新 adapter 前，请先阅读 [docs/adapters.md](docs/adapters.md)。任何扩大自动删除范围的修改，都必须同时提供误删反例测试。
 

@@ -500,7 +500,9 @@ class OperationCoordinator:
                 if blockers:
                     return self._result_document(
                         document, normalized_scope, goal_status="blocked",
-                        blockers=blockers, batches=(),
+                        blockers=blockers, batches=child_inspection.batches,
+                        modified=child_inspection.modified,
+                        mutation_started=child_inspection.mutation_started,
                     )
                 live = _LiveOperation(
                     operation_id=operation,
