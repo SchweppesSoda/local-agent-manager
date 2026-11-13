@@ -98,7 +98,8 @@ class CindyCodexOperationTests(unittest.TestCase):
         result = self.apply(plan)
         self.assertEqual(result["goal_status"], "complete", result)
         self.assertTrue(result["modified"])
-        self.assertEqual(self.calls, ["delete"])
+        # No spawn edge links the child, so it is deleted before its parent.
+        self.assertEqual(self.calls, ["child", "delete"])
         self.assertFalse(self.paths["child"].exists())
         self.assertTrue(self.paths["keep"].exists())
         self.assertEqual((self.official / "state_5.sqlite").read_bytes(), self.official_before)
@@ -137,7 +138,7 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertEqual(plan["goal_status"], "ready", plan)
         result = self.apply(plan)
         self.assertEqual(result["goal_status"], "complete", result)
-        self.assertEqual(self.calls, ["delete", "keep"])
+        self.assertEqual(self.calls, ["child", "delete", "keep"])
         self.assertFalse(any(path.exists() for path in self.paths.values()))
         self.assertEqual((self.official / "state_5.sqlite").read_bytes(), self.official_before)
         with closing(sqlite3.connect(self.database)) as db:
@@ -235,7 +236,8 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "unknown", result)
         repeated = self.apply(plan)
         self.assertEqual(repeated["goal_status"], "unknown", repeated)
-        self.assertEqual(self.calls, ["delete"])
+        # The first (child) request is unknown; nothing is sent again.
+        self.assertEqual(self.calls, ["child"])
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='ui-delete'").fetchone()[0], "delete")
 
@@ -375,7 +377,7 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertEqual(plan["goal_status"], "ready", plan)
         result = self.apply(plan)
         self.assertEqual(result["goal_status"], "complete", result)
-        self.assertEqual(self.calls, ["delete"])
+        self.assertEqual(self.calls, ["child", "delete"])
         self.assertFalse(self.paths["child"].exists())
         self.assertTrue(self.paths["keep"].exists())
 

@@ -1436,6 +1436,14 @@ def _clean_group(
                     break
                 request_error: str | None = None
                 try:
+                    # Codex cascades thread/delete only through spawn edges.
+                    # Source-linked children such as Guardian review stay
+                    # behind, so delete the approved remainder first,
+                    # deepest first, while their parent is still present.
+                    for child_id in _non_cascading_descendants(
+                        finding.codex_home, finding.thread_id, descendants
+                    ):
+                        server.delete_thread(child_id)
                     server.delete_thread(finding.thread_id)
                 except Exception as exc:
                     request_error = str(exc) or repr(exc)
@@ -1544,6 +1552,57 @@ def _verify_with_retries(
         if attempt + 1 < attempts and interval:
             time.sleep(interval)
     return result
+
+
+def _non_cascading_descendants(
+    codex_home: Path,
+    root_id: str,
+    descendants: Iterable[str],
+) -> list[str]:
+    """Approved descendants that Codex thread/delete will not remove itself.
+
+    Codex follows ``thread_spawn_edges`` when deleting a thread. Children that
+    are linked to their parent only by source metadata (for example Guardian
+    review subagents) survive the parent's deletion as orphans. Return those
+    children of the frozen scope, deepest first, so each is deleted before
+    its parent. Spawn-linked descendants are left to Codex's own cascade.
+    """
+    scope = {value for value in descendants if value and value != root_id}
+    if not scope:
+        return []
+    children: dict[str, set[str]] = defaultdict(set)
+    for edge in read_spawn_edge_records(codex_home, {root_id, *scope}, strict=True):
+        children[edge.parent_thread_id].add(edge.child_thread_id)
+    cascaded: set[str] = set()
+    pending = [root_id]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child in scope and child not in cascaded:
+                cascaded.add(child)
+                pending.append(child)
+    remaining = scope - cascaded
+    if not remaining:
+        return []
+    lineage = read_native_lineage_snapshot(codex_home, strict=True).lineage
+
+    def depth(thread_id: str) -> int:
+        seen = {thread_id}
+        current = thread_id
+        level = 0
+        while current != root_id:
+            info = lineage.get(current)
+            parents = [
+                parent for parent in (info.parent_thread_ids if info else ())
+                if parent == root_id or parent in scope
+            ]
+            if len(parents) != 1 or parents[0] in seen:
+                break
+            current = parents[0]
+            seen.add(current)
+            level += 1
+        return level
+
+    return sorted(remaining, key=lambda value: (-depth(value), value))
 
 
 def _resolve_approved_descendants(

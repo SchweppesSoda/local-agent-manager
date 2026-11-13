@@ -2279,7 +2279,31 @@ class OperationCoordinator:
                     (parent_id, parent_affected)
                 )
 
+        # A native anomaly action (for example a root classified as an orphan)
+        # can freeze the same descendants as its own cascade. Selecting those
+        # children again as separate records splits one cascade across
+        # batches; the later batch then finds its parent outside scope.
+        def storage_id(action: Any) -> str | None:
+            value = getattr(getattr(action, "target", None), "storage_id", None)
+            return None if value is None else str(value)
+
+        native_parents: dict[tuple[str, str], list[set[str]]] = {}
+        candidate_storage: dict[str, str | None] = {}
+        for action in candidates:
+            candidate_storage[str(action.action_id)] = storage_id(action)
+            kind = getattr(action, "kind", None)
+            if (str(action.action_id) in selected or candidate_storage[str(action.action_id)] is None
+                    or str(getattr(kind, "value", kind)) != "delete_conversation"):
+                continue
+            impact = getattr(action, "impact", None)
+            affected = set(getattr(impact, "affected_thread_ids", ()) or ())
+            for descendant_id in getattr(impact, "descendant_thread_ids", ()) or ():
+                native_parents.setdefault(
+                    (candidate_storage[str(action.action_id)], str(descendant_id)), []
+                ).append(affected)
+
         covered: set[str] = set()
+        covered_by_native: set[str] = set()
         for action_id, child in selected.items():
             key = (storage_by_action[action_id], child.thread_id)
             child_affected = affected_by_action[action_id]
@@ -2289,13 +2313,21 @@ class OperationCoordinator:
                 for parent_id, parent_affected in parents_by_descendant.get(key, ())
             ):
                 covered.add(action_id)
+                continue
+            child_storage = candidate_storage.get(action_id)
+            if child_storage is not None and any(
+                    child_affected.issubset(parent_affected) for parent_affected in
+                    native_parents.get((child_storage, child.thread_id), ())):
+                covered_by_native.add(action_id)
         covered_references: set[str] = set()
         retained_references: set[str] = set()
         for action_id, manual in selected.items():
             destination = covered_references if action_id in covered else retained_references
             destination.update(str(action.action_id) for action in
                                build_manual_delete_closure(manual).frontend_actions)
-        omitted = covered | (covered_references - retained_references)
+        # The native parent action does not carry a manual child's frontend
+        # reference closure, so those reference actions stay selected.
+        omitted = covered | covered_by_native | (covered_references - retained_references)
         return tuple(action for action in candidates if str(action.action_id) not in omitted)
 
     def _merge_cindy_orphan_references(self, context: Any, inventory: Any, *, client: str) -> Any:
@@ -3903,17 +3935,18 @@ class OperationCoordinator:
         # store happened to sort first. This gives a cross-process caller a
         # deterministic operation-id lookup and keeps plan output independent
         # of the selected project's physical layout. Child journals remain
-        # next to their exact storage roots.
-        del operation_home, codex_home, context, adapters
-        if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-            state_root = Path(os.environ["LOCALAPPDATA"])
-        elif os.environ.get("XDG_STATE_HOME"):
-            state_root = Path(os.environ["XDG_STATE_HOME"])
-        else:
-            state_root = Path.home() / (
-                "AppData/Local" if os.name == "nt" else ".local/state"
-            )
-        return state_root / "local-agent-record-janitor" / "plans" / f"{operation_id}.json"
+        # next to their exact storage roots. When every selected store routes
+        # its journals to one external state directory (`state route`), the
+        # plan and its run receipt join them there.
+        from .state_paths import routed_plans_directory
+
+        del operation_home, codex_home, adapters
+        routed = routed_plans_directory(
+            Path(storage.path) for storage in getattr(getattr(context, "plan", None), "storages", ()) or ()
+        )
+        if routed is not None:
+            return routed / f"{operation_id}.json"
+        return _default_plans_directory() / f"{operation_id}.json"
 
     def _load_plan(
         self,
@@ -6199,6 +6232,19 @@ def _looks_like_project_path(value: object) -> bool:
 __all__ = ["OperationCoordinator", "OperationCoordinatorError"]
 
 
+def _default_plans_directory() -> Path:
+    """Per-user plan directory for stores without an external state route."""
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        state_root = Path(os.environ["LOCALAPPDATA"])
+    elif os.environ.get("XDG_STATE_HOME"):
+        state_root = Path(os.environ["XDG_STATE_HOME"])
+    else:
+        state_root = Path.home() / (
+            "AppData/Local" if os.name == "nt" else ".local/state"
+        )
+    return state_root / "local-agent-record-janitor" / "plans"
+
+
 def _operation_plan_path(root: Path, operation_id: str) -> Path:
     """Map one explicit store/operation root to the canonical plan path."""
     from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, operation_control, relocated_plan_path
@@ -6247,18 +6293,21 @@ def _find_operation_plan(
             base / str(operation_id) / "plan.json",
             base / "operations" / str(operation_id) / "plan.json",
         ))
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        state_root = Path(os.environ["LOCALAPPDATA"])
-    elif os.environ.get("XDG_STATE_HOME"):
-        state_root = Path(os.environ["XDG_STATE_HOME"])
-    else:
-        state_root = Path.home() / (
-            "AppData/Local" if os.name == "nt" else ".local/state"
-        )
-    candidates.append(
-        state_root / "local-agent-record-janitor" / "plans"
-        / f"{operation_id}.json"
-    )
+    # Routed stores keep plans beside their journals; older plans remain in
+    # the per-user default directory.
+    from .state_paths import routed_plans_directory
+
+    homes = [Path(root).expanduser().absolute() for root in (operation_home, codex_home) if root is not None]
+    default_codex = os.environ.get("CODEX_HOME")
+    homes.append(Path(default_codex).expanduser().absolute() if default_codex else Path.home() / ".codex")
+    for home in homes:
+        try:
+            routed = routed_plans_directory((home,))
+        except Exception:
+            routed = None
+        if routed is not None:
+            candidates.append(routed / f"{operation_id}.json")
+    candidates.append(_default_plans_directory() / f"{operation_id}.json")
     seen: set[str] = set()
     for candidate in candidates:
         key = os.path.normcase(str(candidate))

@@ -284,7 +284,7 @@ def _run_plan(
     output_path = (
         Path(args.out).expanduser()
         if args.out is not None
-        else _default_plan_path(operation_id)
+        else _default_plan_path(operation_id, _optional_target_home(args))
     )
     try:
         context = _scan_context(
@@ -383,9 +383,26 @@ def _run_plan(
         return EXIT_UNKNOWN
 
 
-def _default_plan_path(operation_id: str) -> Path:
-    """Return a per-user state path, never the current project directory."""
+def _optional_target_home(args: argparse.Namespace) -> Path | None:
+    try:
+        return _target_home(args)
+    except (OSError, ValueError):
+        return None
 
+
+def _default_plan_path(operation_id: str, target_home: Path | None = None) -> Path:
+    """Return a per-user state path, never the current project directory.
+
+    A target store routed with ``state route`` keeps its plan beside its
+    journals in that external state directory.
+    """
+
+    if target_home is not None:
+        from .state_paths import routed_plans_directory
+
+        routed = routed_plans_directory((target_home,))
+        if routed is not None:
+            return routed / f"{operation_id}.json"
     if os.name == "nt":
         root = Path(
             os.environ.get("LOCALAPPDATA")

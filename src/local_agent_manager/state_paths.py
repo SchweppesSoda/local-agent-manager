@@ -163,6 +163,38 @@ def control_directory(root: Path) -> Path:
     return destination
 
 
+PLANS_DIRECTORY = "plans"
+
+
+def routed_state_base(roots) -> Path | None:
+    """Return the shared external base when every store root routes to it.
+
+    Top-level plans and run receipts follow the routed journal location so a
+    configured project state directory keeps all operation evidence together.
+    A root without routing, a missing root or routes to different bases keep
+    the per-user default; an invalid routing marker fails closed.
+    """
+    bases: dict[str, Path] = {}
+    roots = tuple(roots)
+    if not roots:
+        return None
+    for root in roots:
+        root = Path(root)
+        if not root.is_dir():
+            return None
+        marker = read_layout_marker(root)
+        if marker is None or marker.get("schema_version") != ROUTED_LAYOUT:
+            return None
+        base = Path(marker["base"])
+        bases[os.path.normcase(str(base))] = base
+    return next(iter(bases.values())) if len(bases) == 1 else None
+
+
+def routed_plans_directory(roots) -> Path | None:
+    base = routed_state_base(roots)
+    return None if base is None else base / PLANS_DIRECTORY
+
+
 def control_directories(root: Path) -> tuple[Path, ...]:
     """Find both the configured write location and any in-place historical journals."""
     current = control_directory(root)

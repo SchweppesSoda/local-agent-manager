@@ -20,7 +20,7 @@ class CindyEmptyCompletionTests(unittest.TestCase):
         plan = fixture.plan(record_ids=("delete", "keep"))
         result = fixture.apply(plan)
         self.assertEqual(result["goal_status"], "complete", result)
-        self.assertEqual(set(fixture.calls), {"delete", "keep"})
+        self.assertEqual(set(fixture.calls), {"child", "delete", "keep"})
         self.assertTrue(all(not path.exists() for path in fixture.paths.values()))
         with closing(sqlite3.connect(fixture.database)) as database:
             self.assertEqual(database.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 3)

@@ -96,6 +96,33 @@ class StateMaintenanceTests(unittest.TestCase):
         self.assertTrue(fresh.receipt_path.is_file())
         self.assertEqual(_file_identity(lock.stat()), identity)
 
+    def test_route_reattaches_existing_journals_after_marker_loss(self):
+        import shutil
+
+        base = self.root / "external"
+        base.mkdir()
+        preview = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        routed = self.terminal("routed")
+        self.assertTrue(routed.directory.is_relative_to(base))
+        # An external tool removed the store's control directory and marker.
+        shutil.rmtree(self.home / LEGACY_CONTROL)
+        preview = run_state_command("route", self.home, directory=base)
+        self.assertEqual(preview["plan"]["existing_operations"], ["routed"])
+        result = run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        self.assertEqual(result["phase"], "complete")
+        self.assertEqual(run_state_command("inventory", self.home)["operation_count"], 1)
+        self.assertEqual(_find_operation_plan("routed", operation_home=self.home), routed.plan_path)
+        self.assertTrue(self.terminal("after").directory.is_relative_to(base))
+
+    def test_route_reattach_rejects_unmanaged_destination_entries(self):
+        base = self.root / "external"
+        base.mkdir()
+        target = Path(run_state_command("route", self.home, directory=base)["destination"])
+        (target / "operations" / "not a journal").mkdir(parents=True)
+        with self.assertRaises(OperationStoreError):
+            run_state_command("route", self.home, directory=base)
+
     def test_routed_store_still_fails_closed_on_unknown_legacy_journal(self):
         old = write_journal(self.home, "old-unknown", basic_action(self.home))
         old.lock_path.write_text("existing lock", encoding="utf-8")

@@ -65,10 +65,26 @@ coordination lock remains in place. Historical journals participate in
 admission, inventory, verification and cleanup under that same lock. The routing
 marker binds the external directory identity.
 Keep the destination available and use a build that understands the marker
-for every writer. Keep this directory out of Git and build-output cleanup.
+for every writer. If something outside the manager removes the store's
+`.local-agent-record-janitor` directory, the marker is lost and new journals
+would fall back into the store. Run `state route` again with the same
+directory: the preview lists the journals already in the store's routed
+location as `existing_operations`, and applying that hash re-attaches them.
+Any non-journal entry there blocks the route. Keep this directory out of Git and build-output cleanup.
 Use the original physical store root for ID-based recovery. Client-owned
 session data and short-lived sibling files needed for atomic replacement keep
 their existing locations.
+
+Top-level operation evidence follows the same route. When every store in a
+plan routes to one directory, new plans and `delete run` receipts
+(`<operation-id>.json`, `<operation-id>.run.json`) are written to
+`<directory>/plans`, and T3 `--handoff` evidence to `<directory>/handoffs`.
+Plans spanning unrouted stores, or stores routed to different directories, keep
+the per-user default (`%LOCALAPPDATA%\local-agent-record-janitor\plans` on
+Windows). Existing files are never moved: ID lookup checks the routed
+directory of `--operation-home`, `--codex-home` and the default `CODEX_HOME`,
+then the per-user default. For other routed clients, pass the store root as
+`--operation-home` or the exact `--plan` path.
 
 ### Relocate retained journals to the shared directory
 

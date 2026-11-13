@@ -317,6 +317,27 @@ def _migrate_locked(root: Path, *, apply: bool = False, approved_hash: str | Non
     return result
 
 
+def _routed_destination_journals(target: Path) -> list[str]:
+    """Validated operation IDs already present in a store's routed location."""
+    for path in (target.parent, target, target / "operations"):
+        info = _optional_lstat(path)
+        if info is None:
+            return []
+        _validate_directory(path, info)
+        permitted = {target.name} if path == target.parent else {"operations"} if path == target else None
+        if permitted is not None and {entry.name for entry in path.iterdir()} - permitted:
+            raise OperationStoreError("The new journal location already contains state")
+    names = []
+    for entry in sorted((target / "operations").iterdir()):
+        try:
+            validate_operation_id(entry.name)
+        except (ValueError, OperationStoreError) as exc:
+            raise OperationStoreError("The routed journal location contains unmanaged state") from exc
+        _validate_directory(entry, _required_lstat(entry))
+        names.append(entry.name)
+    return names
+
+
 def _route_locked(root: Path, directory: Path, *, apply: bool, approved_hash: str | None) -> dict:
     validate_external_directory(root, directory)
     source = control_directory(root)
@@ -333,17 +354,18 @@ def _route_locked(root: Path, directory: Path, *, apply: bool, approved_hash: st
     plan = {"schema_version": "lam.state-route-plan.v1", "root": str(root), "source": source.name,
             "base_identity": base_identity,
             "base": str(directory), "destination": str(target), "previous_layout_sha256": marker and marker["plan_sha256"]}
-    for path in (target.parent, target, target / "operations"):
-        info = _optional_lstat(path)
-        if info is not None:
-            _validate_directory(path, info)
-            permitted = {target.name} if path == target.parent else {"operations"} if path == target else set()
-            if {entry.name for entry in path.iterdir()} - permitted:
-                raise OperationStoreError("The new journal location already contains state")
+    existing = _routed_destination_journals(target)
+    if existing:
+        # The destination name is derived from this root's identity. When the
+        # store lost its routing marker, re-attach the journals already
+        # written there instead of starting a second history in the store.
+        plan["existing_operations"] = existing
     result.update(plan=plan, plan_sha256=plan_sha256(plan))
     if not apply:
         return result
     _require_approval(result, approved_hash)
+    if _routed_destination_journals(target) != existing:
+        raise OperationStoreError("The routed journal location changed after the approved preview")
     for path in (target.parent, target, target / "operations"):
         _ensure_plain_directory(path)
     validate_external_directory(root, target)

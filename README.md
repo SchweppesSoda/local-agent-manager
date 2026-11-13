@@ -498,7 +498,9 @@ local-agent-record-janitor operation verify --operation-id '<operation-id>' `
 
 `--plan` 在 `delete plan --out PATH` 将计划写到显式路径时传给 apply，也传给
 operation status/verify；它必须是同一份不可变计划。省略 `--out` 时由 operation store
-解析默认计划位置。status/verify 使用 `--operation-home` 或 `--codex-home` 指定对应的
+解析默认计划位置：已用 `state route` 路由的存储写入路由目录下的 `plans/`，其余写入
+用户级默认目录（见[状态维护](docs/state-maintenance.md#route-new-journals-to-a-shared-directory)）。
+status/verify 使用 `--operation-home` 或 `--codex-home` 指定对应的
 operation 状态根（不把目录当作计划文件）。
 
 `delete run` 将同一 plan/apply 流程连续执行，不额外询问一次确认；计划范围未变化时，

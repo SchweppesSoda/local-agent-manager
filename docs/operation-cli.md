@@ -1365,6 +1365,20 @@ independently marks it as a subagent, and the rollout proves one top-level
 parent. This exception does not enter automatic orphan cleanup and does not
 allow an orphan with remaining descendants.
 
+`Guardian review` records are Codex's automatic approval reviewers: when Codex
+reviews an action instead of asking the user, it starts a subagent whose
+source is `{"subagent":{"other":"guardian"}}` (`thread_source` `subagent` or
+`guardian_review`). The rollout names the parent; there is no
+`thread_spawn_edges` row. Codex `thread/delete` cascades only through spawn
+edges, so deleting the parent alone leaves these children as orphans. When a
+root is deleted, the writer therefore first requests deletion of every frozen
+descendant that is not reachable through spawn edges from that root, deepest
+first, then deletes the root; spawn-linked descendants stay with Codex's own
+cascade. All requests remain inside the approved descendant scope, and a
+failed child request leaves the root undeleted for a fresh plan. A record
+already frozen as a descendant of another delete action in the same store is
+not planned again as a separate action.
+
 `delete apply` executes one immutable operation. Native `delete run` may create
 fresh plans for supported Desktop residuals within the original frozen record
 set, up to three rounds. It never resends an unknown native delete. Each round

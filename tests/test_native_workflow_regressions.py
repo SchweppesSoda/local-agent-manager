@@ -166,13 +166,25 @@ class NativeWorkflowRegressions(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *_): return None
             def delete_thread(self, record_id):
+                # Like Codex, cascade only through thread_spawn_edges. Guardian
+                # review children are linked by source metadata only.
                 calls.append(record_id)
-                ids = {record_id, *read_spawn_descendants(fixture.home, (record_id,))[record_id]}
+                ids = {record_id}
                 with closing(sqlite3.connect(fixture.home / "state_5.sqlite")) as db:
+                    pending = [record_id]
+                    while pending:
+                        for (child,) in db.execute("SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id=?",
+                                                   (pending.pop(),)).fetchall():
+                            if child not in ids:
+                                ids.add(child)
+                                pending.append(child)
                     db.executemany("DELETE FROM threads WHERE id=?", ((value,) for value in ids))
+                    db.executemany("DELETE FROM thread_spawn_edges WHERE parent_thread_id=? OR child_thread_id=?",
+                                   ((value, value) for value in ids))
                     db.commit()
                 for value in ids:
-                    fixture.paths[value].unlink(missing_ok=True)
+                    if value in fixture.paths:
+                        fixture.paths[value].unlink(missing_ok=True)
         return lambda **_: Server()
 
     def test_apply_and_verify_restore_official_home_and_report_desktop_residual(self):
@@ -213,7 +225,8 @@ class NativeWorkflowRegressions(unittest.TestCase):
         self.assertTrue(result["modified"])
         self.assertEqual(len(result["rounds"]), 2)
         self.assertNotEqual(result["rounds"][0]["plan_sha256"], result["rounds"][1]["plan_sha256"])
-        self.assertEqual(calls, ["delete"])
+        # The source-linked Guardian child is deleted before its parent.
+        self.assertEqual(calls, ["child", "delete"])
         remaining = build_session_catalog((self.adapter,))
         self.assertEqual({r.thread_id for r in remaining.records}, {"keep", "kept-child"})
 
@@ -231,7 +244,7 @@ class NativeWorkflowRegressions(unittest.TestCase):
                 binary_resolver=lambda _: Path("codex"))
         self.assertEqual(result["goal_status"], "complete", result)
         self.assertEqual(len(result["rounds"]), 2)
-        self.assertEqual(calls, ["delete"])
+        self.assertEqual(calls, ["child", "delete"])
         for database in (old, new):
             with closing(sqlite3.connect(database)) as connection:
                 self.assertEqual(connection.execute("SELECT thread_id FROM local_thread_catalog").fetchall(), [("keep",)])
@@ -332,6 +345,71 @@ class NativeWorkflowRegressions(unittest.TestCase):
         coordinator = OperationCoordinator(CleanupService())
         plan = coordinator.plan_operation(client="native", record_ids=("child",), adapters=(self.adapter,), plan_path=self.root / "conflict.json")
         self.assertEqual(plan["goal_status"], "blocked", plan)
+
+    def test_root_delete_removes_guardian_children_first_and_leaves_no_orphans(self):
+        self.fixture([("delete", "work", None), ("child", "work", "delete"), ("grandchild", "work", "child"),
+                      ("spawned", "work", "delete"), ("keep", "work", None), ("kept-child", "work", "keep")])
+        with closing(sqlite3.connect(self.home / "state_5.sqlite")) as db:
+            db.execute("INSERT INTO thread_spawn_edges(parent_thread_id,child_thread_id,status) VALUES('delete','spawned','completed')")
+            db.commit()
+        coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
+        calls = []
+        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+            result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
+                plan_path=self.root / "guardian.json", clients_closed=True, app_server_factory=self.server(calls),
+                binary_resolver=lambda _: Path("codex"))
+        self.assertEqual(result["goal_status"], "complete", result)
+        # Source-only children go deepest first; the spawn-edge child is left
+        # to Codex's own cascade and is never requested separately.
+        self.assertEqual(calls, ["grandchild", "child", "delete"])
+        remaining = {r.thread_id for r in build_session_catalog((self.adapter,)).records}
+        self.assertEqual(remaining, {"keep", "kept-child"})
+
+    def test_native_cascade_covers_separately_selected_children(self):
+        from local_agent_record_janitor.planning import ActionKind
+
+        def action(action_id, kind, descendants=(), affected=()):
+            return SimpleNamespace(action_id=action_id, kind=kind, target=SimpleNamespace(storage_id="s"),
+                impact=SimpleNamespace(descendant_thread_ids=descendants, affected_thread_ids=affected))
+
+        parent = action("orphan-root", ActionKind.DELETE_CONVERSATION, ("c1", "c2"), ("root", "c1", "c2"))
+        child = action("record-c1", ActionKind.DELETE_CONVERSATION)
+        outside = action("record-x", ActionKind.DELETE_CONVERSATION)
+        manual = {
+            "record-c1": SimpleNamespace(codex_home=self.home, thread_id="c1", descendants=(), affected_thread_ids=("c1",)),
+            "record-x": SimpleNamespace(codex_home=self.home, thread_id="x", descendants=(), affected_thread_ids=("x",)),
+        }
+        with patch("local_agent_record_janitor.manual_delete.build_manual_delete_closure",
+                   return_value=SimpleNamespace(frontend_actions=())):
+            kept = OperationCoordinator._coalesce_manual_candidates((parent, child, outside), manual)
+        self.assertEqual([item.action_id for item in kept], ["orphan-root", "record-x"])
+
+    def test_routed_store_keeps_plans_and_run_receipts_with_its_journals(self):
+        from local_agent_record_janitor.operation_coordinator import _find_operation_plan
+        from local_agent_record_janitor.state_maintenance import run_state_command
+
+        self.fixture([("delete", "work", None), ("keep", "work", None)])
+        base = self.root / "project-state"
+        base.mkdir()
+        preview = run_state_command("route", self.home, directory=base)
+        run_state_command("route", self.home, directory=base, apply=True, approved_hash=preview["plan_sha256"])
+        legacy = self.root / "localappdata"
+        calls = []
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(legacy), "XDG_STATE_HOME": str(legacy), "CODEX_HOME": str(self.home)}), \
+                patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+            coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
+            result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
+                clients_closed=True, app_server_factory=self.server(calls), binary_resolver=lambda _: Path("codex"))
+            self.assertEqual(result["goal_status"], "complete", result)
+            plans = base / "plans"
+            for round_ in result["rounds"]:
+                self.assertEqual(Path(round_["plan_path"]).parent, plans)
+            self.assertEqual(Path(result["run_receipt_path"]).parent, plans)
+            self.assertTrue(Path(result["run_receipt_path"]).is_file())
+            # An operation ID alone resolves through the default routed home.
+            located = _find_operation_plan(result["run_operation_id"])
+            self.assertEqual(located, plans / f"{result['run_operation_id']}.json")
+        self.assertFalse(legacy.exists())
 
     def test_deleted_parent_guardian_can_be_explicitly_deleted_with_exact_evidence(self):
         self.fixture([("child", "work", "deleted-parent"), ("keep", "work", None)])

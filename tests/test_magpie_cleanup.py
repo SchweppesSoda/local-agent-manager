@@ -457,7 +457,7 @@ class MagpieCindyCodexTests(unittest.TestCase):
             self.assertEqual(plan["goal_status"], "ready", plan)
             result = fixture.apply(plan)
         self.assertEqual(result["goal_status"], "complete", result)
-        self.assertEqual(fixture.calls, ["delete"])
+        self.assertEqual(fixture.calls, ["child", "delete"])
         self.assertTrue(fixture.paths["keep"].exists())
         self.assertEqual((fixture.official / "state_5.sqlite").read_bytes(), fixture.official_before)
         self.assertEqual((Path(profile["config_root"]) / "usage.jsonl").read_bytes(), kept)
