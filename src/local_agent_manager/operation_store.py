@@ -177,15 +177,11 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 class OperationStore:
     def __init__(self, codex_home: Path, operation_id: str) -> None:
-        from .state_paths import LEGACY_CONTROL, operation_control
+        from .state_paths import operation_control
 
         self.codex_home = codex_home.expanduser().resolve()
         self.operation_id = validate_operation_id(operation_id)
-        try:
-            self._control = operation_control(self.codex_home, self.operation_id)
-        except (OSError, OperationStoreError):
-            # Layout errors are checked again at journal access, under the root gate.
-            self._control = self.codex_home / LEGACY_CONTROL
+        self._control = operation_control(self.codex_home, self.operation_id)
         self.directory = self._control / "operations" / self.operation_id
         self.plan_path = self.directory / "plan.json"
         self.events_path = self.directory / "events.jsonl"

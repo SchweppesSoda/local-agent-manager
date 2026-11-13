@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -9,12 +14,12 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.discovery import (
+from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
+from local_agent_manager.discovery import (
     discover_cindy_profiles,
     resolve_cindy_profiles,
 )
-from local_agent_record_janitor.inventory import (
+from local_agent_manager.inventory import (
     CodexThreadCatalog,
     CodexThreadRecord,
     FrontendReferenceRecord,
@@ -283,7 +288,7 @@ class SessionCatalogTests(unittest.TestCase):
             onerror(PermissionError(13, "denied", str(Path(root) / "private")))
             return iter(())
 
-        with patch("local_agent_record_janitor.inventory.os.walk", side_effect=failed_walk):
+        with patch("local_agent_manager.inventory.os.walk", side_effect=failed_walk):
             catalog = build_session_catalog([NativeIntegrityAdapter(codex_home=home)])
 
         self.assertTrue(any(error.source == "codex-rollouts" for error in catalog.errors))

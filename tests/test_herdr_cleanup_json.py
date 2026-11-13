@@ -1,9 +1,14 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 from pathlib import Path
 import unittest
 
-from local_agent_record_janitor.herdr_cleanup_json import (
+from local_agent_manager.herdr_cleanup_json import (
     HerdrCleanupError, fingerprint, normalized, prune_snapshot, prune_history,
 )
 from tests.herdr_support import agent_session, pane, snapshot, tab
@@ -89,7 +94,7 @@ class HerdrCleanupJsonTests(unittest.TestCase):
         self.assertEqual(after, value)
 
     def test_rust_utf8_input_contract_rejects_other_json_encodings(self):
-        from local_agent_record_janitor.herdr_cleanup_json import decode
+        from local_agent_manager.herdr_cleanup_json import decode
         raw = json.dumps(self.fixture())
         for encoding in ("utf-16", "utf-32", "utf-8-sig"):
             with self.subTest(encoding=encoding), self.assertRaises(HerdrCleanupError):

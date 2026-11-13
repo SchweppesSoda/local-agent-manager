@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import tempfile
 import unittest
 import sqlite3
@@ -5,9 +10,9 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.support import create_cindy_database, create_thread_index, write_rollout
 
 
@@ -57,7 +62,7 @@ class CindyCodexSelectionTests(unittest.TestCase):
                         connection.execute("DELETE FROM thread_spawn_edges WHERE child_thread_id = ?", (record_id,))
                         connection.commit()
 
-            with patch("local_agent_record_janitor.frontend_reference_cleanup._require_clients_closed"):
+            with patch("local_agent_manager.frontend_reference_cleanup._require_clients_closed"):
                 result = OperationCoordinator(CleanupService()).apply_operation(
                     operation_id=plan["operation_id"], plan_path=root / "plan.json",
                     clients_closed=True, adapters=(adapter,),

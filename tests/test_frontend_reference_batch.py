@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -8,9 +13,9 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor import frontend_reference_cleanup as cleanup
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.frontend_reference_cleanup import (
+from local_agent_manager import frontend_reference_cleanup as cleanup
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.frontend_reference_cleanup import (
     FrontendReferenceError,
     execute_frontend_reference_cleanup,
 )

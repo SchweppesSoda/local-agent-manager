@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Cold recovery with actual discovery, independent runtimes and desktop stores.
 
 Only host locations/census are injected. All leases, SQLite/LevelDB readers,
@@ -55,6 +60,8 @@ with patch('pathlib.Path.home',return_value=Path(sys.argv[2])), patch('local_age
 @unittest.skipUnless(os.name == 'nt', 'Windows held lifecycle')
 class TopologyTests(unittest.TestCase):
     def setUp(self):
+        from tests.runtime_support import require_leveldb
+        require_leveldb()
         self.f = joint_fixture.JointTests('runTest')
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)

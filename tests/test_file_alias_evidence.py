@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import os
 import shutil
 import subprocess
@@ -8,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.client_contracts import ClientContractError
-from local_agent_record_janitor.file_alias_evidence import probe_file_aliases
-from local_agent_record_janitor.path_identity import is_local_absolute_locator
+from local_agent_manager.client_contracts import ClientContractError
+from local_agent_manager.file_alias_evidence import probe_file_aliases
+from local_agent_manager.path_identity import is_local_absolute_locator
 
 
 class FileAliasEvidenceTests(unittest.TestCase):
@@ -307,7 +312,7 @@ class FileAliasEvidenceTests(unittest.TestCase):
     def test_foreign_remote_and_relative_locators_remain_opaque_before_path_or_syscalls(self):
         foreign = ("/home/remote/file.jsonl", "\\home\\remote\\file.jsonl") if os.name == "nt" else ("C:\\remote\\file.jsonl",)
         values = (*foreign, "\\\\server\\share\\file.jsonl", "//server/share/file.jsonl", "ssh://host/file", "relative.jsonl")
-        with patch("local_agent_record_janitor.file_alias_evidence.Path", side_effect=AssertionError("Opaque locator became Path")):
+        with patch("local_agent_manager.file_alias_evidence.Path", side_effect=AssertionError("Opaque locator became Path")):
             for value in values:
                 with self.subTest(value=value):
                     result = probe_file_aliases((value,), roots=(value,))

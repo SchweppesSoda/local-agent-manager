@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 from pathlib import Path
@@ -9,9 +14,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor import claude_session_import
+from local_agent_manager import claude_session_import
 
-from local_agent_record_janitor.claude_session_import import (
+from local_agent_manager.claude_session_import import (
     PASEO_VERSION, T3_VERSION, T3_VERSIONS, SessionImportError,
     prepare_paseo_import, prepare_t3code_import, run_session_import, verify_session_import,
 )
@@ -168,7 +173,7 @@ class ClaudeSessionImportTests(unittest.TestCase):
     def test_mapped_or_unverified_drive_is_rejected_before_file_reads(self):
         self.paseo_fixture()
         with (
-            patch("local_agent_record_janitor.environment_paths._is_local_drive", return_value=False),
+            patch("local_agent_manager.environment_paths._is_local_drive", return_value=False),
             patch.object(claude_session_import.frozen_files, "read_file") as read_file,
         ):
             with self.assertRaisesRegex(SessionImportError, "import_local_path_unverified"):

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.inventory import build_session_catalog
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.inventory import build_session_catalog
 from tests.support import create_thread_index
 import tests.test_cindy_codex_operations as cindy_tests
 

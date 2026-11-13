@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Read-only transformations and private synthetic stores; never live cleanup."""
 from pathlib import Path
 import copy
@@ -7,9 +12,9 @@ import unittest
 import tempfile
 
 WORKSPACE = next(parent for parent in Path(__file__).resolve().parents
-                 if (parent / 'src/local_agent_record_janitor/paseo_cleanup_files.py').is_file())
+                 if (parent / 'src/local_agent_manager/paseo_cleanup_files.py').is_file())
 sys.path.insert(0, str(WORKSPACE / "src"))
-from local_agent_record_janitor import paseo_cleanup_files as f
+from local_agent_manager import paseo_cleanup_files as f
 
 SELECTED = "11111111-1111-4111-8111-111111111111"
 OTHER = "22222222-2222-4222-8222-222222222222"

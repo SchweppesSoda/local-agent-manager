@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import unittest
 from pathlib import Path
 
-from local_agent_record_janitor.core_types import (
+from local_agent_manager.core_types import (
     Action,
     AuthorizedAction,
     BlockerCode,

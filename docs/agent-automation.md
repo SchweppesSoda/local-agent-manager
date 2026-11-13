@@ -1,6 +1,6 @@
 # Agent automation protocol
 
-This reference covers legacy `local-agent-record-janitor agent ...` integrations
+This reference covers legacy `local-agent-manager agent ...` integrations
 and shared result/recovery semantics. Human and Agent commands share the same
 `CleanupService`; neither command path owns a second scanner or planner.
 
@@ -107,10 +107,10 @@ store's directory in the manager state directory may contain:
 └── apply.lock        # only while a process owns the mutation gate
 ```
 
-Nothing is written inside the Codex home itself. Journals that earlier
-versions left in `<CODEX_HOME>/.local-agent-record-janitor` are still read as
-history. See [State maintenance](state-maintenance.md) for the state directory,
-safe cleanup, moving old in-store history out, and interrupted-move recovery.
+Nothing is written inside the Codex home itself. All entry points use the
+registered editable checkout's `.agent-manager-state`; old in-store journal
+locations are not consulted or moved implicitly. See [State maintenance](state-maintenance.md)
+for the single authority, current layout and reviewed cleanup.
 
 Every document is bound to the operation ID and plan hash. Sequence numbers are
 strictly increasing, durable writes are flushed before mutation, and symlinks,
@@ -127,7 +127,7 @@ status cannot delete a newer journal that reuses an expired operation ID.
 operation finishes. Neither lock file is automatically replaced or removed
 to recover from an unknown mutation.
 
-Before dispatch, all trusted legacy and child journals under that root are
+Before dispatch, all trusted agent and child journals in that state partition are
 checked for overlapping frozen IDs and lexical artifact paths. A new operation
 ID or plan path cannot evade `store_mutation_outcome_unknown`. Missing state,
 malformed evidence or an unproved action footprint blocks the affected root.

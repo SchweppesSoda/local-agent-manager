@@ -25,10 +25,10 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
 - Recovery evidence or rollback copies: read
   [Operation evidence and receipts](agent-automation.md#operation-evidence-and-receipts)
   and [Temporary rollback copies](agent-automation.md#temporary-rollback-copies).
-- Manager state cleanup or layout migration: read [State maintenance](state-maintenance.md).
+- Manager state inspection or cleanup: read [State maintenance](state-maintenance.md).
 - Client cache, diagnostic log, historical backup or download maintenance uses `maintenance inventory/plan/apply/run/status/verify` and the qualified rules in [State maintenance](state-maintenance.md#client-artifact-maintenance).
   Use its explicit-root preview/apply commands and retain the permanent lock
-  and migration marker at their original location.
+  at its original location.
 
 ## Required agent workflow
 
@@ -106,8 +106,8 @@ The permanent `operations/.mutation.lock` in the root's directory of the
 manager state directory serializes cooperating processes for one trusted
 local root, from journal admission through mutation and result publication.
 Verification and receipt cleanup use the same root lock. Never delete or
-replace it. Manager state is never written inside an Agent store; old in-store
-history is moved out only through `state relocate`. This root lock does not prove that an older writer holding
+replace it. All current entries resolve the registered editable checkout and
+never write manager state inside an Agent store. This root lock does not prove that an older writer holding
 `apply.lock` has exited; that operation remains unknown even with a terminal
 receipt. Unknown journals have no expiry. Missing or untrusted journal scope
 blocks the whole affected root. Exact frozen IDs and artifact paths allow

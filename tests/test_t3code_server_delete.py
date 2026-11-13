@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from contextlib import closing
 import io
 import json
@@ -8,8 +13,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import t3code_server_delete as t3
-from local_agent_record_janitor.cli import main
+from local_agent_manager import t3code_server_delete as t3
+from local_agent_manager.cli import main
 from tests.t3code_support import create_store, add_thread, insert, V2, PRIVATE
 
 THREAD = '11111111-1111-4111-8111-111111111111'

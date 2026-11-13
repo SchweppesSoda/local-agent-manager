@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import importlib
@@ -19,25 +24,13 @@ from local_agent_manager.providers.t3 import provider_instance, strict_json
 from tests.test_work_skills_v3_e2e import ClientRegistryFixture, manager
 
 
-class ManagerCompatibilityTests(unittest.TestCase):
-    def test_legacy_submodules_share_types_and_patch_targets(self):
-        for name in ("cli", "models", "operation_store", "environment_config", "adapters.base", "adapters.cindy"):
-            old = importlib.import_module("local_agent_record_janitor." + name)
-            current = importlib.import_module("local_agent_manager." + name)
-            self.assertIs(old, current)
-        with mock.patch("local_agent_record_janitor.environment_config.MAX_CONFIG_BYTES", 11):
-            self.assertEqual(importlib.import_module("local_agent_manager.environment_config").MAX_CONFIG_BYTES, 11)
-
-    def test_both_import_orders_in_new_processes(self):
-        for first, second in (("local_agent_manager", "local_agent_record_janitor"), ("local_agent_record_janitor", "local_agent_manager")):
-            script = f"import importlib; a=importlib.import_module('{first}.adapters.cindy'); b=importlib.import_module('{second}.adapters.cindy'); assert a is b"
-            subprocess.run([sys.executable, "-B", "-c", script], check=True, capture_output=True)
-
-    def test_new_and_old_module_entry_points(self):
-        for name in ("local_agent_manager", "local_agent_record_janitor"):
-            result = subprocess.run([sys.executable, "-B", "-m", name, "--help"], text=True, encoding="utf-8", capture_output=True, check=True)
-            self.assertIn("skills", result.stdout)
-            self.assertIn("environment", result.stdout)
+class ManagerIntegrationTests(unittest.TestCase):
+    def test_only_current_module_entry_point_is_available(self):
+        result = subprocess.run([sys.executable, "-B", "-m", "local_agent_manager", "--help"], text=True, encoding="utf-8", capture_output=True, check=True)
+        self.assertIn("skills", result.stdout)
+        self.assertIn("environment", result.stdout)
+        result = subprocess.run([sys.executable, "-B", "-m", "local_agent_record_janitor", "--help"], text=True, encoding="utf-8", capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_strict_provider_projection(self):
         with self.assertRaises(ValueError):

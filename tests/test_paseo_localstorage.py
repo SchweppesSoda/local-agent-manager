@@ -1,10 +1,15 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
 
-from local_agent_record_janitor import paseo_localstorage as storage, office_leveldb as level
+from local_agent_manager import paseo_localstorage as storage, office_leveldb as level
 from tests.paseo_desktop_support import local_storage
 from tests.test_paseo_fullflow import AGENT, KEEP
 
@@ -15,7 +20,7 @@ class PaseoLocalStorageTests(unittest.TestCase):
         try:
             level.runtime()
         except level.OfficeLevelDBError:
-            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1":
+            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1" or os.environ.get("LARJ_LEVELDB_RUNTIME") or __import__("local_agent_manager.office_leveldb", fromlist=["_runtime_directory"])._runtime_directory().exists():
                 raise
             raise unittest.SkipTest("Pinned LevelDB runtime not configured")
 

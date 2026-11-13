@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -12,12 +17,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.cleaner import VerificationResult
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.codex_state import read_spawn_descendants
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator, OperationCoordinatorError
+from local_agent_manager.cleaner import VerificationResult
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.codex_state import read_spawn_descendants
+from local_agent_manager.operation_coordinator import OperationCoordinator, OperationCoordinatorError
 from tests.support import create_cindy_database, create_thread_index
 
 
@@ -228,7 +233,7 @@ class CindyCodexOperationTests(unittest.TestCase):
             server.delete_thread = delete
             return server
         coordinator = self.coordinator()
-        with patch('local_agent_record_janitor.manual_delete.verify_finding_deleted',
+        with patch('local_agent_manager.manual_delete.verify_finding_deleted',
                    return_value=VerificationResult(deleted=False, status='unknown', error='unreadable')):
             result = coordinator.apply_operation(operation_id=plan["operation_id"], plan_path=Path(plan["plan_path"]),
                 adapters=(self.adapter(),), clients_closed=True, app_server_factory=unknown_server,
@@ -240,6 +245,140 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertEqual(self.calls, ["child"])
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='ui-delete'").fetchone()[0], "delete")
+
+    def test_native_result_cannot_release_references_without_positive_parent_success(self):
+        # Exercise the native branch after a manual child was covered: the
+        # retained frontend action exists, while its old manual owner does not.
+        from local_agent_manager.cleaner import CleanupReport, CleanupResult
+        from local_agent_manager.models import Finding
+        for status in ("not_deleted", "partial", "unknown"):
+            with self.subTest(status=status):
+                coordinator = self.coordinator()
+                plan = coordinator.plan_operation(client="cindy", record_ids=("delete",), adapters=(self.adapter(),),
+                    plan_path=self.root / (status + ".json"))
+                self.assertEqual(plan["goal_status"], "ready", plan)
+                live = coordinator._live[plan["operation_id"]]
+                live.manual_actions = {}
+                native = next(a for a in live.candidates if str(a.kind.value) == "delete_conversation")
+                outcome = SimpleNamespace(cleanup_report=CleanupReport(planned=[], results=[CleanupResult(
+                    finding=Finding(platform="cindy", platform_session_id="ui-delete", thread_id=native.target.thread_id,
+                        reason="synthetic native result", platform_db=self.database, codex_home=self.home), status=status)]))
+                with patch.object(coordinator.service, "execute", return_value=outcome) as execute:
+                    result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),),
+                        clients_closed=True, binary_resolver=lambda _: self.root / "codex")
+                self.assertNotEqual(result["goal_status"], "complete", result)
+                self.assertEqual(execute.call_count, 1, "a frontend writer ran after unsuccessful native result")
+                with closing(sqlite3.connect(self.database)) as db:
+                    self.assertEqual(dict(db.execute("SELECT id,sdk_session_id FROM sessions")),
+                        {"ui-delete": "delete", "ui-child": "child", "ui-keep": "keep"})
+                if status == "partial":
+                    cold = self.coordinator()
+                    with patch.object(cold.service, "execute", side_effect=AssertionError("partial child released frontend")) as cold_execute:
+                        resumed = cold.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),),
+                            clients_closed=True, binary_resolver=lambda _: self.root / "codex")
+                    self.assertNotEqual(resumed["goal_status"], "complete", resumed)
+                    self.assertEqual(cold_execute.call_count, 0)
+                    inspection = cold._inspect_child_states(plan)
+                    self.assertTrue(inspection.completed_child_ids)
+                    self.assertFalse(inspection.positively_deleted_action_ids)
+                # Keep each synthetic result separate; these journal directories
+                # belong only to this temporary fixture.
+                if status != "unknown":
+                    from local_agent_manager.operation_store import OperationStore
+                    for batch in plan["child_batches"]:
+                        store = OperationStore(self.home, batch["child_operation_id"])
+                        if store.directory.exists():
+                            import shutil
+                            shutil.rmtree(store.directory)
+
+    def _native_complete_before_frontend(self, journal_format="checkpoint"):
+        from local_agent_manager.agent_operations import result_document
+        from local_agent_manager.operation_store import OperationStore
+        coordinator = self.coordinator()
+        plan = coordinator.plan_operation(client="cindy", record_ids=("delete",), adapters=(self.adapter(),),
+            plan_path=self.root / "cold-success.json")
+        with patch.object(coordinator.service, "execute", side_effect=RuntimeError("frontend temporarily unavailable")):
+            first = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),),
+                clients_closed=True, app_server_factory=self.server, binary_resolver=lambda _: self.root / "codex")
+        self.assertEqual(first["goal_status"], "blocked", first)
+        self.assertEqual(self.calls, ["child", "delete"])
+        self.assertFalse(self.paths["delete"].exists())
+        self.assertFalse(self.paths["child"].exists())
+        native_batch = next(batch for batch in plan["child_batches"] if batch["mutation_family"] == "delete_conversation")
+        store = OperationStore(self.home, native_batch["child_operation_id"])
+        if journal_format != "checkpoint":
+            result = result_document(subcommand="verify", operation_id=store.operation_id,
+                plan_sha=store.read_plan()["plan_sha256"], goal_status="complete", modified=True, mutation_started=True,
+                details={"verification": {"all_satisfied": True, "verified_action_ids": native_batch["action_ids"]},
+                    "final_scope_verification": {"all_satisfied": True, "scan_complete": True}})
+            store.write_result(result)
+            if journal_format == "receipt":
+                store.compact_completed(result)
+                self.assertTrue(store.receipt_path.is_file())
+        return plan
+
+    def _assert_cold_reference_completion(self, journal_format):
+        plan = self._native_complete_before_frontend(journal_format)
+        coordinator = self.coordinator()
+        inspection = coordinator._inspect_child_states(plan)
+        self.assertTrue(inspection.positively_deleted_action_ids)
+        result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),),
+            clients_closed=True, app_server_factory=lambda **_: self.fail("native deletion replayed"),
+            binary_resolver=lambda _: self.root / "codex")
+        self.assertEqual(result["goal_status"], "complete", result)
+        self.assertEqual(self.calls, ["child", "delete"])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(dict(db.execute("SELECT id,sdk_session_id FROM sessions")),
+                {"ui-delete": None, "ui-child": None, "ui-keep": "keep"})
+        self.assertTrue(self.paths["keep"].is_file())
+
+    def test_cold_complete_checkpoint_releases_original_combined_reference(self):
+        self._assert_cold_reference_completion("checkpoint")
+
+    def test_cold_complete_result_releases_original_combined_reference(self):
+        self._assert_cold_reference_completion("result")
+
+    def test_cold_complete_compact_receipt_releases_original_combined_reference(self):
+        self._assert_cold_reference_completion("receipt")
+
+    def test_cold_reference_rebind_blocks_native_reappearance(self):
+        plan = self._native_complete_before_frontend()
+        self.paths["delete"].write_text(json.dumps({"type": "session_meta", "payload":
+            {"id": "delete", "source": "app-server", "cwd": str(self.root / "ProxyConfig")}}) + "\n", encoding="utf-8")
+        with closing(sqlite3.connect(self.home / "state_5.sqlite")) as db:
+            db.execute("INSERT INTO threads (id,rollout_path,source) VALUES ('delete',?,'app-server')", (str(self.paths["delete"]),))
+            db.commit()
+        coordinator = self.coordinator()
+        with patch.object(coordinator.service, "execute", side_effect=AssertionError("resurrected native released references")) as execute:
+            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True)
+        self.assertEqual(result["goal_status"], "blocked", result)
+        execute.assert_not_called()
+
+    def test_cold_reference_rebind_blocks_new_reference(self):
+        plan = self._native_complete_before_frontend()
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("INSERT INTO sessions (id,sdk_session_id,agent_kind,status) VALUES ('new-ui','child','codex','active')")
+            db.commit()
+        coordinator = self.coordinator()
+        with patch.object(coordinator.service, "execute", side_effect=AssertionError("changed closure released references")) as execute:
+            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter(),), clients_closed=True)
+        self.assertEqual(result["goal_status"], "blocked", result)
+        execute.assert_not_called()
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='ui-child'").fetchone(), ("child",))
+
+    def test_frozen_reference_dependencies_are_storage_qualified_and_require_all_natives(self):
+        def raw(action_id, kind, storage, affected):
+            return {"action_id": action_id, "kind": kind, "binding": {"storage_id": storage,
+                    "affected_thread_ids": affected}, "impact": {"frontend_database_paths": [str(self.database)]}}
+        document = {"actions": [raw("parent", "delete_conversation", "one", ["root", "child"]),
+            raw("other-store", "delete_conversation", "two", ["root", "child"]),
+            raw("sibling", "delete_conversation", "one", ["sibling"]),
+            raw("refs", "remove_frontend_reference", "one", ["child", "sibling"])]}
+        dependencies = OperationCoordinator._frontend_native_dependencies(document)
+        self.assertEqual(dependencies, {"refs": frozenset({"parent", "sibling"})})
+        self.assertFalse(dependencies["refs"] <= {"parent", "other-store"})
+        self.assertTrue(dependencies["refs"] <= {"parent", "sibling"})
 
     def test_project_evidence_is_qualified_by_physical_store(self):
         def entry(store, project):
@@ -430,8 +569,9 @@ class CindyCodexOperationTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_manual_partial_result_releases_only_successful_root(self):
-        from local_agent_record_janitor.cleaner import CleanupReport, CleanupResult
-        from local_agent_record_janitor.models import Finding
+        from local_agent_manager.cleaner import CleanupReport, CleanupResult
+        from local_agent_manager.models import Finding
+        from local_agent_manager.models import Finding
         outcome = CleanupReport(planned=[], results=[
             CleanupResult(Finding(platform="cindy", platform_session_id="ui-a", thread_id="a", reason="test", platform_db=self.database, codex_home=self.home), "deleted"),
             CleanupResult(Finding(platform="cindy", platform_session_id="ui-b", thread_id="b", reason="test", platform_db=self.database, codex_home=self.home), "partial"),

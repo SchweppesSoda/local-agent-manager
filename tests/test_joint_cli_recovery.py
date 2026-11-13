@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Real process loss after child publication; never use a live user store."""
 from contextlib import closing
 import copy
@@ -52,6 +57,8 @@ class RecoveryTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.adapter = self.fixture.setup_client('t3code')
         if self._testMethodName == 'test_reopened_desktop_scope_is_verified_and_target_reappearance_blocks':
+            from tests.runtime_support import require_leveldb
+            require_leveldb()
             from tests.test_t3code_localstorage import local_storage
             from local_agent_manager.t3code_bound_adapter import T3CodeBoundAdapter
             self.desktop = self.fixture.base/'desktop'
@@ -97,11 +104,16 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse(self.store.lock_exists())
             audits = list(self.store.directory.glob('recovery-*.json'))
             self.assertEqual(len(audits), 1)
+            audit_path_bytes = audits[0].read_bytes()
             audit = strict_json_load(audits[0])
             self.assertEqual(audit['original_lock'], json.loads(original_lock))
             self.assertEqual(audit['parent_plan_sha256'], self.plan['plan_sha256'])
             self.assertTrue(audit['goal_satisfied'])
             self.assertEqual(self.verify(False)['goal_status'], 'complete')
+            repeated = self.verify()
+            self.assertEqual(repeated['goal_status'], 'complete', repeated)
+            self.assertEqual(Path(repeated['recovery'][0]['audit_path']), audits[0])
+            self.assertEqual(audits[0].read_bytes(), audit_path_bytes)
 
     def test_cold_cli_parser_and_recovery_publication_crash_are_resumable(self):
         self.crash_after_children()
@@ -127,6 +139,7 @@ with patch('pathlib.Path.home',return_value=Path(sys.argv[2])),patch('local_agen
         payload = json.loads(result.stdout)
         self.assertTrue(payload['goal_satisfied'], payload)
         self.assertTrue(payload['recovery'][0]['verification_only'])
+        self.assertEqual(Path(payload['recovery'][0]['audit_path']), audit_path)
         self.assertFalse(self.store.lock_exists())
         self.assertEqual(audit_path.read_bytes(), audit_before)
 
@@ -254,6 +267,72 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
         with patch('local_agent_manager.t3code_discovery.discover_bindings', side_effect=RuntimeError('unproven home')):
             with self.assertRaisesRegex(RuntimeError, 'unproven'):
                 t3code_cleanup.bound_adapters(self.document, readonly_recovery=True)
+
+
+class RecoveryAuditPublicationTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.audit = dict(schema_version='lam.joint-cli-recovery.v1', parent_operation_id='parent',
+            parent_plan_sha256='1'*64, reservation_plan_sha256='2'*64, original_lock={'pid': 123, 'created_at': 'fixture'},
+            original_lock_sha256='3'*64, children=[], writer_model='synchronous_in_process_no_native_job',
+            goal_status='complete', goal_satisfied=True)
+
+    def test_fixed_short_name_handles_current_layout_long_audit_leaf(self):
+        directory = self.root
+        while len(str(directory)) < 195:
+            directory = directory / 'state-fixture'
+        directory.mkdir(parents=True)
+        self.assertGreater(len(str(directory / ('recovery-'+'3'*64+'.json'))), 260)
+        path = recovery._publish_audit(directory, self.audit)
+        self.assertEqual(path.name, 'recovery-audit.json')
+        self.assertLess(len(str(path)), 260)
+        self.assertEqual(strict_json_load(path)['original_lock_sha256'], '3'*64)
+        before = path.read_bytes()
+        self.assertEqual(recovery._publish_audit(directory, self.audit), path)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_existing_current_audit_is_reused_and_conflicts_or_duplicates_are_rejected(self):
+        from local_agent_manager.operation_store import write_new_json
+        path = self.root / ('recovery-'+'3'*64+'.json')
+        write_new_json(path, self.audit)
+        before = path.read_bytes()
+        self.assertEqual(recovery._publish_audit(self.root, self.audit), path)
+        self.assertEqual(path.read_bytes(), before)
+        with self.assertRaisesRegex(RuntimeError, 'evidence_changed'):
+            recovery._publish_audit(self.root, {**self.audit, 'parent_plan_sha256': 'different'})
+        write_new_json(self.root / 'recovery-second.json', self.audit)
+        with self.assertRaisesRegex(RuntimeError, 'multiple_audits'):
+            recovery._publish_audit(self.root, self.audit)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_partial_recovery_uses_short_name_and_preserves_existing_bound_audits(self):
+        from local_agent_manager import t3code_partial_recovery as partial
+        from local_agent_manager.operation_store import write_new_json
+        audit = dict(schema_version='lam.t3-partial-recovery.v1', parent_plan_sha256='1'*64,
+            child_plan_sha256='2'*64, original_lock_sha256='3'*64)
+        directory = self.root
+        while len(str(directory)) < 195:
+            directory = directory / 'state-fixture'
+        directory.mkdir(parents=True)
+        self.assertGreater(len(str(directory / ('partial-recovery-'+'3'*64+'.json'))), 260)
+        path = partial._publish_audit(directory, audit)
+        self.assertEqual(path.name, 'partial-recovery-audit.json')
+        self.assertLess(len(str(path)), 260)
+        before = path.read_bytes()
+        self.assertEqual(partial._publish_audit(directory, audit), path)
+        self.assertEqual(path.read_bytes(), before)
+        with self.assertRaisesRegex(RuntimeError, 'audit_changed'):
+            partial._publish_audit(directory, {**audit, 'child_plan_sha256': 'changed'})
+        # Existing current-format hash filenames retain their bytes and path.
+        current = self.root / ('partial-recovery-'+'3'*64+'.json')
+        write_new_json(current, audit)
+        self.assertEqual(partial._publish_audit(self.root, audit), current)
+        write_new_json(self.root / 'partial-recovery-second.json', audit)
+        with self.assertRaisesRegex(RuntimeError, 'audit_ambiguous'):
+            partial._publish_audit(self.root, audit, settled=True)
 
 
 if __name__ == '__main__':

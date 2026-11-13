@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import hashlib
 import os
@@ -11,17 +16,17 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter, OrcaAdapter
-from local_agent_record_janitor.claude_delete import build_claude_delete_plan, execute_claude_delete
-from local_agent_record_janitor.claude_sessions import build_claude_session_catalog
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.client_inventory import build_client_engine_contexts
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.execution import ExecutionError
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_guard_sources import validate_guard_sources
-from local_agent_record_janitor.operation_store import plan_sha256
-from local_agent_record_janitor.record_identity import canonical_path
+from local_agent_manager.adapters import NativeIntegrityAdapter, OrcaAdapter
+from local_agent_manager.claude_delete import build_claude_delete_plan, execute_claude_delete
+from local_agent_manager.claude_sessions import build_claude_session_catalog
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.client_inventory import build_client_engine_contexts
+from local_agent_manager.cli import main
+from local_agent_manager.execution import ExecutionError
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_guard_sources import validate_guard_sources
+from local_agent_manager.operation_store import plan_sha256
+from local_agent_manager.record_identity import canonical_path
 from tests.orca_support import CURRENT_ID, HISTORY_ID, SENTINEL, create_profile, make_record, replace_record
 from tests.support import create_thread_index, write_rollout
 
@@ -93,7 +98,7 @@ class OrcaIntegrationTests(unittest.TestCase):
                 else:
                     os.environ["ORCA_USER_DATA_PATH"] = ""
                     os.environ["APPDATA"] = str(self.root / "default-appdata")
-                    from local_agent_record_janitor.orca_discovery import default_orca_root
+                    from local_agent_manager.orca_discovery import default_orca_root
                     profile = default_orca_root()
                     default_homes = create_profile(profile, accounts=1)
                     self.native(default_homes[0])
@@ -127,7 +132,7 @@ class OrcaIntegrationTests(unittest.TestCase):
             (homes[1] / name).unlink()
             os.link(homes[0] / name, homes[1] / name)
         args = ["records", "--client", "orca", "--orca-root", str(profile), "--json"]
-        from local_agent_record_janitor.client_inventory import probe_file_aliases
+        from local_agent_manager.client_inventory import probe_file_aliases
         supplied = []
 
         def metadata_only_probe(paths, **kwargs):
@@ -138,7 +143,7 @@ class OrcaIntegrationTests(unittest.TestCase):
                     "sqlite3.connect", side_effect=AssertionError("Shared metadata SQLite opened")):
                 return probe_file_aliases(supplied[-1], **kwargs)
 
-        with patch("local_agent_record_janitor.client_inventory.probe_file_aliases", metadata_only_probe):
+        with patch("local_agent_manager.client_inventory.probe_file_aliases", metadata_only_probe):
             code, all_stores = self.invoke(args)
         self.assertEqual(code, 0, all_stores)
         self.assertEqual(len(supplied), 1)
@@ -183,13 +188,13 @@ class OrcaIntegrationTests(unittest.TestCase):
     def test_native_account_reverse_marker_protects_all_public_paths_and_other_store_is_independent(self):
         home = create_profile(self.root / "managed", accounts=1)[0]
         native = self.native(home)
-        from local_agent_record_janitor.inventory import build_session_catalog
-        from local_agent_record_janitor.manual_delete import build_manual_delete_plan
+        from local_agent_manager.inventory import build_session_catalog
+        from local_agent_manager.manual_delete import build_manual_delete_plan
         catalog = build_session_catalog((native,))
         plan = build_manual_delete_plan(catalog)
         self.assertFalse(any(action.available for action in plan.actions))
-        from local_agent_record_janitor.cleaner import clean_findings
-        from local_agent_record_janitor.manual_delete import _synthetic_finding
+        from local_agent_manager.cleaner import clean_findings
+        from local_agent_manager.manual_delete import _synthetic_finding
         report = clean_findings((_synthetic_finding(plan.actions[0]),), app_server_factory=self.writer,
                                 binary_resolver=self.writer, explicit_selection=True)
         self.assertEqual(report.results[0].status, "not_deleted")
@@ -229,8 +234,8 @@ class OrcaIntegrationTests(unittest.TestCase):
         for home in (*explicit_homes, *other_homes):
             self.native(home)
         os.environ["ORCA_USER_DATA_PATH"] = str(self.root / "current-env")
-        from local_agent_record_janitor.inventory import _read_rollouts_partial
-        with patch("local_agent_record_janitor.inventory._read_rollouts_partial", wraps=_read_rollouts_partial) as walk:
+        from local_agent_manager.inventory import _read_rollouts_partial
+        with patch("local_agent_manager.inventory._read_rollouts_partial", wraps=_read_rollouts_partial) as walk:
             approved = OperationCoordinator(self.service).plan_operation(client="orca", record_ids=(CURRENT_ID,),
                 adapters=(OrcaAdapter(profile_root=self.root / "explicit"),), orca_roots=(self.root / "explicit",),
                 plan_path=self.root / "candidate-scope.json")
@@ -238,7 +243,7 @@ class OrcaIntegrationTests(unittest.TestCase):
         self.assertEqual({s["profile_root"] for s in approved["guard_sources"]},
                          {canonical_path(self.root / "explicit"), canonical_path(self.root / "current-env")})
         before = Path(approved["plan_path"]).read_bytes()
-        with patch("local_agent_record_janitor.inventory._read_rollouts_partial", side_effect=AssertionError("blocked plan has no authorized native mutation")):
+        with patch("local_agent_manager.inventory._read_rollouts_partial", side_effect=AssertionError("blocked plan has no authorized native mutation")):
             for method in ("status_operation", "verify_operation"):
                 result = getattr(OperationCoordinator(self.service), method)(operation_id=approved["operation_id"],
                     plan_path=Path(approved["plan_path"]))
@@ -438,12 +443,12 @@ class OrcaIntegrationTests(unittest.TestCase):
     def test_guard_source_location_gate_precedes_path(self):
         base = {"schema_version": "larj.operation-plan.v2", "guard_sources": [{"client": "orca",
             "profile_root": str(self.profile), "host": "remote", "path_namespace": "local"}]}
-        with patch("local_agent_record_janitor.orca_discovery.Path", side_effect=AssertionError("foreign Path")):
+        with patch("local_agent_manager.orca_discovery.Path", side_effect=AssertionError("foreign Path")):
             with self.assertRaises(ValueError):
                 validate_guard_sources(base)
 
     def test_reader_exception_after_complete_child_keeps_durable_mutation_facts(self):
-        from local_agent_record_janitor.cleanup_service import partition_actions
+        from local_agent_manager.cleanup_service import partition_actions
         natives = (self.native(self.root / "one"), self.native(self.root / "two", HISTORY_ID))
         coordinator = OperationCoordinator(self.service)
         approved = coordinator.plan_operation(client="native", record_ids=(CURRENT_ID, HISTORY_ID), adapters=natives,

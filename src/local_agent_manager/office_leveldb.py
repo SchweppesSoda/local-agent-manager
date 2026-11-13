@@ -40,9 +40,7 @@ def _runtime_directory():
     if configured := os.environ.get("LARJ_LEVELDB_RUNTIME"):
         return Path(configured).expanduser().absolute()
     base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".cache")
-    current = base / 'local-agent-manager' / 'runtimes' / 'leveldb-v1'
-    legacy = base / 'local-agent-record-janitor' / 'leveldb-v1'
-    return legacy if not current.exists() and legacy.exists() else current
+    return base / 'local-agent-manager' / 'runtimes' / 'leveldb-v1'
 
 
 def _node():

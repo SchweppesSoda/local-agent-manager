@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.client_inventory import build_client_inventory
-from local_agent_record_janitor.path_identity import (
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.client_inventory import build_client_inventory
+from local_agent_manager.path_identity import (
     canonical_existing_path_key, inventory_path_identity_scope,
 )
 from tests.support import create_cindy_database, create_thread_index, write_rollout
@@ -21,7 +26,7 @@ class InventoryIdentityCacheTests(unittest.TestCase):
             path = Path(temporary).resolve(strict=True) / "record.jsonl"
             path.touch()
             extended = "\\\\?\\" + str(path)
-            with patch("local_agent_record_janitor.path_identity.os.path.samefile",
+            with patch("local_agent_manager.path_identity.os.path.samefile",
                        wraps=os.path.samefile) as proof:
                 with inventory_path_identity_scope():
                     expected = canonical_existing_path_key(path)
@@ -38,7 +43,7 @@ class InventoryIdentityCacheTests(unittest.TestCase):
     def test_failed_identity_is_rechecked_and_exception_discards_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary).resolve(strict=True)
-            with patch("local_agent_record_janitor.path_identity.os.path.samefile",
+            with patch("local_agent_manager.path_identity.os.path.samefile",
                        side_effect=[False, True, True]) as proof:
                 with self.assertRaisesRegex(RuntimeError, "aborted"):
                     with inventory_path_identity_scope():
@@ -80,7 +85,7 @@ class InventoryIdentityCacheTests(unittest.TestCase):
                 return build_client_inventory((CindyAdapter(
                     database=database, codex_home=home, cindy_root=root,
                     codex_bin_hint=root / "fake-codex"),), client="cindy")
-            with patch("local_agent_record_janitor.path_identity.os.path.samefile",
+            with patch("local_agent_manager.path_identity.os.path.samefile",
                        wraps=os.path.samefile) as proof:
                 first = build()
                 home_calls = sum(str(call.args[0]) == str(home) for call in proof.call_args_list)

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -7,13 +12,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters.base import FrontendBatchSnapshot
-from local_agent_record_janitor.cleaner import ScanReport
-from local_agent_record_janitor.cleanup_service import CleanupContext, CleanupService, StoreSnapshot
-from local_agent_record_janitor.client_inventory import build_client_engine_contexts, build_client_inventory
-from local_agent_record_janitor.core_types import StorageKind, StorageRef
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.planning import (
+from local_agent_manager.adapters.base import FrontendBatchSnapshot
+from local_agent_manager.cleaner import ScanReport
+from local_agent_manager.cleanup_service import CleanupContext, CleanupService, StoreSnapshot
+from local_agent_manager.client_inventory import build_client_engine_contexts, build_client_inventory
+from local_agent_manager.core_types import StorageKind, StorageRef
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.planning import (
     ActionImpact,
     ActionKind,
     CandidateAction,
@@ -23,8 +28,8 @@ from local_agent_record_janitor.planning import (
     TargetRef,
     storage_id_for_path,
 )
-from local_agent_record_janitor.record_identity import EngineCapability
-from local_agent_record_janitor.inventory import FrontendSessionRecord
+from local_agent_manager.record_identity import EngineCapability
+from local_agent_manager.inventory import FrontendSessionRecord
 
 
 @dataclass
@@ -63,8 +68,8 @@ class _CompositeAdapter:
         return self.catalogs[engine]
 
     def describe_client(self):
-        from local_agent_record_janitor.client_contracts import ClientDescriptor
-        from local_agent_record_janitor.record_identity import StoreKey, capability_for
+        from local_agent_manager.client_contracts import ClientDescriptor
+        from local_agent_manager.record_identity import StoreKey, capability_for
         stores = tuple(StoreKey(engine, catalog.session_root if engine == "pi" else catalog.config_dir,
                                 kind="session_root" if engine == "pi" else "config_dir")
                        for engine, catalog in self.catalogs.items())
@@ -171,10 +176,10 @@ def _native_context(engine: str, root: Path, record_id: str, action_id: str) -> 
 
 class ClientOperationIntegrationTests(unittest.TestCase):
     def test_guard_restriction_preserves_aliases_without_merging_distinct_contexts(self):
-        from local_agent_record_janitor.operation_coordinator import OperationCoordinatorError
+        from local_agent_manager.operation_coordinator import OperationCoordinatorError
         first, second = _empty_context(), _empty_context()
         coordinator = OperationCoordinator(CleanupService())
-        with patch("local_agent_record_janitor.client_capability_guards.restrict_cleanup_context",
+        with patch("local_agent_manager.client_capability_guards.restrict_cleanup_context",
                    side_effect=lambda *_: _empty_context()) as restrict:
             primary, bindings = coordinator._restrict_context_bindings(first, {"a": first, "b": first, "c": second}, ())
         self.assertEqual(restrict.call_count, 2)
@@ -289,10 +294,10 @@ class ClientOperationIntegrationTests(unittest.TestCase):
                 coordinator = OperationCoordinator(service)
                 plan_path = root / "operation-plan.json"
                 with patch(
-                    "local_agent_record_janitor.client_inventory.build_client_inventory",
+                    "local_agent_manager.client_inventory.build_client_inventory",
                     return_value=inventory,
                 ), patch(
-                    "local_agent_record_janitor.client_inventory.build_client_engine_contexts",
+                    "local_agent_manager.client_inventory.build_client_engine_contexts",
                     return_value=engine_contexts,
                 ):
                     result = coordinator.run_operation(

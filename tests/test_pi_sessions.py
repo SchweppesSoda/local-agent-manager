@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import tempfile
@@ -7,8 +12,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.discovery import CindyProfile
-from local_agent_record_janitor.pi_sessions import (
+from local_agent_manager.discovery import CindyProfile
+from local_agent_manager.pi_sessions import (
     PiInventoryError,
     PiSelectionError,
     build_pi_root_qualified_catalog,
@@ -165,7 +170,7 @@ class PiSessionCatalogTests(unittest.TestCase):
         )
 
         with patch(
-            "local_agent_record_janitor.pi_sessions._physical_storage_identity",
+            "local_agent_manager.pi_sessions._physical_storage_identity",
             side_effect=PiInventoryError("denied"),
         ):
             catalog = build_pi_root_qualified_catalog(

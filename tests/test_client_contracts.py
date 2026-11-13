@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import tempfile
 import json
 import unittest
@@ -8,21 +13,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.client_inventory import (
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.client_inventory import (
     ClientTarget, _bind_native_targets, _retarget_target,
     build_client_engine_contexts, build_client_inventory,
 )
-from local_agent_record_janitor.client_inventory import build_native_client_inventory, project_client_evidence
-from local_agent_record_janitor.client_contracts import (
+from local_agent_manager.client_inventory import build_native_client_inventory, project_client_evidence
+from local_agent_manager.client_contracts import (
     ClientContractError, ClientDescriptor, ClientReference, ReferenceKind, ReferenceLifecycle,
     ReferenceSnapshot, SourceFailure, describe_adapter,
 )
-from local_agent_record_janitor.pi_sessions import build_pi_session_catalog
-from local_agent_record_janitor.pi_sessions import PiMultiRootCatalog
-from local_agent_record_janitor.claude_sessions import build_claude_session_catalog
-from local_agent_record_janitor.inventory import FrontendSessionRecord
-from local_agent_record_janitor.record_identity import EngineCapability, RecordClassification, RecordKey, StoreKey
+from local_agent_manager.pi_sessions import build_pi_session_catalog
+from local_agent_manager.pi_sessions import PiMultiRootCatalog
+from local_agent_manager.claude_sessions import build_claude_session_catalog
+from local_agent_manager.inventory import FrontendSessionRecord
+from local_agent_manager.record_identity import EngineCapability, RecordClassification, RecordKey, StoreKey
 from tests.test_client_inventory import _write_pi_session, _write_claude_session
 from tests.test_cindy_references import create_database
 
@@ -104,7 +109,7 @@ class ExistingContractGapTests(unittest.TestCase):
             root = Path(temporary).resolve(strict=True)
             adapter = CindyAdapter(database=root / "metadata.db", codex_home=root / "codex-home", cindy_root=root)
             adapter.host = "ssh:synthetic-host"
-            with patch("local_agent_record_janitor.adapters.base.StoreKey", side_effect=AssertionError("remote path")):
+            with patch("local_agent_manager.adapters.base.StoreKey", side_effect=AssertionError("remote path")):
                 with self.assertRaises(ClientContractError):
                     adapter.describe_client()
 
@@ -148,8 +153,8 @@ class ExistingContractGapTests(unittest.TestCase):
                 _write_pi_session(root, f"session-{index}")
             catalog = build_pi_session_catalog(agent_dir=root, session_root=root / "sessions")
             inventory, _ = build_native_client_inventory(client="pi", engine="pi", catalog=catalog)
-            from local_agent_record_janitor.record_identity import canonical_path
-            with patch("local_agent_record_janitor.client_inventory.canonical_path", wraps=canonical_path) as probe:
+            from local_agent_manager.record_identity import canonical_path
+            with patch("local_agent_manager.client_inventory.canonical_path", wraps=canonical_path) as probe:
                 projected = project_client_evidence(inventory, {"pi": catalog})
             self.assertEqual(len(projected.targets), 100)
             self.assertLessEqual(probe.call_count, 102)
@@ -194,7 +199,7 @@ class ExistingContractGapTests(unittest.TestCase):
             path_namespace = "posix"
             codex_home = Path("/opaque/remote/root")
 
-        with patch("local_agent_record_janitor.client_contracts.StoreKey", side_effect=AssertionError("must not interpret remote paths")):
+        with patch("local_agent_manager.client_contracts.StoreKey", side_effect=AssertionError("must not interpret remote paths")):
             with self.assertRaises(ClientContractError):
                 describe_adapter(RemoteReader())
 

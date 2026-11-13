@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -10,11 +15,11 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters.native import NativeIntegrityAdapter
-from local_agent_record_janitor.adapters.orca import OrcaAdapter
-from local_agent_record_janitor.client_capability_guards import ClientCapabilityLimits
-from local_agent_record_janitor.client_inventory import build_client_engine_contexts
-from local_agent_record_janitor.record_identity import canonical_path
+from local_agent_manager.adapters.native import NativeIntegrityAdapter
+from local_agent_manager.adapters.orca import OrcaAdapter
+from local_agent_manager.client_capability_guards import ClientCapabilityLimits
+from local_agent_manager.client_inventory import build_client_engine_contexts
+from local_agent_manager.record_identity import canonical_path
 from tests.orca_support import CURRENT_ID, HISTORY_ID, SENTINEL, create_profile, make_record, replace_record
 from tests.support import create_thread_index, write_rollout
 
@@ -35,11 +40,11 @@ class OrcaAdapterTests(unittest.TestCase):
 
     def test_invalid_optional_default_keeps_reverse_marker_and_explicit_guards(self):
         from types import SimpleNamespace
-        from local_agent_record_janitor.adapter_factory import discover_orca_guards
-        from local_agent_record_janitor.orca_discovery import OrcaDiscoveryError
+        from local_agent_manager.adapter_factory import discover_orca_guards
+        from local_agent_manager.orca_discovery import OrcaDiscoveryError
         args = SimpleNamespace(client="herdr", platform=("all",), codex_home=self.homes[0])
         with patch.dict(os.environ, {"ORCA_USER_DATA_PATH": ""}), patch(
-            "local_agent_record_janitor.adapter_factory.default_orca_root",
+            "local_agent_manager.adapter_factory.default_orca_root",
             side_effect=OrcaDiscoveryError("orca_local_path_unproven"),
         ):
             guards = discover_orca_guards(args)
@@ -55,7 +60,7 @@ class OrcaAdapterTests(unittest.TestCase):
 
     def test_readonly_descriptor_and_snapshot_never_start_native_catalog(self):
         adapter = OrcaAdapter(profile_root=self.root)
-        with patch("local_agent_record_janitor.inventory.build_session_catalog", side_effect=AssertionError("native scan")):
+        with patch("local_agent_manager.inventory.build_session_catalog", side_effect=AssertionError("native scan")):
             snapshot = adapter.snapshot_references()
             descriptor = adapter.describe_client()
         self.assertEqual(len(snapshot.references), 4)
@@ -104,8 +109,8 @@ class OrcaAdapterTests(unittest.TestCase):
         homes = create_profile(other, accounts=1)
         for home in (*self.homes, *homes):
             self.populate(home, CURRENT_ID)
-        from local_agent_record_janitor.inventory import _read_rollouts_partial
-        with patch("local_agent_record_janitor.inventory._read_rollouts_partial", wraps=_read_rollouts_partial) as walk:
+        from local_agent_manager.inventory import _read_rollouts_partial
+        with patch("local_agent_manager.inventory._read_rollouts_partial", wraps=_read_rollouts_partial) as walk:
             contexts = build_client_engine_contexts((OrcaAdapter(profile_root=self.root), OrcaAdapter(profile_root=other)), client="orca")
         self.assertEqual(walk.call_count, 3)
         self.assertEqual(len([t for t in contexts[0].targets if t.record_id == CURRENT_ID]), 3)
@@ -118,7 +123,7 @@ class OrcaAdapterTests(unittest.TestCase):
             record["accountHome"]["path"] = locator
             replace_record(self.root, record)
             adapter = OrcaAdapter(profile_root=self.root)
-            with self.subTest(host=host, wsl=wsl), patch("local_agent_record_janitor.adapters.orca.prove_runtime_home", side_effect=AssertionError("unexpected runtime proof")):
+            with self.subTest(host=host, wsl=wsl), patch("local_agent_manager.adapters.orca.prove_runtime_home", side_effect=AssertionError("unexpected runtime proof")):
                 snapshot = adapter.snapshot_references()
             refs = [r for r in snapshot.references if r.frontend_id == record["sessionId"]]
             self.assertTrue(all(r.native_record is None and r.opaque_native_locator == locator and r.evidence_complete is False for r in refs))
@@ -144,12 +149,12 @@ class OrcaAdapterTests(unittest.TestCase):
         snapshot = adapter.snapshot_references()
         self.assertNotIn(canonical_path(runtime), {s.canonical_path for s in snapshot.descriptor.native_stores})
         self.assertTrue(ClientCapabilityLimits.from_adapters((adapter,)).reasons("codex", "native_delete", native_root=runtime))
-        from local_agent_record_janitor.adapters.orca import require_plain_directory
+        from local_agent_manager.adapters.orca import require_plain_directory
         def probe(path):
             if path == self.root / "codex-accounts":
                 raise PermissionError("fixture")
             return require_plain_directory(path)
-        with patch("local_agent_record_janitor.adapters.orca.require_plain_directory", side_effect=probe):
+        with patch("local_agent_manager.adapters.orca.require_plain_directory", side_effect=probe):
             snapshot = OrcaAdapter(profile_root=self.root).snapshot_references()
         self.assertEqual(len(snapshot.references), 4)
         self.assertIn("account_inventory_unavailable", [e.message for e in snapshot.errors])
@@ -231,7 +236,7 @@ class OrcaAdapterTests(unittest.TestCase):
         for suffix in ("-wal", "-shm", "-journal"):
             sidecar = journal.with_name(journal.name + suffix)
             sidecar.mkdir()
-            with self.subTest(suffix=suffix), patch("local_agent_record_janitor.adapters.orca.read_orca_journal") as reader:
+            with self.subTest(suffix=suffix), patch("local_agent_manager.adapters.orca.read_orca_journal") as reader:
                 snapshot = OrcaAdapter(profile_root=self.root).snapshot_references()
                 reader.assert_not_called()
                 self.assertIn("orca_metadata_file_redirected", [e.message for e in snapshot.errors])

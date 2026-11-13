@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import tempfile
 import unittest
 from dataclasses import replace
@@ -7,24 +12,24 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.action_registry import ACTION_REGISTRY
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.cleaner import ScanReport, scan_adapters
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.execution import ExecutionError
-from local_agent_record_janitor.inventory import build_session_catalog
-from local_agent_record_janitor.manual_delete import (
+from local_agent_manager.action_registry import ACTION_REGISTRY
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.cleaner import ScanReport, scan_adapters
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.execution import ExecutionError
+from local_agent_manager.inventory import build_session_catalog
+from local_agent_manager.manual_delete import (
     ManualDeletePlanError, ManualDeleteSelectionError, build_manual_delete_plan, execute_manual_delete,
 )
-from local_agent_record_janitor.client_capability_guards import ClientCapabilityLimits, action_frontend_engines
-from local_agent_record_janitor.client_contracts import ClientDescriptor
-from local_agent_record_janitor.magpie_cleanup import actions_for as magpie_actions_for
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.planning import (
+from local_agent_manager.client_capability_guards import ClientCapabilityLimits, action_frontend_engines
+from local_agent_manager.client_contracts import ClientDescriptor
+from local_agent_manager.magpie_cleanup import actions_for as magpie_actions_for
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.planning import (
     ActionImpact, ActionKind, CandidateAction, CleanupPlan, RiskLevel,
     StorageLocation, TargetRef, storage_id_for_path,
 )
-from local_agent_record_janitor.record_identity import EngineCapability, StoreKey
+from local_agent_manager.record_identity import EngineCapability, StoreKey
 from tests.support import create_thread_index, write_rollout
 from tests.test_cindy_references import create_database
 from tests.test_client_inventory import _write_pi_session
@@ -104,7 +109,7 @@ class ClientCapabilityGuardTests(unittest.TestCase):
             self.assertIs(ClientCapabilityLimits.from_adapters((writable,)).restrict_plan(context.plan), context.plan)
             limited_context = replace(context, snapshot=replace(context.snapshot, active_adapters=(readonly,)))
             writer = Mock(side_effect=AssertionError("frontend writer must not be called"))
-            with patch("local_agent_record_janitor.execution.execute_frontend_reference_cleanup", writer):
+            with patch("local_agent_manager.execution.execute_frontend_reference_cleanup", writer):
                 with self.assertRaises(ExecutionError) as raised:
                     service.execute(limited_context, (action,), timeout=1, app_server_factory=writer, binary_resolver=writer)
             self.assertEqual(raised.exception.kind, "client_capability_limit")
@@ -135,7 +140,7 @@ class ClientCapabilityGuardTests(unittest.TestCase):
                 for name in ("repair_legacy_index", "execute_desktop_state_cleanup", "execute_relation_cleanup",
                              "execute_frontend_reference_cleanup", "execute_cindy_session_cleanup",
                              "execute_native_project_cleanup"):
-                    stack.enter_context(patch("local_agent_record_janitor.execution." + name, writer))
+                    stack.enter_context(patch("local_agent_manager.execution." + name, writer))
                 self._assert_families_blocked(adapter, service, base, writer)
             writer.assert_not_called()
 
@@ -195,7 +200,7 @@ class ClientCapabilityGuardTests(unittest.TestCase):
             self.assertEqual(only_readonly["goal_status"], "blocked")
             self.assertTrue(only_readonly["blockers"])
             writer = Mock(side_effect=AssertionError("readonly operation must not dispatch"))
-            with patch("local_agent_record_janitor.execution.execute_cindy_session_cleanup", writer):
+            with patch("local_agent_manager.execution.execute_cindy_session_cleanup", writer):
                 result = coordinator.run_operation(client="cindy", record_ids=("readonly",), engines=("pi",),
                     adapters=(readonly,), plan_path=root / "readonly-run.json", clients_closed=True,
                     app_server_factory=writer, binary_resolver=writer)

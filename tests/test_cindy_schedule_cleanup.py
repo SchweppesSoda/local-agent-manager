@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -8,12 +13,12 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.cindy_schedule_cleanup import (
+from local_agent_manager.cindy_schedule_cleanup import (
     ScheduleCleanupError, execute, freeze, remaining,
 )
-from local_agent_record_janitor.adapters.cindy import CindyAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.adapters.cindy import CindyAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
 
 
 class ScheduleCleanupTests(unittest.TestCase):
@@ -159,7 +164,7 @@ class ScheduleCleanupTests(unittest.TestCase):
 
     def test_verification_failure_rolls_back_transaction(self):
         evidence = self.evidence()
-        from local_agent_record_janitor import cindy_schedule_cleanup as module
+        from local_agent_manager import cindy_schedule_cleanup as module
         original = module._rows
         calls = 0
 
@@ -179,7 +184,7 @@ class ScheduleCleanupTests(unittest.TestCase):
 
     def test_unknown_postcommit_recovers_without_repeating_delete(self):
         evidence = self.evidence()
-        with patch('local_agent_record_janitor.cindy_schedule_cleanup.remaining',
+        with patch('local_agent_manager.cindy_schedule_cleanup.remaining',
                    side_effect=RuntimeError('postcommit verification unavailable')):
             with self.assertRaises(ScheduleCleanupError) as caught:
                 execute(evidence, client_inspector=lambda _: ())
@@ -191,7 +196,7 @@ class ScheduleCleanupTests(unittest.TestCase):
 
     def test_changed_recovery_state_keeps_evidence(self):
         evidence = self.evidence()
-        with patch('local_agent_record_janitor.cindy_schedule_cleanup.remaining',
+        with patch('local_agent_manager.cindy_schedule_cleanup.remaining',
                    side_effect=RuntimeError('postcommit verification unavailable')):
             with self.assertRaises(ScheduleCleanupError):
                 execute(evidence, client_inspector=lambda _: ())
@@ -211,7 +216,7 @@ class ScheduleCleanupTests(unittest.TestCase):
 
     def test_recovery_after_verified_copy_unlink_requires_exact_poststate(self):
         evidence = self.evidence()
-        with patch('local_agent_record_janitor.cindy_schedule_cleanup.remaining',
+        with patch('local_agent_manager.cindy_schedule_cleanup.remaining',
                    side_effect=RuntimeError('verification interrupted')):
             with self.assertRaises(ScheduleCleanupError):
                 execute(evidence, client_inspector=lambda _: ())
@@ -224,7 +229,7 @@ class ScheduleCleanupTests(unittest.TestCase):
 
     def test_missing_copy_with_nonempty_wal_preserves_evidence(self):
         evidence = self.evidence()
-        with patch('local_agent_record_janitor.cindy_schedule_cleanup.remaining',
+        with patch('local_agent_manager.cindy_schedule_cleanup.remaining',
                    side_effect=RuntimeError('verification interrupted')):
             with self.assertRaises(ScheduleCleanupError):
                 execute(evidence, client_inspector=lambda _: ())
@@ -262,8 +267,8 @@ class ScheduleCleanupTests(unittest.TestCase):
         self.assertEqual(self.run_ids(), ['run-2', 'run-3'])
 
     def test_schedule_writer_respects_exact_profile_capability_ceiling(self):
-        from local_agent_record_janitor.record_identity import EngineCapability
-        from local_agent_record_janitor.client_capability_guards import action_location
+        from local_agent_manager.record_identity import EngineCapability
+        from local_agent_manager.client_capability_guards import action_location
         class Readonly(CindyAdapter):
             def capability_limit_for(self, engine):
                 return EngineCapability("cindy", engine, reason="Read-only fixture")
@@ -285,10 +290,10 @@ class ScheduleCleanupTests(unittest.TestCase):
             explicit_session_ids=("schedule-run:run-0",), engines=("codex",))[0]
         action = next(a for a in context.plan.actions if str(a.kind.value) == "delete_schedule_run")
         from dataclasses import replace
-        from local_agent_record_janitor.execution import ExecutionError
+        from local_agent_manager.execution import ExecutionError
         app_server_factory = Mock()
         binary_resolver = Mock()
-        with patch("local_agent_record_janitor.cindy_schedule_cleanup.execute") as writer:
+        with patch("local_agent_manager.cindy_schedule_cleanup.execute") as writer:
             with self.assertRaises(ExecutionError):
                 service.execute(replace(context, snapshot=replace(context.snapshot, active_adapters=(readonly,))),
                     (action,), timeout=1, app_server_factory=app_server_factory, binary_resolver=binary_resolver)
@@ -309,11 +314,11 @@ class ScheduleCleanupTests(unittest.TestCase):
         plan = coordinator.plan_operation(client='cindy', engines=('codex',),
             record_ids=('schedule-run:run-0',), adapters=(adapter,), plan_path=path)
         self.assertEqual(plan['goal_status'], 'ready', plan)
-        with patch('local_agent_record_janitor.cindy_schedule_cleanup.remaining',
+        with patch('local_agent_manager.cindy_schedule_cleanup.remaining',
                    side_effect=RuntimeError('verification interrupted')):
             result = coordinator.apply_operation(plan_path=path, clients_closed=True, adapters=(adapter,))
         self.assertEqual(result['goal_status'], 'unknown', result)
-        with patch('local_agent_record_janitor.cindy_schedule_cleanup.execute',
+        with patch('local_agent_manager.cindy_schedule_cleanup.execute',
                    side_effect=AssertionError('must never repeat deletion')):
             result = self.coordinator().apply_operation(plan_path=path, clients_closed=True, adapters=(adapter,))
         self.assertEqual(result['goal_status'], 'unknown', result)

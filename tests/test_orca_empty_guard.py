@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from contextlib import closing
 from copy import deepcopy
 import json
@@ -8,11 +13,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import orca_empty_guard as guard, orca_profile_cleanup as profile
-from local_agent_record_janitor.adapters import CindyAdapter, OrcaAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_guard_sources import guard_sources_for, required_source_errors
+from local_agent_manager import orca_empty_guard as guard, orca_profile_cleanup as profile
+from local_agent_manager.adapters import CindyAdapter, OrcaAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_guard_sources import guard_sources_for, required_source_errors
 from tests.support import create_cindy_database
 
 

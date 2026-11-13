@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from contextlib import closing
 import hashlib
 import json
@@ -6,8 +11,8 @@ import sqlite3
 import tempfile
 import unittest
 
-from local_agent_record_janitor import orca_profile_cleanup as profile, frozen_sqlite
-from local_agent_record_janitor.orca_journal_cleanup import OrcaFrontendError
+from local_agent_manager import orca_profile_cleanup as profile, frozen_sqlite
+from local_agent_manager.orca_journal_cleanup import OrcaFrontendError
 from tests.test_orca_frontend_json import fixture
 
 

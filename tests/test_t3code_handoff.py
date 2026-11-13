@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import closing
 from io import StringIO
 import json
@@ -643,7 +648,7 @@ class T3CodeHandoffTests(unittest.TestCase):
             },
         )
         err = StringIO()
-        with patch.dict(os.environ, {"PYTHONPATH": ""}, clear=False):
+        with patch.dict(os.environ, {"PYTHONPATH": str(_test_bootstrap.METADATA)}, clear=False):
             worker_pid = _spawn_detached_worker(spec_path)
             final = _follow_worker_events(
                 events_path=handoff_dir / "events.jsonl",

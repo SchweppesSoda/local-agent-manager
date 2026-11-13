@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Opt-in real Codex deletion with a synthetic Herdr profile in isolated TEMP."""
 import argparse
 import json
@@ -10,10 +15,10 @@ from unittest.mock import patch
 
 
 def run(binary, scenario="complete"):
-    from local_agent_record_janitor.herdr_bound_adapter import HerdrBoundAdapter, SCHEMA
-    from local_agent_record_janitor.herdr_cleanup_json import fingerprint
-    from local_agent_record_janitor.cleanup_service import CleanupService
-    from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+    from local_agent_manager.herdr_bound_adapter import HerdrBoundAdapter, SCHEMA
+    from local_agent_manager.herdr_cleanup_json import fingerprint
+    from local_agent_manager.cleanup_service import CleanupService
+    from local_agent_manager.operation_coordinator import OperationCoordinator
     from tests.herdr_support import CODEX_ID, agent_session, pane, snapshot, tab, write_snapshot, recovery_name
     from tests.orca_native_support import create_native_schema, add_native_record
     from tests.orca_binary_acceptance import file_metadata
@@ -49,11 +54,11 @@ def run(binary, scenario="complete"):
     assert plan["goal_status"] == "ready", str(output)
     args = dict(operation_id=plan["operation_id"], plan_path=plan_path, plan_sha256=plan["plan_sha256"])
     if scenario == "cold-continue":
-        with patch("local_agent_record_janitor.herdr_cleanup.execute", side_effect=RuntimeError("synthetic pre-mutation stop")):
+        with patch("local_agent_manager.herdr_cleanup.execute", side_effect=RuntimeError("synthetic pre-mutation stop")):
             report["interrupted"] = OperationCoordinator(CleanupService()).apply_operation(**args, clients_closed=True)
         save()
         assert not selected.exists(), str(output)
-        with patch("local_agent_record_janitor.operation_coordinator.OperationCoordinator._execute_manual_batch",
+        with patch("local_agent_manager.operation_coordinator.OperationCoordinator._execute_manual_batch",
                    side_effect=AssertionError("completed native child must not repeat")):
             result = OperationCoordinator(CleanupService()).apply_operation(**args, clients_closed=True)
     else:
@@ -70,13 +75,14 @@ def run(binary, scenario="complete"):
 
 
 def run_isolated(binary, scenario):
-    from local_agent_record_janitor.orca_runtime import isolated_environment
+    from local_agent_manager.orca_runtime import isolated_environment
     if os.name != "nt":
         raise ValueError("Qualified Herdr lifecycle requires Windows")
     root = Path(tempfile.mkdtemp(prefix="janitor-herdr-wrapper-")).resolve()
     home, scratch = root / "empty-home", root / "environment"
     home.mkdir(); scratch.mkdir()
     environment, cwd = isolated_environment(scratch, home)
+    environment["_LAM_TEST_INSTALLATION"] = os.environ["_LAM_TEST_INSTALLATION"]
     repository = Path(__file__).resolve().parents[1]
     command = [sys.executable, "-I", "-B", "-c",
         "import sys;from pathlib import Path;sys.path[:0]=[sys.argv[1],str(Path(sys.argv[1])/'src')];"

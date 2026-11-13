@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from local_agent_manager.state_paths import control_directory
 
 import json
@@ -13,10 +18,10 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleaner import scan_adapters, verify_finding_deleted
-from local_agent_record_janitor.cli import EXIT_OK, main
-from local_agent_record_janitor.codex_desktop_state import (
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleaner import scan_adapters, verify_finding_deleted
+from local_agent_manager.cli import EXIT_OK, main
+from local_agent_manager.codex_desktop_state import (
     DesktopStateError,
     _relevant_client_names,
     _running_related_process_records,
@@ -24,12 +29,12 @@ from local_agent_record_janitor.codex_desktop_state import (
     inspect_client_ownership,
     read_desktop_state,
 )
-from local_agent_record_janitor.client_contracts import ClientContractError
-from local_agent_record_janitor.inventory import build_session_catalog
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.models import Finding
-from local_agent_record_janitor.planning import ActionKind, RiskLevel, build_cleanup_plan
+from local_agent_manager.client_contracts import ClientContractError
+from local_agent_manager.inventory import build_session_catalog
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.models import Finding
+from local_agent_manager.planning import ActionKind, RiskLevel, build_cleanup_plan
 
 from tests.support import create_thread_index, write_rollout
 
@@ -122,8 +127,8 @@ class CodexDesktopStateTests(unittest.TestCase):
         self.assertEqual(impact["desktop_catalog_record_count"], 2)
         self.assertEqual(set(impact["desktop_database_paths"]), {str(self.database), str(second)})
         self.assertEqual(impact["desktop_global_state_reference_count"], 2)
-        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()), patch(
-            "local_agent_record_janitor.codex_app_server.CodexAppServer.delete_thread",
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()), patch(
+            "local_agent_manager.codex_app_server.CodexAppServer.delete_thread",
             side_effect=AssertionError("Desktop-only cleanup must not dispatch native deletion"),
         ):
             result = OperationCoordinator(service).apply_operation(
@@ -173,7 +178,7 @@ class CodexDesktopStateTests(unittest.TestCase):
         self.assertEqual(result.removed_global_state_references, 4)
 
     def test_dual_catalog_failure_restores_all_databases_and_json(self) -> None:
-        from local_agent_record_janitor import codex_desktop_state as desktop
+        from local_agent_manager import codex_desktop_state as desktop
         second = self._second_catalog()
         self.state_path.with_suffix(".json.bak").write_bytes(self.state_path.read_bytes())
         databases_before = {p: self._database_dump(p) for p in (self.database, second)}
@@ -228,7 +233,7 @@ class CodexDesktopStateTests(unittest.TestCase):
                 second.write_bytes(second_bytes)
 
     def test_dual_catalog_rechecks_frozen_rows_inside_write_transaction(self) -> None:
-        from local_agent_record_janitor import codex_desktop_state as desktop
+        from local_agent_manager import codex_desktop_state as desktop
         second = self._second_catalog()
         state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
         before = {p: self._database_dump(p) for p in (self.database, second)}
@@ -280,7 +285,7 @@ class CodexDesktopStateTests(unittest.TestCase):
             read_desktop_state(self.codex_home)
 
     def test_process_probe_timeout_fails_closed_and_hides_console_window(self) -> None:
-        from local_agent_record_janitor import codex_desktop_state as desktop
+        from local_agent_manager import codex_desktop_state as desktop
 
         with (
             patch.object(desktop.os, "name", "nt"),
@@ -301,7 +306,7 @@ class CodexDesktopStateTests(unittest.TestCase):
         )
 
     def test_process_probe_launch_error_fails_closed(self) -> None:
-        from local_agent_record_janitor import codex_desktop_state as desktop
+        from local_agent_manager import codex_desktop_state as desktop
 
         with (
             patch.object(desktop.os, "name", "nt"),
@@ -346,8 +351,8 @@ class CodexDesktopStateTests(unittest.TestCase):
                              if action.kind == ActionKind.REMOVE_DESKTOP_STATE).available)
         self.assertEqual(tuple(a for a in terminal.active_adapters
                                if isinstance(a, NativeIntegrityAdapter)), (adapter,))
-        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()), patch(
-            "local_agent_record_janitor.codex_app_server.CodexAppServer.delete_thread",
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()), patch(
+            "local_agent_manager.codex_app_server.CodexAppServer.delete_thread",
             side_effect=AssertionError("JSON-only cleanup must not call thread/delete"),
         ):
             result = OperationCoordinator(service).apply_operation(
@@ -363,7 +368,7 @@ class CodexDesktopStateTests(unittest.TestCase):
             self.assertIn(THREAD_ID, value["prompt-history"][0])
 
     def test_json_only_scan_retains_exact_source_capability_ceiling(self) -> None:
-        from local_agent_record_janitor.record_identity import EngineCapability
+        from local_agent_manager.record_identity import EngineCapability
 
         class Readonly(NativeIntegrityAdapter):
             def capability_limit_for(self, engine):
@@ -438,7 +443,7 @@ class CodexDesktopStateTests(unittest.TestCase):
         state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
         before = {path: path.read_bytes() for path in
             (self.state_path, self.state_path.with_suffix(".json.bak"))}
-        from local_agent_record_janitor import codex_desktop_state as desktop
+        from local_agent_manager import codex_desktop_state as desktop
         real_write = desktop._atomic_write_json
 
         def fail_backup_write(path, value):
@@ -530,18 +535,18 @@ class CodexDesktopStateTests(unittest.TestCase):
         self.assertIn("owner_process_root_missing", absent["errors"])
 
     def test_owner_projection_probe_failure_and_nonwindows_are_unknown(self):
-        with patch("local_agent_record_janitor.codex_desktop_state.os.name", "nt"), patch(
-                "local_agent_record_janitor.codex_desktop_state._running_related_process_records",
+        with patch("local_agent_manager.codex_desktop_state.os.name", "nt"), patch(
+                "local_agent_manager.codex_desktop_state._running_related_process_records",
                 side_effect=DesktopStateError("Synthetic enumeration failure")), patch(
-                "local_agent_record_janitor.codex_desktop_state.is_local_absolute_locator", return_value=True):
+                "local_agent_manager.codex_desktop_state.is_local_absolute_locator", return_value=True):
             failed = inspect_client_ownership(self.codex_home, owner_client="native")
         self.assertFalse(failed["probe_complete"])
         self.assertFalse(failed["coverage_complete"])
         self.assertIsNone(failed["clients_closed"])
         self.assertIn("Synthetic enumeration failure", str(failed["errors"]))
         # A supplied snapshot tests this branch; it is not an OS integration probe.
-        with patch("local_agent_record_janitor.codex_desktop_state.os.name", "posix"), patch(
-                "local_agent_record_janitor.codex_desktop_state.is_local_absolute_locator", return_value=True):
+        with patch("local_agent_manager.codex_desktop_state.os.name", "posix"), patch(
+                "local_agent_manager.codex_desktop_state.is_local_absolute_locator", return_value=True):
             other_platform = inspect_client_ownership(self.codex_home, owner_client="native", records=())
         self.assertTrue(other_platform["probe_complete"])
         self.assertFalse(other_platform["coverage_complete"])
@@ -556,9 +561,9 @@ class CodexDesktopStateTests(unittest.TestCase):
             with self.subTest(location=location), self.assertRaises(ClientContractError):
                 inspect_client_ownership(PoisonPath(), **location)
         foreign = "/remote/profile" if os.name == "nt" else "C:\\remote\\profile"
-        with patch("local_agent_record_janitor.codex_desktop_state.Path",
+        with patch("local_agent_manager.codex_desktop_state.Path",
                    side_effect=AssertionError("Opaque owner became Path")), patch(
-                "local_agent_record_janitor.codex_desktop_state._running_related_process_records",
+                "local_agent_manager.codex_desktop_state._running_related_process_records",
                 side_effect=AssertionError("Opaque owner probed")):
             opaque = inspect_client_ownership(foreign, owner_client="orca")
         self.assertIsNone(opaque["clients_closed"])
@@ -800,7 +805,7 @@ class CodexDesktopStateTests(unittest.TestCase):
         native_home.mkdir(parents=True)
 
         with patch(
-            "local_agent_record_janitor.codex_desktop_state._same_existing_path",
+            "local_agent_manager.codex_desktop_state._same_existing_path",
             return_value=None,
         ):
             self.assertEqual(
@@ -907,7 +912,7 @@ class CodexDesktopStateTests(unittest.TestCase):
     def test_cleanup_removes_exact_structured_refs_but_preserves_prompt_text(self) -> None:
         state = read_desktop_state(self.codex_home, (THREAD_ID,)).threads[THREAD_ID]
         with patch(
-            "local_agent_record_janitor.codex_desktop_state.running_related_clients",
+            "local_agent_manager.codex_desktop_state.running_related_clients",
             return_value=(),
         ):
             result = execute_desktop_state_cleanup(
@@ -1000,7 +1005,7 @@ class CodexDesktopStateTests(unittest.TestCase):
 
         execute_output = StringIO()
         with patch(
-            "local_agent_record_janitor.codex_desktop_state.running_related_clients",
+            "local_agent_manager.codex_desktop_state.running_related_clients",
             return_value=(),
         ):
             execute_status = main(

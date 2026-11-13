@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from contextlib import closing
 import json
 import os
@@ -6,7 +11,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from local_agent_record_janitor import office_database as office
+from local_agent_manager import office_database as office
 
 SELECTED = "11111111-1111-4111-8111-111111111111"
 OTHER = "22222222-2222-4222-8222-222222222222"

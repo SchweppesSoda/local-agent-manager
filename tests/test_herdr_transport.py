@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import gc
 import os
 from pathlib import Path
@@ -8,10 +13,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor.herdr_discovery import local_herdr_path
-from local_agent_record_janitor.herdr_live_metadata import decode_response
-from local_agent_record_janitor.herdr_runtime import RuntimeBudget, probe_runtime
-from local_agent_record_janitor.herdr_transport import HerdrTransportError, endpoint_identity, request_metadata
+from local_agent_manager.herdr_discovery import local_herdr_path
+from local_agent_manager.herdr_live_metadata import decode_response
+from local_agent_manager.herdr_runtime import RuntimeBudget, probe_runtime
+from local_agent_manager.herdr_transport import HerdrTransportError, endpoint_identity, request_metadata
 from tests.herdr_live_support import Endpoint, live_snapshot, pong, response, wire
 
 
@@ -90,7 +95,7 @@ class HerdrTransportTests(unittest.TestCase):
                     self.query(seconds=0.12)
                 self.assertLess(time.monotonic() - started, 0.25)
         if handles is not None:
-            from local_agent_record_janitor.herdr_transport import _retiring
+            from local_agent_manager.herdr_transport import _retiring
             gc.collect()
             self.assertEqual(_retiring, [])
             self.assertEqual(count(), handles)
@@ -142,7 +147,7 @@ class HerdrTransportTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows OVERLAPPED retirement")
     def test_signalled_deferred_cancellation_is_finalized_before_retirement(self):
         import _winapi
-        from local_agent_record_janitor.herdr_transport import _reap_cancelled, _retiring
+        from local_agent_manager.herdr_transport import _reap_cancelled, _retiring
         class Pending:
             event = 1
             completed = False

@@ -87,7 +87,7 @@ or runtime installation is changed, and no existing file lease is released to
 make a discovery read succeed.
 
 After all these checks, the protocol publishes a separate retained
-`recovery-<original-lock-sha256>.json` audit, including parent/child hashes, old lock,
+`recovery-audit.json` audit, including the full original-lock SHA, parent/child hashes, old lock,
 original journal hashes, writer exit proof and any post-terminal scope evidence.
 It updates the reservation result through the ordinary journal API and retires
 only its leased lock by Windows handle disposition. Failure leaves occupancy
@@ -391,18 +391,18 @@ scope selects only soft-deleted conversations. Install the pinned LevelDB
 dependency explicitly before planning profiles with Chromium storage:
 
 ```powershell
-python -m local_agent_record_janitor.office_leveldb --install
-local-agent-record-janitor delete plan --client qwenwork --record-id '<chat ID>' --out office-plan.json --json
-local-agent-record-janitor delete apply --operation-id '<operation ID from plan>' --plan office-plan.json --clients-closed --json
-local-agent-record-janitor operation verify --operation-id '<operation ID from plan>' --plan office-plan.json --json
+python -m local_agent_manager.office_leveldb --install
+local-agent-manager delete plan --client qwenwork --record-id '<chat ID>' --out office-plan.json --json
+local-agent-manager delete apply --operation-id '<operation ID from plan>' --plan office-plan.json --clients-closed --json
+local-agent-manager operation verify --operation-id '<operation ID from plan>' --plan office-plan.json --json
 ```
 
 The dependency installer requires Node.js 18
 or newer and npm; it installs the locked `classic-level` package without install
 scripts. `LARJ_LEVELDB_RUNTIME` can select a dedicated runtime directory.
 The default is `local-agent-manager/runtimes/leveldb-v1` under the local
-application-data directory. An existing legacy runtime remains discoverable
-when the new directory is absent.
+application-data directory. An explicit runtime path is used exactly as given;
+the old project runtime directory is not searched.
 Deletion never installs dependencies implicitly. Freeze/apply bind the Node
 binary, helper and dependency code, native library, physical store and logical
 before/after projections. Planning and status inspect private copies.
@@ -424,9 +424,9 @@ See [the evidence and limits](adapters.md#千问办公cn-本地会话清理).
 ## Paseo agent registry metadata
 
 ```powershell
-local-agent-record-janitor records --client paseo --json
-local-agent-record-janitor records --client paseo --paseo-root 'D:\profiles\paseo' --engine claude --json
-local-agent-record-janitor records --client paseo --record-id '<Paseo agent ID>' --inspect-clients --json
+local-agent-manager records --client paseo --json
+local-agent-manager records --client paseo --paseo-root 'D:\profiles\paseo' --engine claude --json
+local-agent-manager records --client paseo --record-id '<Paseo agent ID>' --inspect-clients --json
 ```
 
 The default is `PASEO_HOME`, then `~/.paseo`; `--paseo-root` can be repeated.
@@ -460,9 +460,9 @@ Codex、Antigravity 等 provider 的原生会话保留。该模式覆盖 daemon 
 
 ```powershell
 local-agent-manager delete run --client paseo --paseo-only --record-id '<完整 Paseo UUID 1>' --record-id '<完整 Paseo UUID 2>' --yes --progress --json
-local-agent-record-janitor delete plan --client paseo --paseo-only --paseo-root 'D:\PaseoHome' --record-id '<完整 Paseo 会话 UUID>' --out plan.json --json
-local-agent-record-janitor delete apply --paseo-only --operation-id '<operation_id>' --plan plan.json --plan-sha256 '<plan_sha256>' --json
-local-agent-record-janitor operation verify --operation-id '<operation_id>' --plan plan.json --json
+local-agent-manager delete plan --client paseo --paseo-only --paseo-root 'D:\PaseoHome' --record-id '<完整 Paseo 会话 UUID>' --out plan.json --json
+local-agent-manager delete apply --paseo-only --operation-id '<operation_id>' --plan plan.json --plan-sha256 '<plan_sha256>' --json
+local-agent-manager operation verify --operation-id '<operation_id>' --plan plan.json --json
 ```
 
 apply 使用冻结的 profile 和计划哈希，执行与核验期间保持目标 daemon 运行。
@@ -514,7 +514,7 @@ session 根；Claude `root` 是 config 根。一个计划只支持一个 Codex �
 `desktop_profiles: []` 明确限定为 headless 服务端；有本机桌面缓存时须列全。
 
 ```powershell
-local-agent-record-janitor delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
+local-agent-manager delete plan --client paseo --paseo-bindings bindings.json --record-id '<Paseo agent ID>' --out plan.json
 ```
 
 检查计划中展开的后代、原生批次及前端批次，再按通用协议用 operation ID、plan SHA 和
@@ -551,9 +551,9 @@ RPC 仍使用既有本机认证和 orchestration protocol 2，成功必须经过
 原生记录的直接磁盘清理与历史导入各自沿用对应格式和接口契约。
 
 ```powershell
-local-agent-record-janitor delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json
-local-agent-record-janitor delete apply --t3code-only --operation-id '<计划中的 operation_id>' --plan t3-only.json --plan-sha256 '<已批准的 plan_sha256>' --json
-local-agent-record-janitor operation verify --operation-id '<同一 operation_id>' --plan t3-only.json --json
+local-agent-manager delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json
+local-agent-manager delete apply --t3code-only --operation-id '<计划中的 operation_id>' --plan t3-only.json --plan-sha256 '<已批准的 plan_sha256>' --json
+local-agent-manager operation verify --operation-id '<同一 operation_id>' --plan t3-only.json --json
 ```
 
 已授权的多个完整 ID 可用一条命令自动完成计划、应用和验证。
@@ -785,9 +785,9 @@ Windows 的显式绑定文件使用以下格式；`environment_id` 必须来自�
 它不能代表浏览器、移动端或远程副本已经删除。桌面缓存需要已安装的固定 LevelDB 依赖：
 
 ```powershell
-python -m local_agent_record_janitor.office_leveldb --install --runtime-dir 'D:/Dependencies/larj-leveldb'
+python -m local_agent_manager.office_leveldb --install --runtime-dir 'D:/Dependencies/larj-leveldb'
 $env:LARJ_LEVELDB_RUNTIME = 'D:/Dependencies/larj-leveldb'
-local-agent-record-janitor delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
+local-agent-manager delete plan --client t3code --t3code-bindings bindings.json --record-id '<T3 thread ID>' --out plan.json
 ```
 
 计划列出原生及前端动作、后代、文件/数据库摘要和依赖。审阅并明确授权该计划后，关闭
@@ -829,7 +829,7 @@ Chromium 在完整私有家族中执行 strict transaction，删除精确 thread
 随后完整逻辑重建清除历史 WAL/table 字节，仅按全 owner 图复制存活 blob，
 并用真实 Chromium 冷重开核对完整逻辑结果及未选 raw data 记录。
 
-独立 journal 位于管理器状态目录中该 profile 对应目录的 `desktop-cleanups/<operation>`；旧版本留在 profile 内 `.local-agent-record-janitor/desktop-cleanups` 的记录只作历史读取。
+独立 journal 通过统一的状态定位器，固定在权威仓库 `.agent-manager-state` 中该 profile 对应目录的 `desktop-cleanups/<operation>`。profile 内旧目录不参与当前 journal 查找。
 永久 root mutex、运行文件独占租约和原 server-owner SQLite lock 在安装期间共同持有。
 新 journal 的 durable after image 先落盘，再改原 family。原 apply/native 删除不重放，
 旧 plan/journal/audit 不改写。中断后 `apply` 拒绝重放，`status` 为 unknown。

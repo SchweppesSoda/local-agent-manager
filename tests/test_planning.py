@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.cleaner import ExpectedDeletionScope
-from local_agent_record_janitor.codex_state import rollout_state_fingerprint
-from local_agent_record_janitor.models import Finding, RolloutRecord
-from local_agent_record_janitor.planning import (
+from local_agent_manager.cleaner import ExpectedDeletionScope
+from local_agent_manager.codex_state import rollout_state_fingerprint
+from local_agent_manager.models import Finding, RolloutRecord
+from local_agent_manager.planning import (
     ActionKind,
     RiskLevel,
     ScanStatus,
@@ -185,7 +190,7 @@ class CleanupPlanningTests(unittest.TestCase):
                 "index_missing_rollout",
             )
             with patch(
-                "local_agent_record_janitor.planning.rollout_state_fingerprint",
+                "local_agent_manager.planning.rollout_state_fingerprint",
                 side_effect=OSError("stat access denied"),
             ):
                 plan = build_cleanup_plan(

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import copy
 import json
 import os
@@ -8,10 +13,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.orca_authorization import coordinator_scope, execution_scope, permits
-from local_agent_record_janitor.orca_target_safety import _schema_metadata, evidence_for_actions
-from local_agent_record_janitor.mutation_guard import scopes_for_frozen_plan, mutation_guard, MutationScope, UnknownMutationError
-from local_agent_record_janitor.operation_store import plan_sha256
+from local_agent_manager.orca_authorization import coordinator_scope, execution_scope, permits
+from local_agent_manager.orca_target_safety import _schema_metadata, evidence_for_actions
+from local_agent_manager.mutation_guard import scopes_for_frozen_plan, mutation_guard, MutationScope, UnknownMutationError
+from local_agent_manager.operation_store import plan_sha256
 from tests.orca_native_support import create_native_schema
 from tests.test_mutation_guard import write_journal, basic_action
 
@@ -76,7 +81,7 @@ class OrcaAuthorizationTests(unittest.TestCase):
         child["plan_sha256"] = plan_sha256(child)
         # Create a fresh genuine v2 journal, preserving the old v1 helper's
         # existing scope behavior in its own regression tests.
-        from local_agent_record_janitor.operation_store import OperationStore
+        from local_agent_manager.operation_store import OperationStore
         new = OperationStore(self.home, "orca-v2-unknown")
         new.accept_plan(child | {"operation_id": new.operation_id,
             "plan_sha256": plan_sha256(child | {"operation_id": new.operation_id})})
@@ -110,7 +115,7 @@ class OrcaAuthorizationTests(unittest.TestCase):
     def test_missing_or_incomplete_native_backfill_is_not_startup_eligible(self):
         from contextlib import closing
         import sqlite3
-        from local_agent_record_janitor.orca_target_safety import _startup_control
+        from local_agent_manager.orca_target_safety import _startup_control
         create_native_schema(self.home)
         self.assertEqual(_startup_control(self.home)["backfill_state"][1], "complete")
         with closing(sqlite3.connect(self.home / "state_5.sqlite")) as connection:
@@ -125,7 +130,7 @@ class OrcaAuthorizationTests(unittest.TestCase):
 
     def test_deferred_close_error_and_unknown_stop_cannot_publish_deleted(self):
         from tests.test_cleaner import CleanupExecutionTests, FakeAppServer
-        from local_agent_record_janitor.cleaner import clean_findings, VerificationResult
+        from local_agent_manager.cleaner import clean_findings, VerificationResult
         fixture = CleanupExecutionTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
@@ -153,7 +158,7 @@ class OrcaAuthorizationTests(unittest.TestCase):
         from unittest.mock import Mock
         from tests.test_cleaner import CleanupExecutionTests, FakeAppServer
         from tests.support import create_thread_index
-        from local_agent_record_janitor.cleaner import clean_findings
+        from local_agent_manager.cleaner import clean_findings
 
         fixture = CleanupExecutionTests()
         fixture.setUp()

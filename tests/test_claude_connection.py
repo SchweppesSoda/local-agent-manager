@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 from pathlib import Path
@@ -11,15 +16,15 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import claude_connection, frozen_files
-from local_agent_record_janitor.claude_connection import (
+from local_agent_manager import claude_connection, frozen_files
+from local_agent_manager.claude_connection import (
     PLAN_SCHEMA,
     RESULT_SCHEMA,
     ClaudeConnectionError,
     apply_connection,
     prepare_connection,
 )
-from local_agent_record_janitor.operation_store import plan_sha256
+from local_agent_manager.operation_store import plan_sha256
 
 
 class ClaudeConnectionTests(unittest.TestCase):

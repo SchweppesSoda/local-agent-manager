@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 from pathlib import Path
@@ -8,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import cindy_memory as memory
+from local_agent_manager import cindy_memory as memory
 
 
 class CindyMemoryTests(unittest.TestCase):

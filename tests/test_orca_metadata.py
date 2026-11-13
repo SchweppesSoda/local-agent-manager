@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import copy
 import hashlib
 import json
@@ -11,11 +16,11 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.orca_discovery import (
+from local_agent_manager.orca_discovery import (
     OrcaDiscoveryError, default_orca_root, local_orca_path, prove_account_home,
     prove_runtime_home, reverse_account_profile,
 )
-from local_agent_record_janitor.orca_metadata import OrcaMetadataError, parse_orca_record, read_orca_journal
+from local_agent_manager.orca_metadata import OrcaMetadataError, parse_orca_record, read_orca_journal
 from tests.orca_support import SENTINEL, create_profile, make_record
 
 
@@ -48,7 +53,7 @@ class OrcaMetadataTests(unittest.TestCase):
             connection.execute("INSERT INTO journal_rows VALUES (?, 'fixture', 0, 0, ?)", (record["sessionId"], json.dumps(record)))
             connection.execute("CREATE VIEW agent_session_records AS SELECT seq AS rowid,session_id,row_json AS record_json FROM journal_rows")
             connection.commit()
-        with patch("local_agent_record_janitor.orca_metadata.connect_readonly", wraps=self._authorized_connection) as connect:
+        with patch("local_agent_manager.orca_metadata.connect_readonly", wraps=self._authorized_connection) as connect:
             records, errors = read_orca_journal(self.database, self.root)
         self.assertTrue(connect.called)
         self.assertEqual(records, ())
@@ -56,7 +61,7 @@ class OrcaMetadataTests(unittest.TestCase):
         self.assertEqual(self.body_reads, [])
 
     def _authorized_connection(self, path):
-        from local_agent_record_janitor.sqlite_utils import connect_readonly
+        from local_agent_manager.sqlite_utils import connect_readonly
         connection = connect_readonly(path)
         self.body_reads = []
         def authorizer(action, table, column, *_):
@@ -113,13 +118,13 @@ class OrcaMetadataTests(unittest.TestCase):
         self.assertNotIn(SENTINEL, repr(parse_orca_record(base["sessionId"], base)))
 
     def test_schema_and_metadata_are_read_in_one_transaction(self):
-        from local_agent_record_janitor.sqlite_utils import connect_readonly
+        from local_agent_manager.sqlite_utils import connect_readonly
         trace = []
         def traced(path):
             connection = connect_readonly(path)
             connection.set_trace_callback(trace.append)
             return connection
-        with patch("local_agent_record_janitor.orca_metadata.connect_readonly", side_effect=traced):
+        with patch("local_agent_manager.orca_metadata.connect_readonly", side_effect=traced):
             read_orca_journal(self.database, self.root)
         self.assertLess(trace.index("BEGIN"), trace.index("PRAGMA user_version"))
 
@@ -147,7 +152,7 @@ class OrcaDiscoveryTests(unittest.TestCase):
         invalid += [(raw, "local", "local") for raw in
                     (("/home/remote", "\\home\\remote", "\\\\server\\share\\home") if os.name == "nt" else ("C:\\remote\\home", "\\\\server\\share"))]
         for raw, host, namespace in invalid:
-            with self.subTest(raw=raw, host=host), patch("local_agent_record_janitor.orca_discovery.Path", side_effect=AssertionError("Path reached")):
+            with self.subTest(raw=raw, host=host), patch("local_agent_manager.orca_discovery.Path", side_effect=AssertionError("Path reached")):
                 with self.assertRaises(ValueError):
                     local_orca_path(raw, host=host, path_namespace=namespace)
 

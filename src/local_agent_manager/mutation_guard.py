@@ -359,8 +359,6 @@ def _operations_directory(root: Path) -> Path:
         current = candidate
     if current.resolve(strict=True) != expected:
         raise OperationStoreError("Mutation lock directory escapes the manager state directory")
-    from .state_paths import record_store_root
-    record_store_root(root, control)
     return current
 
 
@@ -436,6 +434,8 @@ def _root_lock(root: Path) -> Iterator[None]:
             raise MutationRootLockedError(f"Another process owns the mutation root: {root}") from exc
         mutex.fd, mutex.depth = fd, 1
         try:
+            from .state_paths import record_store_root
+            record_store_root(root, directory.parent)
             _operations_directory(root)
             _validate_regular_file(lock_path, _required_lstat(lock_path))
             if _file_identity(_required_lstat(lock_path)) != identity:

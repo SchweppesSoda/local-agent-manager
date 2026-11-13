@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import hashlib
 import os
@@ -10,16 +15,16 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter, OrcaAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.orca_metadata import parse_orca_record
-from local_agent_record_janitor.orca_target_safety import (
+from local_agent_manager.adapters import NativeIntegrityAdapter, OrcaAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.orca_metadata import parse_orca_record
+from local_agent_manager.orca_target_safety import (
     _absent_configuration, _optional_identity, freeze_orca_target,
     inspect_orca_target_processes, recheck_orca_target, validate_document_targets,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import plan_sha256
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import plan_sha256
 from tests.orca_support import CURRENT_ID, SENTINEL, create_profile, make_record, replace_record
 from tests.support import create_thread_index, write_rollout
 
@@ -42,12 +47,12 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.binary.write_bytes(b"synthetic binary identity, never launched")
         self.adapter = OrcaAdapter(profile_root=self.profile, codex_bin_hint=self.binary)
         for patcher in (
-            patch("local_agent_record_janitor.orca_runtime.RUNTIME_ACCEPTED", False),
-            patch("local_agent_record_janitor.orca_target_safety._schema_metadata", return_value={}),
-            patch("local_agent_record_janitor.orca_target_safety._startup_control", return_value={}),
-            patch("local_agent_record_janitor.orca_runtime.PINNED_BINARY_SHA256", hashlib.sha256(self.binary.read_bytes()).hexdigest()),
-            patch("local_agent_record_janitor.orca_target_safety._windows_process_snapshot", return_value=()),
-            patch("local_agent_record_janitor.orca_target_safety._system_configuration_root", return_value=self.root / "system-config"),
+            patch("local_agent_manager.orca_runtime.RUNTIME_ACCEPTED", False),
+            patch("local_agent_manager.orca_target_safety._schema_metadata", return_value={}),
+            patch("local_agent_manager.orca_target_safety._startup_control", return_value={}),
+            patch("local_agent_manager.orca_runtime.PINNED_BINARY_SHA256", hashlib.sha256(self.binary.read_bytes()).hexdigest()),
+            patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()),
+            patch("local_agent_manager.orca_target_safety._system_configuration_root", return_value=self.root / "system-config"),
             patch.dict(os.environ, {"APPDATA": str(self.root / "appdata"), "ORCA_USER_DATA_PATH": "",
                                    "LOCALAPPDATA": str(self.root / "localappdata"),
                                    "CODEX_HOME": str(self.root / "unrelated-native")}),
@@ -69,7 +74,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.assertEqual(recheck_orca_target(evidence, self.adapter), ())
 
     def test_native_filename_and_compressed_copies_block_before_start(self):
-        from local_agent_record_janitor.orca_target_safety import _rollout_boundary
+        from local_agent_manager.orca_target_safety import _rollout_boundary
         original = self.rollout
         for name in ("rollout-" + TARGET_ID + ".jsonl",
                      "rollout-2026-02-30T00-00-00-" + TARGET_ID + ".jsonl",
@@ -170,7 +175,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.rollout.unlink()
         create_native_schema(self.home)
         self.rollout = add_native_record(self.home, TARGET_ID)
-        with patch("local_agent_record_janitor.orca_runtime.RUNTIME_ACCEPTED", True):
+        with patch("local_agent_manager.orca_runtime.RUNTIME_ACCEPTED", True):
             coordinator = OperationCoordinator(CleanupService())
             plan = coordinator.plan_operation(client="orca", record_ids=(TARGET_ID,), engines=("codex",),
                 adapters=(self.adapter,), plan_path=self.root / "ready.json", operation_id="orca-ready")
@@ -186,8 +191,8 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         import sqlite3
         import uuid
         from contextlib import closing
-        from local_agent_record_janitor.cleanup_service import partition_actions
-        from local_agent_record_janitor.orca_runtime import _WindowsJob, runtime_host_identity, runtime_instance_stopped
+        from local_agent_manager.cleanup_service import partition_actions
+        from local_agent_manager.orca_runtime import _WindowsJob, runtime_host_identity, runtime_instance_stopped
         from tests.orca_native_support import create_native_schema, add_native_record
         (self.home / "state_5.sqlite").unlink()
         self.rollout.unlink()
@@ -199,7 +204,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         (unrelated / "state_5.sqlite").write_bytes(b"unrelated invalid database")
         unrelated_adapter = NativeIntegrityAdapter(codex_home=unrelated)
         coordinator = OperationCoordinator(CleanupService())
-        with patch("local_agent_record_janitor.orca_runtime.RUNTIME_ACCEPTED", True):
+        with patch("local_agent_manager.orca_runtime.RUNTIME_ACCEPTED", True):
             plan = coordinator.plan_operation(client="orca", record_ids=(TARGET_ID,), engines=("codex",),
                 adapters=(self.adapter,), plan_path=path, operation_id="orca-cold-unknown")
         self.assertEqual(plan["goal_status"], "ready", plan)
@@ -252,7 +257,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
             self.assertEqual(exit_code, 3, public)
             self.assertEqual(public["goal_status"], "completed_with_residuals", public)
             self.assertTrue(public["mutation_started"])
-        with patch("local_agent_record_janitor.orca_runtime.runtime_instance_stopped", wraps=runtime_instance_stopped) as stopped:
+        with patch("local_agent_manager.orca_runtime.runtime_instance_stopped", wraps=runtime_instance_stopped) as stopped:
             residual = coordinator.verify_operation(**args, adapters=(self.adapter, unrelated_adapter))
             self.assertEqual(residual["goal_status"], "completed_with_residuals", residual)
             self.assertTrue(residual["mutation_started"])
@@ -267,7 +272,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         index.write_text(json.dumps({"id": TARGET_ID}) + "\n", encoding="utf-8")
         self.assertEqual(OperationCoordinator(CleanupService()).verify_operation(**args)["goal_status"], "completed_with_residuals")
         index.write_text("", encoding="utf-8")
-        with patch("local_agent_record_janitor.orca_runtime.runtime_instance_stopped", wraps=runtime_instance_stopped) as stopped:
+        with patch("local_agent_manager.orca_runtime.runtime_instance_stopped", wraps=runtime_instance_stopped) as stopped:
             complete = OperationCoordinator(CleanupService()).verify_operation(**args)
             self.assertEqual(complete["goal_status"], "complete", complete)
             stopped.assert_called_once_with(instance)
@@ -275,12 +280,12 @@ class OrcaTargetSafetyTests(unittest.TestCase):
     def test_readonly_recovery_does_not_require_current_invocation_or_binary(self):
         evidence = self.freeze()
         self.binary.unlink()
-        with patch("local_agent_record_janitor.orca_runtime.invocation_policy", return_value={"changed": True}):
+        with patch("local_agent_manager.orca_runtime.invocation_policy", return_value={"changed": True}):
             self.assertEqual(recheck_orca_target(evidence, self.adapter, phase="readonly_recovery"), ())
             self.assertTrue(recheck_orca_target(evidence, self.adapter, phase="before_start"))
 
     def test_known_sync_lock_and_wrong_arg0_kinds_never_pass_after_start(self):
-        from local_agent_record_janitor.orca_target_safety import _startup_manifest
+        from local_agent_manager.orca_target_safety import _startup_manifest
         evidence = self.freeze()
         lock = self.home / "plugins.sync.lock"
         lock.write_bytes(b"")
@@ -301,7 +306,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
 
     def test_runtime_held_empty_arg0_lock_uses_identity_without_reading_locked_bytes(self):
         import msvcrt
-        from local_agent_record_janitor.orca_target_safety import _startup_manifest
+        from local_agent_manager.orca_target_safety import _startup_manifest
         lock = self.home / "tmp" / "arg0" / "codex-arg0abc123" / ".lock"
         lock.parent.mkdir(parents=True)
         lock.write_bytes(b"")
@@ -341,7 +346,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.assertFalse(result["clients_closed"])
         self.assertIn("orca_lease_owner_identity_changed", result["errors"])
         self.assertIsNone(inspect_orca_target_processes((lease,), records=({"process_id": "bad"},))["clients_closed"])
-        with patch("local_agent_record_janitor.orca_target_safety._windows_process_snapshot", side_effect=OSError):
+        with patch("local_agent_manager.orca_target_safety._windows_process_snapshot", side_effect=OSError):
             self.assertIsNone(inspect_orca_target_processes((lease,))["clients_closed"])
         self.assertIsNone(inspect_orca_target_processes((replace(lease, claim_status="live"),), records=())["clients_closed"])
 
@@ -446,9 +451,9 @@ class OrcaTargetSafetyTests(unittest.TestCase):
 
     def test_legacy_unknown_child_retains_root_occupancy_and_cold_readonly_recovery(self):
         import uuid
-        from local_agent_record_janitor.cleanup_service import partition_actions
-        from local_agent_record_janitor.mutation_guard import scopes_for_frozen_plan
-        from local_agent_record_janitor.orca_runtime import _WindowsJob, runtime_host_identity
+        from local_agent_manager.cleanup_service import partition_actions
+        from local_agent_manager.mutation_guard import scopes_for_frozen_plan
+        from local_agent_manager.orca_runtime import _WindowsJob, runtime_host_identity
         from tests.orca_native_support import create_native_schema, add_native_record
         (self.home / "state_5.sqlite").unlink()
         self.rollout.unlink()
@@ -458,9 +463,9 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         path = self.root / "legacy-unknown.json"
         def legacy_freeze(*args, **kwargs):
             return freeze_orca_target(*args, **kwargs, evidence_schema="larj.orca-target-safety.v1")
-        with patch("local_agent_record_janitor.orca_runtime.RUNTIME_ACCEPTED", True), \
-                patch("local_agent_record_janitor.orca_target_safety.EVIDENCE_SCHEMA", "larj.orca-target-safety.v1"), \
-                patch("local_agent_record_janitor.orca_target_safety.freeze_orca_target", side_effect=legacy_freeze):
+        with patch("local_agent_manager.orca_runtime.RUNTIME_ACCEPTED", True), \
+                patch("local_agent_manager.orca_target_safety.EVIDENCE_SCHEMA", "larj.orca-target-safety.v1"), \
+                patch("local_agent_manager.orca_target_safety.freeze_orca_target", side_effect=legacy_freeze):
             plan = coordinator.plan_operation(client="orca", record_ids=(TARGET_ID,), engines=("codex",),
                 adapters=(self.adapter,), plan_path=path, operation_id="legacy-unknown")
         self.assertEqual(plan["goal_status"], "ready", plan)
@@ -475,7 +480,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         job.close()
         store.append_event({"event": "orca_runtime_startup", "mutation_started": True, "runtime_instance": instance},
             state_updates={"mutation_started": True, "runtime_instance": instance, "current_action_state": "mutation_started"})
-        from local_agent_record_janitor.orca_target_safety import _startup_manifest
+        from local_agent_manager.orca_target_safety import _startup_manifest
         # The legacy contract froze startup identity, without v2 content rules.
         (self.home / "installation_id").write_bytes(b"legacy fixture: v2 UUID validation must not be applied")
         snapshot = _startup_manifest(self.home, after_start=True, evidence_schema="larj.orca-target-safety.v1")
@@ -489,7 +494,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.assertTrue(self.rollout.exists())
 
     def test_disappearance_after_initial_observation_is_not_optional_absence(self):
-        with patch("local_agent_record_janitor.orca_target_safety._identity", side_effect=FileNotFoundError):
+        with patch("local_agent_manager.orca_target_safety._identity", side_effect=FileNotFoundError):
             with self.assertRaises(FileNotFoundError):
                 _optional_identity(self.binary, digest=True)
 

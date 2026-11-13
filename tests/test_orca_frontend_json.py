@@ -1,9 +1,14 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from copy import deepcopy
 import json
 import unittest
 
-from local_agent_record_janitor import orca_frontend_json as frontend
-from local_agent_record_janitor.orca_journal_cleanup import OrcaFrontendError
+from local_agent_manager import orca_frontend_json as frontend
+from local_agent_manager.orca_journal_cleanup import OrcaFrontendError
 
 
 def fixture():

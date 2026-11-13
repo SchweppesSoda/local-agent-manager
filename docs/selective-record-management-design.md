@@ -71,8 +71,8 @@ CindyGlobal、Cindy、CindyDev、xdt-maker。
 增加两个独立子命令：
 
 ~~~text
-local-agent-record-janitor records [通用来源/路径参数]
-local-agent-record-janitor delete  [通用来源/路径参数] [选择与确认参数]
+local-agent-manager records [通用来源/路径参数]
+local-agent-manager delete  [通用来源/路径参数] [选择与确认参数]
 ~~~
 
 records 始终只读：

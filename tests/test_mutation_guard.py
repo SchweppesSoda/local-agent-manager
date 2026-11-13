@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from local_agent_manager.state_paths import control_directory
 
 import json
@@ -18,26 +23,26 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.agent_operations import action_binding, result_document
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cleaner import clean_findings, scan_adapters
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.execution import ExecutionError
-from local_agent_record_janitor.gui import build_gui_snapshot, execute_gui_delete
-from local_agent_record_janitor.inventory import FrontendSessionRecord, build_session_catalog
-from local_agent_record_janitor.manual_delete import (
+from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
+from local_agent_manager.agent_operations import action_binding, result_document
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cleaner import clean_findings, scan_adapters
+from local_agent_manager.cli import main
+from local_agent_manager.execution import ExecutionError
+from local_agent_manager.gui import build_gui_snapshot, execute_gui_delete
+from local_agent_manager.inventory import FrontendSessionRecord, build_session_catalog
+from local_agent_manager.manual_delete import (
     ManualDeletePlanError, build_manual_delete_plan, execute_manual_delete,
 )
-from local_agent_record_janitor.mutation_guard import (
+from local_agent_manager.mutation_guard import (
     MutationRootLockedError, MutationScope, UnknownMutationError,
     action_target_ids, mutation_guard, mutation_roots,
     scopes_for_actions,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import OperationStore, OperationStoreError, _receipt_sha256, plan_sha256
-from local_agent_record_janitor.planning import ActionKind, storage_id_for_path
-from local_agent_record_janitor.pi_sessions import build_pi_session_catalog
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import OperationStore, OperationStoreError, _receipt_sha256, plan_sha256
+from local_agent_manager.planning import ActionKind, storage_id_for_path
+from local_agent_manager.pi_sessions import build_pi_session_catalog
 from tests.support import create_thread_index, write_rollout
 from tests.test_cindy_references import create_database
 from tests.test_agent_cli import _MutatingServer
@@ -180,7 +185,7 @@ class MutationGuardTests(unittest.TestCase):
                 os.replace(replacement, lock)
                 replaced = True
             return original_open(path, flags, *args, **kwargs)
-        with patch("local_agent_record_janitor.mutation_guard.os.open", side_effect=replace_before_open):
+        with patch("local_agent_manager.mutation_guard.os.open", side_effect=replace_before_open):
             with self.assertRaisesRegex(OperationStoreError, "identity changed"):
                 with mutation_roots((self.home,)):
                     pass
@@ -329,7 +334,7 @@ class MutationGuardTests(unittest.TestCase):
             with mutation_roots(roots):
                 yield
             raise OperationStoreError("Injected root exit failure")
-        with patch("local_agent_record_janitor.operation_coordinator.mutation_roots", fail_exit):
+        with patch("local_agent_manager.operation_coordinator.mutation_roots", fail_exit):
             first = coordinator.apply_operation(client="native", record_ids=(native_id,), engines=("codex",),
                 operation_id=plan["operation_id"], plan_path=Path(plan["plan_path"]),
                 plan_sha256=plan["plan_sha256"], codex_home=self.home, clients_closed=True,
@@ -343,7 +348,7 @@ class MutationGuardTests(unittest.TestCase):
         self.assertEqual(len(first["batches"]), 1)
         self.assertEqual(second, first)
         self.assertEqual(server.deleted_thread_ids, [native_id])
-        with patch("local_agent_record_janitor.operation_coordinator.mutation_roots", fail_exit):
+        with patch("local_agent_manager.operation_coordinator.mutation_roots", fail_exit):
             verified = coordinator.verify_operation(operation_id=plan["operation_id"],
                 plan_path=Path(plan["plan_path"]), adapters=(adapter,), verify_timeout=0)
         self.assertEqual(verified["goal_status"], "unknown")
@@ -387,7 +392,7 @@ class MutationGuardTests(unittest.TestCase):
                 values.append(json.loads(output.getvalue()))
             except Exception as exc:
                 errors.append(exc)
-        with patch("local_agent_record_janitor.operation_store.datetime") as clock, patch.object(
+        with patch("local_agent_manager.operation_store.datetime") as clock, patch.object(
                 OperationStore, "_discard_detailed_files", pause_reader):
             clock.now.return_value = before_expiry
             clock.fromisoformat.side_effect = datetime.fromisoformat
@@ -488,7 +493,7 @@ class MutationGuardTests(unittest.TestCase):
             if pid == 0:
                 os.close(read_fd)
                 try:
-                    from local_agent_record_janitor.mutation_guard import _thread
+                    from local_agent_manager.mutation_guard import _thread
                     with mutation_roots((independent,)):
                         pass
                     assert _thread.roots == ()
@@ -501,8 +506,8 @@ class MutationGuardTests(unittest.TestCase):
             try:
                 self.assertEqual(os.read(read_fd, 16), b"ok")
                 self.assertEqual(os.waitpid(pid, 0)[1], 0)
-                code = "from pathlib import Path; import sys; from local_agent_record_janitor.mutation_guard import mutation_roots, MutationRootLockedError\ntry:\n with mutation_roots((Path(sys.argv[1]),)): pass\nexcept MutationRootLockedError: print('blocked')"
-                env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+                code = "from pathlib import Path; import sys; from local_agent_manager.mutation_guard import mutation_roots, MutationRootLockedError\ntry:\n with mutation_roots((Path(sys.argv[1]),)): pass\nexcept MutationRootLockedError: print('blocked')"
+                env = dict(os.environ)
                 probe = subprocess.run([sys.executable, "-B", "-c", code, str(self.home)], env=env,
                     capture_output=True, text=True, timeout=10)
                 self.assertEqual(probe.stdout.strip(), "blocked")
@@ -511,7 +516,8 @@ class MutationGuardTests(unittest.TestCase):
 
     def _start_process(self, code: str) -> subprocess.Popen:
         env = dict(os.environ)
-        env["PYTHONPATH"] = os.pathsep.join((str(Path(__file__).resolve().parents[1]),
+        env["PYTHONPATH"] = os.pathsep.join((str(_test_bootstrap.METADATA),
+                                            str(Path(__file__).resolve().parents[1]),
                                             str(Path(__file__).resolve().parents[1] / "src")))
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         process = subprocess.Popen([sys.executable, "-B", "-u", "-c", code, str(self.home)],
@@ -534,7 +540,7 @@ class MutationGuardTests(unittest.TestCase):
         process = self._start_process("""
 import os, sys
 from pathlib import Path
-from local_agent_record_janitor.mutation_guard import mutation_roots, _registry
+from local_agent_manager.mutation_guard import mutation_roots, _registry
 with mutation_roots((Path(sys.argv[1]),)):
     assert not os.get_inheritable(next(iter(_registry.values())).fd)
     print('ready', flush=True)
@@ -559,7 +565,7 @@ with mutation_roots((Path(sys.argv[1]),)):
 import sys
 from pathlib import Path
 from tests.test_mutation_guard import write_journal, basic_action
-from local_agent_record_janitor.mutation_guard import mutation_roots, mutation_guard, MutationScope
+from local_agent_manager.mutation_guard import mutation_roots, mutation_guard, MutationScope
 root = Path(sys.argv[1])
 with mutation_roots((root,)):
     store = write_journal(root, 'crashed', basic_action(root), legacy=True, started=False)
@@ -606,7 +612,7 @@ with mutation_roots((root,)):
                 write_journal(home, "prior", action_binding(frozen), legacy=native_unknown)
                 selected = frontend if native_unknown else native
                 writer = Mock(side_effect=AssertionError("writer must not run"))
-                with patch("local_agent_record_janitor.execution.execute_cindy_session_cleanup", writer):
+                with patch("local_agent_manager.execution.execute_cindy_session_cleanup", writer):
                     with self.assertRaises(ExecutionError) as raised:
                         service.execute(context, (selected,), timeout=1, app_server_factory=writer, binary_resolver=writer)
                 self.assertEqual(raised.exception.kind, "store_mutation_outcome_unknown")
@@ -632,7 +638,7 @@ with mutation_roots((root,)):
                     frontend_sessions=(*record.frontend_sessions, desktop)) for record in catalog.records))
                 gui = build_gui_snapshot(gui_catalog).selected_plan((native_id,))
                 self.assertTrue(gui.desktop_targets)
-                with patch("local_agent_record_janitor.gui.execute_manual_delete", writer):
+                with patch("local_agent_manager.gui.execute_manual_delete", writer):
                     with self.assertRaises(UnknownMutationError):
                         execute_gui_delete(gui, catalog_builder=writer,
                             approved_plan_fingerprint=gui.plan_fingerprint, clients_closed=True,

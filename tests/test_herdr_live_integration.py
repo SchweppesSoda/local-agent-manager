@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import ExitStack
 import hashlib
 from io import StringIO
@@ -11,9 +16,9 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters import HerdrAdapter
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.herdr_discovery import raw_herdr_join
+from local_agent_manager.adapters import HerdrAdapter
+from local_agent_manager.cli import main
+from local_agent_manager.herdr_discovery import raw_herdr_join
 from tests.herdr_live_support import Endpoint, live_snapshot, pong
 from tests.herdr_support import CODEX_ID, CLAUDE_ID, SENTINEL, agent_session, pane, tab, snapshot, write_snapshot, recovery_name
 from tests.support import create_thread_index, write_rollout
@@ -62,7 +67,7 @@ class HerdrLiveIntegrationTests(unittest.TestCase):
             return pong(request["id"]) if request["method"] == "ping" else live_snapshot(request["id"], sessions=("different-id",))
         with Endpoint(self.profile / "herdr.sock") as default, Endpoint(named / "herdr.sock", different) as work:
             before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.profile.rglob("*") if p.is_file()}
-            with patch("local_agent_record_janitor.codex_desktop_state.inspect_client_ownership", side_effect=AssertionError("wrong inspector")):
+            with patch("local_agent_manager.codex_desktop_state.inspect_client_ownership", side_effect=AssertionError("wrong inspector")):
                 code, result = self.invoke("--inspect-clients")
             after = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.profile.rglob("*") if p.is_file()}
             self.assertEqual(before, after)
@@ -136,7 +141,7 @@ class HerdrLiveIntegrationTests(unittest.TestCase):
             home = self.root / "native"
             rollout = write_rollout(home, CODEX_ID, originator="codex_cli_rs", source="cli")
             create_thread_index(home, [{"id": CODEX_ID, "rollout_path": str(rollout), "source": "cli"}])
-            with patch("local_agent_record_janitor.codex_desktop_state._running_related_process_records", return_value=()):
+            with patch("local_agent_manager.codex_desktop_state._running_related_process_records", return_value=()):
                 code, native = self.invoke("--inspect-clients", "--codex-home", str(home), client="native")
             self.assertEqual(code, 0)
             self.assertEqual(len(native["targets"]), 1)

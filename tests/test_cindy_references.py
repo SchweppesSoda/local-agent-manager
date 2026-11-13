@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -8,12 +13,12 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.cindy_references import build_cindy_reference_catalog
-from local_agent_record_janitor.inventory import build_session_catalog
-from local_agent_record_janitor.discovery import CindyProfile
-from local_agent_record_janitor.pi_sessions import PiInventoryError, build_pi_session_inventory
-from local_agent_record_janitor.pi_delete import build_pi_delete_plan
+from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
+from local_agent_manager.cindy_references import build_cindy_reference_catalog
+from local_agent_manager.inventory import build_session_catalog
+from local_agent_manager.discovery import CindyProfile
+from local_agent_manager.pi_sessions import PiInventoryError, build_pi_session_inventory
+from local_agent_manager.pi_delete import build_pi_delete_plan
 
 from tests.support import create_thread_index, write_rollout
 
@@ -398,7 +403,7 @@ class PiCindyInventoryTests(unittest.TestCase):
         )
 
         with patch(
-            "local_agent_record_janitor.pi_sessions._physical_file_identity",
+            "local_agent_manager.pi_sessions._physical_file_identity",
             side_effect=PiInventoryError("denied"),
         ):
             inventory = self.inventory()

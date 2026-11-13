@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
-from local_agent_record_janitor.orca_configuration import MAX_CONFIG_BYTES, package_manifest_paths, validate_configuration
+from local_agent_manager.orca_configuration import MAX_CONFIG_BYTES, package_manifest_paths, validate_configuration
 
 
 class OrcaConfigurationTests(unittest.TestCase):

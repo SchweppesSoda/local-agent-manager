@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 import os
@@ -5,9 +10,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from local_agent_record_janitor import herdr_cleanup_files as cleanup
-from local_agent_record_janitor.herdr_cleanup_json import fingerprint, HerdrCleanupError
-from local_agent_record_janitor.record_identity import canonical_path
+from local_agent_manager import herdr_cleanup_files as cleanup
+from local_agent_manager.herdr_cleanup_json import fingerprint, HerdrCleanupError
+from local_agent_manager.record_identity import canonical_path
 from tests.herdr_support import agent_session, pane, snapshot, tab, recovery_name, write_snapshot, CODEX_ID
 
 
@@ -98,7 +103,7 @@ class HerdrClosureTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows sharing-mode primitive")
     def test_held_files_exclude_restore_save_and_rename_while_owner_commits(self):
-        from local_agent_record_janitor.windows_held_files import HeldFiles
+        from local_agent_manager.windows_held_files import HeldFiles
         self.populated()
         evidence = cleanup.freeze(self.root, self.bindings)
         with HeldFiles() as held:

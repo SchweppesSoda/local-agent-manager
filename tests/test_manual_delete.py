@@ -1,26 +1,31 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from local_agent_record_janitor.cleaner import VerificationResult
-from local_agent_record_janitor.codex_state import find_thread_rollouts, read_thread_index
-from local_agent_record_janitor.conversation_metadata import read_conversation_summaries
-from local_agent_record_janitor.inventory import (
+from local_agent_manager.cleaner import VerificationResult
+from local_agent_manager.codex_state import find_thread_rollouts, read_thread_index
+from local_agent_manager.conversation_metadata import read_conversation_summaries
+from local_agent_manager.inventory import (
     FrontendSessionRecord,
     InventoryFailure,
     ManagedConversation,
     SessionCatalog,
 )
-from local_agent_record_janitor.manual_delete import (
+from local_agent_manager.manual_delete import (
     ManualDeletePlanError,
     ManualDeleteSelectionError,
     build_manual_delete_plan,
     execute_manual_delete,
 )
-from local_agent_record_janitor.models import ConversationSummary
+from local_agent_manager.models import ConversationSummary
 
 from tests.support import create_thread_index, write_rollout
 

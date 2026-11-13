@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import closing
 import hashlib
 from io import StringIO
@@ -11,9 +16,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.office_store import OfficeAdapter, PROFILES, SDK_DIRECTORY, build_inventory, read_database
-from local_agent_record_janitor.sqlite_utils import connect_readonly
+from local_agent_manager.cli import main
+from local_agent_manager.office_store import OfficeAdapter, PROFILES, SDK_DIRECTORY, build_inventory, read_database
+from local_agent_manager.sqlite_utils import connect_readonly
 
 SDK_ID = "11111111-1111-4111-8111-111111111111"
 PRIVATE = "OFFICE_PRIVATE_MESSAGE_AND_CREDENTIAL_SENTINEL"
@@ -73,7 +78,7 @@ class OfficeStoreTests(unittest.TestCase):
                         return sqlite3.SQLITE_OK
                     connection.set_authorizer(authorizer)
                     return connection
-                with patch("local_agent_record_janitor.office_store.connect_readonly", safe_connection):
+                with patch("local_agent_manager.office_store.connect_readonly", safe_connection):
                     code, result = self.invoke("records", "--client", client, "--" + client + "-root", str(root), "--json")
                 self.assertEqual(code, 0, result)
                 self.assertEqual(result["inventory_scope"], "database_metadata_and_known_sdk_paths")

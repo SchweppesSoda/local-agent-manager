@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Install a hash-pinned test dependency into an explicitly supplied empty root."""
 import argparse
 import hashlib
@@ -9,7 +14,7 @@ import zipfile
 
 
 def install(destination):
-    from local_agent_record_janitor.paseo_indexeddb import CODE, runtime
+    from local_agent_manager.paseo_indexeddb import CODE, runtime
     manifest = json.loads((CODE / "paseo_electron.json").read_text(encoding="utf-8"))
     destination = Path(destination).absolute()
     if destination.exists():

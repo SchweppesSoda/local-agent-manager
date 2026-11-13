@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -7,11 +12,11 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.cli import main
+from local_agent_manager.cli import main
 
 
 INVENTORY_COLLECTOR = (
-    "local_agent_record_janitor.environment_inventory.collect_environment_inventory"
+    "local_agent_manager.environment_inventory.collect_environment_inventory"
 )
 
 
@@ -79,7 +84,7 @@ class EnvironmentCliTests(unittest.TestCase):
         output, errors = StringIO(), StringIO()
         with (
             patch(INVENTORY_COLLECTOR, return_value=report) as collect,
-            patch("local_agent_record_janitor.cli.create_default_adapters") as adapters,
+            patch("local_agent_manager.cli.create_default_adapters") as adapters,
         ):
             code = main(
                 [

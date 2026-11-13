@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -9,9 +14,9 @@ from contextlib import closing
 from pathlib import Path
 from typing import Callable
 
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.adapters.native import NativeIntegrityAdapter
-from local_agent_record_janitor.cleaner import (
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.adapters.native import NativeIntegrityAdapter
+from local_agent_manager.cleaner import (
     ExpectedDeletionScope,
     VerificationResult,
     clean_findings,
@@ -20,14 +25,14 @@ from local_agent_record_janitor.cleaner import (
     finding_key,
     scan_adapters,
 )
-from local_agent_record_janitor.codex_state import (
+from local_agent_manager.codex_state import (
     find_thread_rollouts,
     rollout_state_fingerprint,
 )
-from local_agent_record_janitor.discovery import choose_codex_binary, resolve_cindy_profiles
-from local_agent_record_janitor.models import Finding, RolloutRecord
-from local_agent_record_janitor.path_identity import canonical_existing_path_key
-from local_agent_record_janitor.planning import ActionKind, build_cleanup_plan
+from local_agent_manager.discovery import choose_codex_binary, resolve_cindy_profiles
+from local_agent_manager.models import Finding, RolloutRecord
+from local_agent_manager.path_identity import canonical_existing_path_key
+from local_agent_manager.planning import ActionKind, build_cleanup_plan
 
 from tests.support import create_cindy_database, create_thread_index, write_rollout
 

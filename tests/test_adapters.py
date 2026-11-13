@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
 
-from local_agent_record_janitor.adapters import (
+from local_agent_manager.adapters import (
     AdapterScanError,
     CindyAdapter,
 )
-from local_agent_record_janitor.cleaner import scan_adapters
+from local_agent_manager.cleaner import scan_adapters
 
 from tests.support import (
     create_cindy_database,

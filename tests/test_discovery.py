@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import stat
 import tempfile
 import unittest
@@ -7,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.discovery import (
+from local_agent_manager.discovery import (
     choose_codex_binary,
     discover_cindy_codex,
     discover_cindy_profiles,
@@ -17,7 +22,7 @@ from local_agent_record_janitor.discovery import (
 
 class ChooseCodexBinaryTests(unittest.TestCase):
     @patch(
-        "local_agent_record_janitor.discovery.discover_path_codex",
+        "local_agent_manager.discovery.discover_path_codex",
         return_value=Path("path-codex"),
     )
     def test_missing_explicit_hint_never_falls_back_to_path(self, discover) -> None:
@@ -28,7 +33,7 @@ class ChooseCodexBinaryTests(unittest.TestCase):
         discover.assert_not_called()
 
     @patch(
-        "local_agent_record_janitor.discovery.discover_path_codex",
+        "local_agent_manager.discovery.discover_path_codex",
         return_value=Path("path-codex"),
     )
     def test_non_file_explicit_hint_never_falls_back_to_path(self, discover) -> None:
@@ -41,7 +46,7 @@ class ChooseCodexBinaryTests(unittest.TestCase):
         discover.assert_not_called()
 
     @patch(
-        "local_agent_record_janitor.discovery.discover_path_codex",
+        "local_agent_manager.discovery.discover_path_codex",
         return_value=Path("path-codex"),
     )
     def test_no_hint_uses_path_discovery(self, discover) -> None:
@@ -51,7 +56,7 @@ class ChooseCodexBinaryTests(unittest.TestCase):
         discover.assert_called_once_with()
 
     @patch(
-        "local_agent_record_janitor.discovery.discover_path_codex",
+        "local_agent_manager.discovery.discover_path_codex",
         return_value=Path("path-codex"),
     )
     def test_valid_explicit_hint_returns_itself(self, discover) -> None:
@@ -64,7 +69,7 @@ class ChooseCodexBinaryTests(unittest.TestCase):
         discover.assert_not_called()
 
     @patch(
-        "local_agent_record_janitor.discovery.discover_path_codex",
+        "local_agent_manager.discovery.discover_path_codex",
         return_value=Path("path-codex"),
     )
     def test_explicit_hint_inspection_error_fails_closed(self, discover) -> None:
@@ -260,12 +265,12 @@ class CindyCodexRuntimeDiscoveryTests(unittest.TestCase):
             self.assertEqual(discover_cindy_codex(self.root), legacy)
 
     def test_adapter_keeps_explicit_hint_even_if_missing(self) -> None:
-        from local_agent_record_janitor.adapters.cindy import CindyAdapter
+        from local_agent_manager.adapters.cindy import CindyAdapter
 
         self.binary("codex-package/0.166.0/bin/codex.exe")
         explicit = self.root / "explicit-missing.exe"
         with patch(
-            "local_agent_record_janitor.adapters.cindy.discover_cindy_codex",
+            "local_agent_manager.adapters.cindy.discover_cindy_codex",
             side_effect=AssertionError("discovery should not run"),
         ):
             adapter = CindyAdapter(database=self.root / "cindy.db", codex_home=self.root / "codex-home",

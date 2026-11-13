@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from local_agent_manager.state_paths import control_directory
 
 import sqlite3
@@ -11,13 +16,13 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from local_agent_record_janitor.adapters.native import NativeIntegrityAdapter
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.planning import (
+from local_agent_manager.adapters.native import NativeIntegrityAdapter
+from local_agent_manager.cli import main
+from local_agent_manager.planning import (
     ActionKind,
     build_cleanup_plan,
 )
-from local_agent_record_janitor.relation_cleanup import (
+from local_agent_manager.relation_cleanup import (
     RelationCleanupError,
     execute_relation_cleanup,
     verify_relation_evidence,
@@ -144,7 +149,7 @@ class RelationCleanupTests(unittest.TestCase):
         action = self._action()
         before = self._rows()
         with mock.patch(
-            "local_agent_record_janitor.relation_cleanup._delete_relation",
+            "local_agent_manager.relation_cleanup._delete_relation",
             side_effect=RuntimeError("injected failure"),
         ):
             with self.assertRaises(RelationCleanupError):

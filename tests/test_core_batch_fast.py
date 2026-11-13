@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import contextmanager
 import sqlite3
 import os
@@ -10,23 +15,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import partition_actions
-from local_agent_record_janitor.execution import (
+from local_agent_manager.state_paths import manager_state_base
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import partition_actions
+from local_agent_manager.execution import (
     ExecutionError,
     execute_prevalidated_actions,
 )
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.inventory import build_session_catalog
-from local_agent_record_janitor.manual_delete import build_manual_delete_plan
-from local_agent_record_janitor.models import Finding, RolloutRecord
-from local_agent_record_janitor.operation_store import (
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.inventory import build_session_catalog
+from local_agent_manager.manual_delete import build_manual_delete_plan
+from local_agent_manager.models import Finding, RolloutRecord
+from local_agent_manager.operation_store import (
     OperationStore,
     plan_sha256,
     write_new_json,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.planning import build_cleanup_plan
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.planning import build_cleanup_plan
 
 from tests.support import create_thread_index, write_rollout
 
@@ -129,8 +135,8 @@ class CoreBatchFastTests(unittest.TestCase):
     def test_healthy_native_run_uses_two_catalog_passes_for_all_batch_sizes(self) -> None:
         """A real native fixture gets one plan and one terminal catalog pass."""
 
-        import local_agent_record_janitor.inventory as inventory_module
-        import local_agent_record_janitor.adapters.native as native_module
+        import local_agent_manager.inventory as inventory_module
+        import local_agent_manager.adapters.native as native_module
 
         for count in (1, 10, 100):
             with self.subTest(count=count), tempfile.TemporaryDirectory() as temporary:
@@ -211,7 +217,7 @@ class CoreBatchFastTests(unittest.TestCase):
     def test_anomaly_planning_indexes_default_rollouts_once_per_store(self) -> None:
         """The real default rollout reader is batched across all targets."""
 
-        import local_agent_record_janitor.planning as planning_module
+        import local_agent_manager.planning as planning_module
 
         for count in (1, 10, 100):
             with self.subTest(count=count), tempfile.TemporaryDirectory() as temporary:
@@ -708,7 +714,7 @@ class CoreBatchFastTests(unittest.TestCase):
             )
 
             with patch(
-                "local_agent_record_janitor.execution.execute_frontend_reference_cleanup"
+                "local_agent_manager.execution.execute_frontend_reference_cleanup"
             ) as cleanup:
                 with self.assertRaises(ExecutionError) as raised:
                     execute_prevalidated_actions(
@@ -1209,7 +1215,7 @@ class CoreBatchFastTests(unittest.TestCase):
                 "recovery_required",
             )
 
-    def test_operation_id_only_status_uses_default_user_state_plan(self) -> None:
+    def test_operation_id_only_status_uses_authoritative_state_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state_root = Path(temporary).resolve(strict=True)
             document = {
@@ -1223,8 +1229,7 @@ class CoreBatchFastTests(unittest.TestCase):
             }
             document["plan_sha256"] = plan_sha256(document)
             plan_path = (
-                state_root
-                / "local-agent-record-janitor"
+                manager_state_base()
                 / "plans"
                 / "status-operation.json"
             )

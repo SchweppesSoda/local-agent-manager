@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 import os
@@ -6,10 +11,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.herdr_bound_adapter import HerdrBoundAdapter, SCHEMA
-from local_agent_record_janitor import herdr_cleanup
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.herdr_bound_adapter import HerdrBoundAdapter, SCHEMA
+from local_agent_manager import herdr_cleanup
 from tests.herdr_support import CODEX_ID, agent_session, pane, snapshot, tab, write_snapshot, recovery_name
 from tests.orca_native_support import create_native_schema, add_native_record
 
@@ -35,7 +40,7 @@ class HerdrFullflowTests(unittest.TestCase):
         self.adapter = HerdrBoundAdapter(self.manifest)
         self.plan_path = self.base / "plan.json"
         self.coordinator = self.coordinator_new()
-        for item in (patch("local_agent_record_janitor.office_runtime.processes", return_value=[]),
+        for item in (patch("local_agent_manager.office_runtime.processes", return_value=[]),
                      patch.dict(os.environ, {"APPDATA": str(self.base / "appdata"), "LOCALAPPDATA": str(self.base / "localappdata")})):
             item.start(); self.addCleanup(item.stop)
 
@@ -79,7 +84,7 @@ class HerdrFullflowTests(unittest.TestCase):
     def test_long_native_display_title_has_identical_cold_binding(self):
         import sqlite3
         from contextlib import closing
-        from local_agent_record_janitor.office_cleanup import digest
+        from local_agent_manager.office_cleanup import digest
         add_native_record(self.home, CODEX_ID)
         with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
             db.execute('UPDATE threads SET title=?', ('Synthetic title\n ' * 100,))
@@ -109,8 +114,8 @@ class HerdrFullflowTests(unittest.TestCase):
 
     def test_deleted_pi_path_retains_approved_short_alias(self):
         import ctypes
-        from local_agent_record_janitor.pi_sessions import _normalized_path
-        from local_agent_record_janitor.record_identity import canonical_path
+        from local_agent_manager.pi_sessions import _normalized_path
+        from local_agent_manager.record_identity import canonical_path
         directory = self.base / "Long Pi Directory With An Approved Alias"
         directory.mkdir()
         transcript = directory / "selected.jsonl"
@@ -136,8 +141,8 @@ class HerdrFullflowTests(unittest.TestCase):
     def test_same_process_retains_other_clients_shared_native_guards(self):
         import sqlite3
         from contextlib import closing
-        from local_agent_record_janitor.client_contracts import describe_adapter
-        from local_agent_record_janitor.targeted_guard import TargetedReferenceGuard, TargetedGuardError
+        from local_agent_manager.client_contracts import describe_adapter
+        from local_agent_manager.targeted_guard import TargetedReferenceGuard, TargetedGuardError
         profile = self.base / "appdata" / "CindyGlobal"
         profile.mkdir(parents=True)
         home = profile / "codex-home"
@@ -184,7 +189,7 @@ class HerdrFullflowTests(unittest.TestCase):
         self.assertFalse(result["mutation_started"])
 
     def test_frontend_interruption_is_not_retried_but_exact_after_can_verify(self):
-        from local_agent_record_janitor.herdr_lifecycle import Boundary
+        from local_agent_manager.herdr_lifecycle import Boundary
         plan = self.plan()
         original = Boundary.apply
         def interrupt(boundary, **kwargs):
@@ -211,7 +216,7 @@ class HerdrFullflowTests(unittest.TestCase):
         changed = copy.deepcopy(evidence)
         changed["lifecycle"]["binaries"] = []
         changed["lifecycle"]["pipe_names"] = []
-        from local_agent_record_janitor.herdr_lifecycle import hold
+        from local_agent_manager.herdr_lifecycle import hold
         with self.assertRaisesRegex(Exception, "held_lifecycle_evidence_changed"):
             with hold(changed, census=lambda: []):
                 self.fail("omitted gates must not establish a boundary")

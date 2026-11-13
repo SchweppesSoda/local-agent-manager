@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import sqlite3
 import tempfile
 import unittest
@@ -7,15 +12,15 @@ from unittest.mock import patch
 from contextlib import closing
 from pathlib import Path
 
-from local_agent_record_janitor.frontend_session_cleanup import (
+from local_agent_manager.frontend_session_cleanup import (
     FrontendSessionGuardError,
     build_cindy_session_delete_evidence,
     execute_cindy_session_cleanup,
     _vector_extension,
 )
-from local_agent_record_janitor.adapters.cindy import CindyAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.adapters.cindy import CindyAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
 
 
 class FrontendSessionCleanupTests(unittest.TestCase):
@@ -244,7 +249,7 @@ class FrontendSessionCleanupTests(unittest.TestCase):
                 )
 
     def test_snapshot_pass_count_is_constant_for_1_10_100_rows(self) -> None:
-        import local_agent_record_janitor.frontend_session_cleanup as module
+        import local_agent_manager.frontend_session_cleanup as module
         from unittest.mock import patch
 
         observed: list[int] = []

@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Synthetic CLI stores; no live profile, credentials or process termination."""
 from contextlib import closing
 import hashlib
@@ -335,7 +340,7 @@ class CliFormatTests(unittest.TestCase):
                 db.commit()
 
     def test_compatibility_aliases(self):
-        from local_agent_record_janitor import antigravity_cli_cleanup, antigravity_cli_operations, antigravity_cli_guards
+        from local_agent_manager import antigravity_cli_cleanup, antigravity_cli_operations, antigravity_cli_guards
         self.assertIs(antigravity_cli_cleanup, agy)
         self.assertIs(antigravity_cli_operations, operations)
         self.assertIs(antigravity_cli_guards, guards)

@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 import os
@@ -6,10 +11,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import paseo_cleanup, paseo_cleanup_files as files
-from local_agent_record_janitor.paseo_bound_adapter import PaseoBoundAdapter, SCHEMA
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager import paseo_cleanup, paseo_cleanup_files as files
+from local_agent_manager.paseo_bound_adapter import PaseoBoundAdapter, SCHEMA
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.orca_native_support import create_native_schema, add_native_record
 
 AGENT = "11111111-1111-4111-8111-111111111111"
@@ -259,7 +264,7 @@ class PaseoFullflowTests(unittest.TestCase):
         write(self.root / "agents" / (KEEP + ".json"), agent(KEEP, OTHER, self.base))
         self.adapter = PaseoBoundAdapter(self.manifest)
         self.plan_path = self.base / "plan.json"
-        for item in (patch("local_agent_record_janitor.office_runtime.processes", return_value=[]),
+        for item in (patch("local_agent_manager.office_runtime.processes", return_value=[]),
                      patch.dict(os.environ, {"APPDATA": str(self.base / "appdata"), "LOCALAPPDATA": str(self.base / "localappdata")})):
             item.start(); self.addCleanup(item.stop)
 
@@ -325,7 +330,7 @@ class PaseoFullflowTests(unittest.TestCase):
     def test_long_native_display_title_has_identical_cold_binding(self):
         import sqlite3
         from contextlib import closing
-        from local_agent_record_janitor.office_cleanup import digest
+        from local_agent_manager.office_cleanup import digest
         add_native_record(self.home, NATIVE)
         with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
             db.execute('UPDATE threads SET title=?', ('Synthetic title\n ' * 100,))

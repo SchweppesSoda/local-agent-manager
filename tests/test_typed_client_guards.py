@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import tempfile
 import unittest
@@ -10,24 +15,24 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.client_contracts import (
+from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
+from local_agent_manager.cli import main
+from local_agent_manager.client_contracts import (
     ClientDescriptor, ClientReference, ReferenceKind, ReferenceLifecycle,
     ReferenceSnapshot, SourceFailure,
 )
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.client_capability_guards import restrict_cleanup_context
-from local_agent_record_janitor.client_capability_guards import ClientCapabilityLimits
-from local_agent_record_janitor.gui import build_gui_snapshot, execute_gui_delete
-from local_agent_record_janitor.inventory import build_session_catalog
-from local_agent_record_janitor.manual_delete import (
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.client_capability_guards import restrict_cleanup_context
+from local_agent_manager.client_capability_guards import ClientCapabilityLimits
+from local_agent_manager.gui import build_gui_snapshot, execute_gui_delete
+from local_agent_manager.inventory import build_session_catalog
+from local_agent_manager.manual_delete import (
     ManualDeletePlanError, build_manual_delete_plan, execute_manual_delete,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.path_identity import canonical_existing_path_key
-from local_agent_record_janitor.record_identity import EngineCapability, RecordKey, StoreKey
-from local_agent_record_janitor.targeted_guard import TargetedGuardError, TargetedReferenceGuard
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.path_identity import canonical_existing_path_key
+from local_agent_manager.record_identity import EngineCapability, RecordKey, StoreKey
+from local_agent_manager.targeted_guard import TargetedGuardError, TargetedReferenceGuard
 from tests.support import create_cindy_database, create_thread_index, write_rollout
 
 
@@ -338,7 +343,7 @@ class TypedClientGuardTests(unittest.TestCase):
         def factory(args):
             calls.append(args.platform)
             return [self.native, reader]
-        with patch("local_agent_record_janitor.adapter_factory.create_default_adapters", factory):
+        with patch("local_agent_manager.adapter_factory.create_default_adapters", factory):
             plan = OperationCoordinator(self.service).plan_operation(client="native", record_ids=(self.thread,),
                 codex_home=self.home, plan_path=self.root / "default.json")
         self.assertEqual(calls, [["all"]])

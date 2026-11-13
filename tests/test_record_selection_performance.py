@@ -1,7 +1,12 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import unittest
 from types import SimpleNamespace
 
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_coordinator import OperationCoordinator
 
 
 class _CountingTarget:

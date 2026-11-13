@@ -1,9 +1,14 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Synthetic, exact-schema T3 Code stores. Never copies user databases."""
 import json
 import sqlite3
 from pathlib import Path
 
-from local_agent_record_janitor.t3code_store import CONTRACT, RELATIVE, V2
+from local_agent_manager.t3code_store import CONTRACT, RELATIVE, V2
 
 PRIVATE = "T3_PRIVATE_MESSAGE_TITLE_TOKEN_SENTINEL"
 STAMP = "2026-11-07T00:00:00.000Z"

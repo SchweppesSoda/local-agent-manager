@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -9,13 +14,13 @@ from contextlib import closing
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-from local_agent_record_janitor.conversation_metadata import (
+from local_agent_manager.conversation_metadata import (
     parse_thread_source,
     project_label_from_cwd,
     read_conversation_summaries,
     read_legacy_thread_names,
 )
-from local_agent_record_janitor.models import ConversationSummary, RolloutRecord
+from local_agent_manager.models import ConversationSummary, RolloutRecord
 
 
 class ThreadSourceParsingTests(unittest.TestCase):

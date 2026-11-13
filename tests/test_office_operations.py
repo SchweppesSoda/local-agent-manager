@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from contextlib import closing
 import json
 import os
@@ -8,10 +13,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.office_store import OfficeAdapter
-from local_agent_record_janitor import office_cleanup, office_files, office_leveldb
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.office_store import OfficeAdapter
+from local_agent_manager import office_cleanup, office_files, office_leveldb
 
 SID = "11111111-1111-4111-8111-111111111111"
 OTHER = "22222222-2222-4222-8222-222222222222"
@@ -143,7 +148,7 @@ class OfficeOperationTests(unittest.TestCase):
         self.assertEqual(plan["goal_status"], "ready", plan)
         self.assertEqual(len(plan["child_batches"]), 4)
         if transient:
-            from local_agent_record_janitor.office_database import OfficeDatabaseError
+            from local_agent_manager.office_database import OfficeDatabaseError
             root = next(s["path"] for s in plan["storages"] if s["storage_id"] == plan["child_batches"][-1]["storage_id"])
             original = office_cleanup.execute
             def block_last(evidence, **kwargs):
@@ -188,7 +193,7 @@ class OfficeOperationTests(unittest.TestCase):
         try:
             node, dependency, helper = office_leveldb.runtime()
         except office_leveldb.OfficeLevelDBError:
-            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1":
+            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1" or os.environ.get("LARJ_LEVELDB_RUNTIME") or __import__("local_agent_manager.office_leveldb", fromlist=["_runtime_directory"])._runtime_directory().exists():
                 raise
             self.skipTest("Pinned Office LevelDB runtime is not installed")
         leveldb = self.profile / "Partitions/main/Local Storage/leveldb"

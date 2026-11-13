@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import unittest
 
-from local_agent_record_janitor.herdr_live_metadata import HerdrLiveMetadataError, decode_response, parse_detached_daemon, parse_live_snapshot, parse_pong
+from local_agent_manager.herdr_live_metadata import HerdrLiveMetadataError, decode_response, parse_detached_daemon, parse_live_snapshot, parse_pong
 from tests.herdr_live_support import live_snapshot, pong, wire
 from tests.herdr_support import SENTINEL
 

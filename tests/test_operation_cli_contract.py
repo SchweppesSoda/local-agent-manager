@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import tempfile
 import unittest
@@ -8,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.cli import (
+from local_agent_manager.cli import (
     EXIT_ERROR,
     EXIT_GOAL_NOT_SATISFIED,
     EXIT_OK,
@@ -17,9 +22,9 @@ from local_agent_record_janitor.cli import (
     build_parser,
     main,
 )
-from local_agent_record_janitor.cleaner import CleanupReport
-from local_agent_record_janitor.inventory import FrontendSessionRecord, ManagedConversation
-from local_agent_record_janitor.models import ConversationSummary
+from local_agent_manager.cleaner import CleanupReport
+from local_agent_manager.inventory import FrontendSessionRecord, ManagedConversation
+from local_agent_manager.models import ConversationSummary
 
 
 class FakeOperationCoordinator:
@@ -331,7 +336,7 @@ class OperationCliContractTests(unittest.TestCase):
     def test_operation_query_without_core_hook_fails_closed_without_mutation(self) -> None:
         output = StringIO()
         with patch(
-            "local_agent_record_janitor.cli._build_operation_coordinator",
+            "local_agent_manager.cli._build_operation_coordinator",
             side_effect=ImportError("core coordinator not installed"),
         ):
             status = main(
@@ -470,15 +475,15 @@ class OperationCliContractTests(unittest.TestCase):
             errors = StringIO()
             with (
                 patch(
-                    "local_agent_record_janitor.inventory.build_session_catalog",
+                    "local_agent_manager.inventory.build_session_catalog",
                     side_effect=builder,
                 ),
                 patch(
-                    "local_agent_record_janitor.manual_delete.build_manual_delete_plan",
+                    "local_agent_manager.manual_delete.build_manual_delete_plan",
                     side_effect=lambda _catalog: FakePlan(False),
                 ),
                 patch(
-                    "local_agent_record_janitor.manual_delete.execute_manual_delete",
+                    "local_agent_manager.manual_delete.execute_manual_delete",
                     return_value=CleanupReport(planned=[]),
                 ) as execute,
             ):

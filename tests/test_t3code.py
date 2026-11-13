@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from io import StringIO
 from contextlib import closing
 import json
@@ -7,8 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor import t3code_store as store, t3code_database as database
+from local_agent_manager.cli import main
+from local_agent_manager import t3code_store as store, t3code_database as database
 from tests.t3code_support import create_store, add_thread, insert, PRIVATE, V2
 
 
@@ -162,7 +167,7 @@ class T3CodeTests(unittest.TestCase):
         before = {path: path.read_bytes() for path in (self.home / store.RELATIVE, native, environment_id)}
         base = ("--client", "t3code", "--t3code-root", str(self.home), "--record-id", "selected", "--json")
 
-        with patch("local_agent_record_janitor.cleanup_service.CleanupService.execute",
+        with patch("local_agent_manager.cleanup_service.CleanupService.execute",
                    side_effect=AssertionError("Unexpected cleanup writer")) as execute:
             for verb in ("plan", "run"):
                 options = ("--clients-closed",) if verb == "run" else ()

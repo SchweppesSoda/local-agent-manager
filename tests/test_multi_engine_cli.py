@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -10,12 +15,12 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.claude_sessions import (
+from local_agent_manager.claude_sessions import (
     build_claude_multi_root_catalog,
     build_claude_session_catalog,
 )
-from local_agent_record_janitor.claude_delete import build_claude_delete_plan
-from local_agent_record_janitor.cli import (
+from local_agent_manager.claude_delete import build_claude_delete_plan
+from local_agent_manager.cli import (
     EXIT_CONFIRMATION_REQUIRED,
     EXIT_ERROR,
     EXIT_OK,
@@ -809,10 +814,10 @@ class MultiEngineCliTests(unittest.TestCase):
 
     def test_injected_empty_adapters_never_trigger_native_engine_builders(self) -> None:
         with patch(
-            "local_agent_record_janitor.pi_sessions.build_pi_session_inventory",
+            "local_agent_manager.pi_sessions.build_pi_session_inventory",
             side_effect=AssertionError("Pi home touched"),
         ), patch(
-            "local_agent_record_janitor.claude_sessions.resolve_claude_paths",
+            "local_agent_manager.claude_sessions.resolve_claude_paths",
             side_effect=AssertionError("Claude home touched"),
         ):
             output = StringIO()

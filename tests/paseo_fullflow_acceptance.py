@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Opt-in actual Codex/Pi/Claude deletion against owned synthetic Paseo stores.
 
 Run with --binary ABSOLUTE_PINNED_CODEX_EXE and --scenario complete or
@@ -19,7 +24,7 @@ import tempfile
 from unittest.mock import patch
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-if not (REPOSITORY/'src/local_agent_record_janitor').is_dir():
+if not (REPOSITORY/'src/local_agent_manager').is_dir():
     REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(REPOSITORY/'src'), str(REPOSITORY)]
 AGENTS = ['00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000102',
@@ -47,7 +52,7 @@ def native_row(home):
 
 
 def write(path, value):
-    from local_agent_record_janitor.paseo_cleanup_files import encode
+    from local_agent_manager.paseo_cleanup_files import encode
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(encode(value))
 
@@ -64,9 +69,9 @@ def schedule(identifier, target, runs):
 
 
 def seed(base, binary, scenario):
-    from local_agent_record_janitor.paseo_bound_adapter import PaseoBoundAdapter, SCHEMA
-    from local_agent_record_janitor.cleanup_service import CleanupService
-    from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+    from local_agent_manager.paseo_bound_adapter import PaseoBoundAdapter, SCHEMA
+    from local_agent_manager.cleanup_service import CleanupService
+    from local_agent_manager.operation_coordinator import OperationCoordinator
     from tests.orca_native_support import create_native_schema, add_native_record
     profile, codex, pi, claude = base/'paseo', base/'codex', base/'pi', base/'claude'
     profile.mkdir(); codex.mkdir(); (pi/'sessions').mkdir(parents=True); claude.mkdir()
@@ -152,9 +157,9 @@ def worker(base,binary,scenario,phase):
     base = base.resolve(strict=True)
     base.relative_to((REPOSITORY/'.codex-artifacts/herdr-fullflow-fixtures').resolve(strict=True))
     if phase=='seed': return seed(base,binary,scenario)
-    from local_agent_record_janitor import paseo_cleanup, paseo_cleanup_files as files
-    from local_agent_record_janitor.cleanup_service import CleanupService
-    from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+    from local_agent_manager import paseo_cleanup, paseo_cleanup_files as files
+    from local_agent_manager.cleanup_service import CleanupService
+    from local_agent_manager.operation_coordinator import OperationCoordinator
     plan = json.loads((base/'plan.json').read_text(encoding='utf-8'))
     state = json.loads((base/'fixture-state.json').read_text(encoding='utf-8'))
     args = {'operation_id':plan['operation_id'],'plan_path':base/'plan.json','plan_sha256':plan['plan_sha256']}
@@ -199,7 +204,7 @@ def worker(base,binary,scenario,phase):
 
 
 def wrapper(binary,scenario):
-    from local_agent_record_janitor.orca_runtime import isolated_environment, PINNED_BINARY_SHA256
+    from local_agent_manager.orca_runtime import isolated_environment, PINNED_BINARY_SHA256
     assert os.name=='nt' and binary.is_absolute()
     assert metadata(binary)['sha256']==PINNED_BINARY_SHA256, 'Pinned Codex executable drift'
     artifacts = REPOSITORY/'.codex-artifacts/herdr-fullflow-fixtures'
@@ -208,6 +213,7 @@ def wrapper(binary,scenario):
     empty, scratch = base/'empty-default-home',base/'environment'
     empty.mkdir(); scratch.mkdir()
     environment,cwd = isolated_environment(scratch,empty)
+    environment["_LAM_TEST_INSTALLATION"] = os.environ["_LAM_TEST_INSTALLATION"]
     phases = ('seed','apply','verify') if scenario=='complete' else ('seed','interrupt','resume','verify')
     reports=[]
     for phase in phases:

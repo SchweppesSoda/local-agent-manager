@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Opt-in installed-runtime tests. All stores, credentials and worktrees are fixtures."""
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -16,12 +21,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import t3code_server_delete as t3, antigravity_acp_cleanup as acp
-from local_agent_record_janitor import claude_session_import
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.t3code_bound_adapter import T3CodeBoundAdapter, SCHEMA
-from local_agent_record_janitor.t3code_store import V2
+from local_agent_manager import t3code_server_delete as t3, antigravity_acp_cleanup as acp
+from local_agent_manager import claude_session_import
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.t3code_bound_adapter import T3CodeBoundAdapter, SCHEMA
+from local_agent_manager.t3code_store import V2
 from tests.t3code_support import create_store, add_thread
 
 TARGET='11111111-1111-4111-8111-111111111111'
@@ -30,7 +35,7 @@ NATIVE='33333333-3333-4333-8333-333333333333'
 
 
 def isolated_env(base):
-    env={k:v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','LAM_STATE_DIR','LAM_TEST_STATE_DIR'}}
+    env={k:v for k,v in os.environ.items() if k.upper() in {'SYSTEMROOT','WINDIR','PATH','PATHEXT','COMSPEC','PYTHONPATH','LARJ_LEVELDB_RUNTIME','_LAM_TEST_INSTALLATION'}}
     env.update(USERPROFILE=str(base),HOME=str(base),APPDATA=str(base/'appdata'),LOCALAPPDATA=str(base/'local'),
                TEMP=str(base),TMP=str(base),CODEX_HOME=str(base/'codex'),CLAUDE_CONFIG_DIR=str(base/'claude'),DO_NOT_TRACK='1')
     return env
@@ -289,7 +294,7 @@ class T3RuntimeAcceptanceTests(unittest.TestCase):
                 'native_stores':[{'thread_id':tid,'engine':instance,'root':str(native),'provider_instance_id':instance,
                     'acp_runtime_binaries':list(map(str,binaries))} for tid in (TARGET,KEEP)]}
             coordinator=OperationCoordinator(CleanupService(client_inspector=lambda *_a,**_kw:()))
-            with patch('local_agent_record_janitor.office_runtime.processes',return_value=[]), \
+            with patch('local_agent_manager.office_runtime.processes',return_value=[]), \
                     patch('pathlib.Path.home',return_value=root), \
                     patch.dict(os.environ,{**isolated_env(root),'T3CODE_HOME':str(root)},clear=True):
                 plan=coordinator.plan_operation(client='t3code',record_ids=[TARGET],adapters=[T3CodeBoundAdapter(manifest)],plan_path=root/'plan.json')

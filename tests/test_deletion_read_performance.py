@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -9,13 +14,13 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-import local_agent_record_janitor.codex_state as codex_state
-from local_agent_record_janitor.cleaner import (
+import local_agent_manager.codex_state as codex_state
+from local_agent_manager.cleaner import (
     ExpectedDeletionScope,
     clean_findings,
     finding_key,
 )
-from local_agent_record_janitor.models import Finding, RolloutRecord
+from local_agent_manager.models import Finding, RolloutRecord
 
 from tests.support import create_thread_index, write_rollout
 

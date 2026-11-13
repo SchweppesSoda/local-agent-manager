@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -8,15 +13,15 @@ from contextlib import closing
 from io import StringIO
 from pathlib import Path
 
-from local_agent_record_janitor.adapters.cindy import CindyAdapter
-from local_agent_record_janitor.frontend_reference_cleanup import (
+from local_agent_manager.adapters.cindy import CindyAdapter
+from local_agent_manager.frontend_reference_cleanup import (
     FrontendReferenceError,
     execute_frontend_reference_cleanup,
     remove_top_level_json_field,
 )
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.cleaner import scan_adapters
-from local_agent_record_janitor.planning import build_cleanup_plan
+from local_agent_manager.cli import main
+from local_agent_manager.cleaner import scan_adapters
+from local_agent_manager.planning import build_cleanup_plan
 
 from tests.support import create_cindy_database
 

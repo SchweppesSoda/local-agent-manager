@@ -13,7 +13,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Include pinned browser setup and slow hosted Windows disk flushes in
     # the budget while retaining the complete durable recovery suite.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 10 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -70,7 +70,7 @@ jobs:
           import sqlite3
           import sys
 
-          from local_agent_record_janitor.t3code_store import CONTRACT
+          from local_agent_manager.t3code_store import CONTRACT
 
           print(f"Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}", flush=True)
           ddl = next(sql for _, name, _, sql in CONTRACT["objects"]
@@ -87,7 +87,7 @@ jobs:
       - name: Install exact Office LevelDB dependency
         env:
           LARJ_LEVELDB_RUNTIME: ${{ runner.temp }}/larj-leveldb-runtime
-        run: python -m local_agent_record_janitor.office_leveldb --install
+        run: python -m local_agent_manager.office_leveldb --install
 
       - name: Install hash-pinned Paseo browser test dependency
         if: matrix.os == 'windows-latest'
@@ -101,7 +101,8 @@ jobs:
           LARJ_REQUIRE_PASEO_BROWSER_TESTS: "1"
           # Keep fixtures on the runner's physical temp root, outside macOS /var aliases.
           TMPDIR: ${{ runner.temp }}
-        # -t . loads tests as a package so tests/__init__.py isolates manager state.
+        # Every test entry establishes a real temporary editable registration;
+        # -t . is the standard package-discovery spelling.
         run: python -m unittest discover -s tests -t . -v
 
       - name: Set up pinned Rust fingerprint oracle

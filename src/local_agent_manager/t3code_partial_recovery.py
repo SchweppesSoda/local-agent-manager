@@ -61,6 +61,8 @@ def inspect(document, coordinator, *, approved_hash=None):
     if not state or state.get('next_event_sequence') != len(events)+1 or not events:
         fail('checkpoint_invalid')
     audits = list(frontend.directory.glob('partial-recovery-*.json'))
+    if len(audits) > 1:
+        fail('audit_ambiguous')
     settled = state.get('goal_status') == 'completed_with_residuals'
     if settled:
         if len(audits) != 1:
@@ -249,15 +251,7 @@ def settle(document, current, coordinator, approved_hash):
             goal_status='completed_with_residuals', goal_satisfied=False, verified_at=utc_now(),
             mutation_replayed=False, original_failure=ERROR,
             journal_sha256=journal_hashes)
-        path = (next(store.directory.glob('partial-recovery-*.json')) if info['settled'] else
-                store.directory/('partial-recovery-'+proof_hash+'.json'))
-        if not path.exists():
-            write_new_json(path, audit)
-        elif not info['settled']:
-            prior = strict_json_load(path)
-            for key in ('schema_version','parent_plan_sha256','child_plan_sha256','original_lock_sha256'):
-                if prior.get(key) != audit[key]:
-                    fail('audit_changed')
+        path = _publish_audit(store.directory, audit, settled=info['settled'])
         state = store.read_state()
         state.update(phase='finished', goal_status='completed_with_residuals', goal_satisfied=False,
                      modified=True, current_action_state='verified')
@@ -276,3 +270,22 @@ def settle(document, current, coordinator, approved_hash):
             held.dispose(store.directory,'apply.lock',before=proof)
     return dict(goal_status='completed_with_residuals',goal_satisfied=False,partial_recovery_settled=True,
                 operation_id=document['operation_id'],audit_path=str(path),mutation_replayed=False)
+
+
+def _publish_audit(directory, audit, *, settled=False):
+    audits = list(directory.glob('partial-recovery-*.json'))
+    if len(audits) > 1:
+        fail('audit_ambiguous')
+    path = audits[0] if audits else directory / 'partial-recovery-audit.json'
+    if not path.exists():
+        if settled:
+            fail('audit_missing')
+        write_new_json(path, audit)
+    else:
+        ff._plain(path.lstat())
+        if not settled:
+            prior = strict_json_load(path)
+            for key in ('schema_version','parent_plan_sha256','child_plan_sha256','original_lock_sha256'):
+                if prior.get(key) != audit[key]:
+                    fail('audit_changed')
+    return path

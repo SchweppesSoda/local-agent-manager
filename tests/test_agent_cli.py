@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
+from local_agent_manager.state_paths import manager_state_base
 from local_agent_manager.state_paths import control_directory
 
 import hashlib
@@ -15,20 +21,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters.native import NativeIntegrityAdapter
-from local_agent_record_janitor.agent_cli import _verify_with_retry
-from local_agent_record_janitor.agent_operations import plan_counts
-from local_agent_record_janitor.cleaner import scan_adapters
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import build_parser, main
-from local_agent_record_janitor.codex_desktop_state import DesktopStateError
-from local_agent_record_janitor.operation_store import (
+from local_agent_manager.adapters.native import NativeIntegrityAdapter
+from local_agent_manager.agent_cli import _verify_with_retry
+from local_agent_manager.agent_operations import plan_counts
+from local_agent_manager.cleaner import scan_adapters
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import build_parser, main
+from local_agent_manager.codex_desktop_state import DesktopStateError
+from local_agent_manager.operation_store import (
     OperationStore,
     OperationStoreError,
     _receipt_sha256,
     plan_sha256,
 )
-from local_agent_record_janitor.mutation_guard import mutation_roots
+from local_agent_manager.mutation_guard import mutation_roots
 
 from tests.support import create_thread_index, write_rollout
 
@@ -85,7 +91,7 @@ class AgentCliTests(unittest.TestCase):
             else {"return_value": client_probe}
         )
         with patch(
-            "local_agent_record_janitor.agent_cli.running_related_clients",
+            "local_agent_manager.agent_cli.running_related_clients",
             **client_patch,
         ):
             code = main(
@@ -545,7 +551,7 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         path = Path(summary["plan_path"])
         self.assertTrue(path.is_file())
-        self.assertEqual(path.parent, Path(os.environ["LAM_STATE_DIR"]) / "plans")
+        self.assertEqual(path.parent, manager_state_base() / "plans")
         self.assertFalse(state_root.exists())
         self.assertNotEqual(path.parent, Path.cwd())
 
@@ -799,7 +805,7 @@ class AgentCliTests(unittest.TestCase):
                     server = None
                     argv = ("agent", "verify", "--operation-id", plan["operation_id"],
                         "--codex-home", str(self.codex_home), "--verify-timeout", "0")
-                with patch("local_agent_record_janitor.agent_cli.mutation_roots", fail_exit):
+                with patch("local_agent_manager.agent_cli.mutation_roots", fail_exit):
                     code, result, _ = self.invoke(argv, server=server)
                 self.assertEqual(code, 1)
                 self.assertEqual(result["goal_status"], "unknown")
@@ -1115,7 +1121,7 @@ class AgentCliTests(unittest.TestCase):
             "--clients-closed", "--verify-timeout", "0",
         )
         with patch(
-            "local_agent_record_janitor.agent_cli._verify_full_target_scope",
+            "local_agent_manager.agent_cli._verify_full_target_scope",
             side_effect=OSError("full target scan failed"),
         ):
             code, result, _ = self.invoke(argv, server=server)
@@ -1156,7 +1162,7 @@ class AgentCliTests(unittest.TestCase):
             "0",
         )
         with patch(
-            "local_agent_record_janitor.operation_store._fsync_directory",
+            "local_agent_manager.operation_store._fsync_directory",
             side_effect=fail_mutation_state_directory_flush,
         ):
             code, result, _ = self.invoke(argv, server=server)
@@ -1237,14 +1243,14 @@ class AgentCliTests(unittest.TestCase):
         full = {"all_satisfied": True, "scan_complete": True}
         with (
             patch(
-                "local_agent_record_janitor.agent_cli.verify_frozen_actions",
+                "local_agent_manager.agent_cli.verify_frozen_actions",
                 side_effect=[OSError("transient"), exact],
             ),
             patch(
-                "local_agent_record_janitor.agent_cli._verify_full_target_scope",
+                "local_agent_manager.agent_cli._verify_full_target_scope",
                 side_effect=OSError("transient"),
             ) as full_scan,
-            patch("local_agent_record_janitor.agent_cli.time.sleep"),
+            patch("local_agent_manager.agent_cli.time.sleep"),
         ):
             verification = _verify_with_retry(
                 plan,

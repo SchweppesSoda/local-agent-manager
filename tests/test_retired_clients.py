@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 import tempfile
@@ -7,15 +12,15 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.action_registry import action_capability
-from local_agent_record_janitor.agent_cli import _load_authorized_plan
-from local_agent_record_janitor.cleanup_service import CleanupService, selected_platforms
-from local_agent_record_janitor.cli import build_parser
-from local_agent_record_janitor.office_store import PROFILES, OfficeAdapter
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import plan_sha256
-from local_agent_record_janitor.record_identity import capability_for
-from local_agent_record_janitor.retired_clients import require_active_plan
+from local_agent_manager.action_registry import action_capability
+from local_agent_manager.agent_cli import _load_authorized_plan
+from local_agent_manager.cleanup_service import CleanupService, selected_platforms
+from local_agent_manager.cli import build_parser
+from local_agent_manager.office_store import PROFILES, OfficeAdapter
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import plan_sha256
+from local_agent_manager.record_identity import capability_for
+from local_agent_manager.retired_clients import require_active_plan
 
 
 class RetiredClientTests(unittest.TestCase):
@@ -80,7 +85,7 @@ class RetiredClientTests(unittest.TestCase):
                 before = self.freeze(document)
                 for operation in ("apply_operation", "status_operation", "verify_operation"):
                     with self.subTest(client=client, nested=nested, operation=operation), patch(
-                        "local_agent_record_janitor.operation_coordinator.validate_guard_sources"
+                        "local_agent_manager.operation_coordinator.validate_guard_sources"
                     ) as guards:
                         result = getattr(OperationCoordinator(CleanupService()), operation)(
                             plan_path=self.path, clients_closed=True,

@@ -1,8 +1,12 @@
 """Route independent management domains through the public command."""
 from __future__ import annotations
 import sys
+from pathlib import Path
 
 def main(argv=None):
+    if Path(sys.argv[0]).stem.lower() == "local-agent-record-janitor":
+        print("This command has been removed. Use local-agent-manager.", file=sys.stderr)
+        return 2
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments == ["--version"]:
         from . import __version__

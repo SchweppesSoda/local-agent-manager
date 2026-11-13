@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import tempfile
 import unittest
@@ -7,10 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cleaner import ScanFailure, ScanReport
-from local_agent_record_janitor.models import Finding
-from local_agent_record_janitor.planning import (
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cleaner import ScanFailure, ScanReport
+from local_agent_manager.models import Finding
+from local_agent_manager.planning import (
     ActionImpact,
     ActionKind,
     CandidateAction,

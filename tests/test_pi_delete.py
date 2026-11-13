@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import hashlib
 import os
 import stat
@@ -9,13 +14,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from local_agent_record_janitor.pi_delete import (
+from local_agent_manager.pi_delete import (
     PiDeletePlanError,
     PiDeleteSelectionError,
     build_pi_delete_plan,
     execute_pi_delete,
 )
-from local_agent_record_janitor.pi_sessions import build_pi_session_catalog
+from local_agent_manager.pi_sessions import build_pi_session_catalog
 
 
 @dataclass(frozen=True)

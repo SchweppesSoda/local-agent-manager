@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import tempfile
@@ -7,7 +12,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from local_agent_record_janitor.claude_sessions import (
+from local_agent_manager.claude_sessions import (
     _MAX_JSONL_LINE,
     ClaudeSelectionError,
     build_claude_multi_root_catalog,

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import hashlib
 import os
@@ -14,13 +19,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.claude_sessions import build_claude_session_catalog, resolve_claude_paths
-from local_agent_record_janitor.pi_sessions import build_pi_session_catalog
-from local_agent_record_janitor.client_inventory import (
+from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
+from local_agent_manager.cli import main
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.claude_sessions import build_claude_session_catalog, resolve_claude_paths
+from local_agent_manager.pi_sessions import build_pi_session_catalog
+from local_agent_manager.client_inventory import (
     ClientInventory,
     ClientTarget,
     build_client_engine_contexts,
@@ -29,8 +34,8 @@ from local_agent_record_janitor.client_inventory import (
     collect_client_file_aliases,
     collect_shared_store_file_aliases,
 )
-from local_agent_record_janitor.inventory import FrontendSessionRecord, build_session_catalog
-from local_agent_record_janitor.record_identity import (
+from local_agent_manager.inventory import FrontendSessionRecord, build_session_catalog
+from local_agent_manager.record_identity import (
     EngineCapability,
     NATIVE_ROOT_UNVERIFIED,
     ProjectKey,
@@ -275,7 +280,7 @@ class ClientInventoryTests(unittest.TestCase):
                 _create_cindy_database(profile / "cindy.db", [("same-ui", sid, "active", "cc")])
                 adapters.append(CindyAdapter(database=profile / "cindy.db", codex_home=profile / "codex-home", cindy_root=profile))
             effective = resolve_claude_paths(environ={"CLAUDE_CONFIG_DIR": str(shared)}, home=root)
-            with patch("local_agent_record_janitor.claude_sessions.resolve_claude_paths", return_value=effective):
+            with patch("local_agent_manager.claude_sessions.resolve_claude_paths", return_value=effective):
                 context = build_client_engine_contexts(adapters, client="cindy", engines=("claude",))[0]
             self.assertEqual(context.inventory.errors, ())
             self.assertEqual(len(context.native_records), 1)
@@ -299,13 +304,13 @@ class ClientInventoryTests(unittest.TestCase):
                     _write_claude_session(root, sid)
                     catalog = build_claude_session_catalog(config_dir=root)
                 output = StringIO()
-                with patch(f"local_agent_record_janitor.cli._build_{engine}_catalog", return_value=catalog):
+                with patch(f"local_agent_manager.cli._build_{engine}_catalog", return_value=catalog):
                     status = main(["records", "--client", engine, "--json"], adapters=(),
                                   stdout=output, stderr=StringIO(), **{f"{engine}_catalog_builder": lambda **_: catalog})
                 self.assertEqual(status, 0, output.getvalue())
                 self.assertEqual(json.loads(output.getvalue())["records"][0]["classification"], "healthy")
                 coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
-                with patch(f"local_agent_record_janitor.session_catalog_factory.build_{engine}_catalog", return_value=catalog):
+                with patch(f"local_agent_manager.session_catalog_factory.build_{engine}_catalog", return_value=catalog):
                     plan = coordinator.plan_operation(client=engine, record_ids=(sid,), plan_path=root / "plan.json")
                 self.assertEqual(plan["actions"][0]["classification"], "healthy")
 
@@ -321,8 +326,8 @@ class ClientInventoryTests(unittest.TestCase):
             results = []
             for _ in range(2):
                 output = StringIO()
-                with patch("local_agent_record_janitor.cli._build_pi_catalog", return_value=catalog), patch(
-                        "local_agent_record_janitor.codex_desktop_state._running_related_process_records",
+                with patch("local_agent_manager.cli._build_pi_catalog", return_value=catalog), patch(
+                        "local_agent_manager.codex_desktop_state._running_related_process_records",
                         side_effect=AssertionError("No declared owner may be probed")):
                     status = main(["records", "--client", "pi", "--record-id", "selected-pi",
                                    "--inspect-clients", "--json"], adapters=(), stdout=output, stderr=StringIO(),
@@ -391,9 +396,9 @@ class ClientInventoryTests(unittest.TestCase):
                 for suffix in ("-wal", "-shm", "-journal"):
                     (home / ("state_5.sqlite" + suffix)).write_bytes(b"METADATA_CONTENT_NOT_READ")
             targets_before = [target.to_dict() for target in inventory.targets]
-            from local_agent_record_janitor.client_inventory import probe_file_aliases
+            from local_agent_manager.client_inventory import probe_file_aliases
             with patch.object(Path, "open", side_effect=AssertionError("Shared metadata content read")), patch(
-                    "local_agent_record_janitor.client_inventory.probe_file_aliases", wraps=probe_file_aliases) as probe:
+                    "local_agent_manager.client_inventory.probe_file_aliases", wraps=probe_file_aliases) as probe:
                 all_stores = collect_shared_store_file_aliases(contexts, inventory.targets)
             self.assertEqual(probe.call_count, 1)
             supplied = probe.call_args.args[0]
@@ -532,7 +537,7 @@ class ClientInventoryTests(unittest.TestCase):
             _create_cindy_database(root / "cindy.db", [("ui", "missing", "deleted", "pi")])
             adapter = CindyAdapter(database=root / "cindy.db", codex_home=root / "codex-home", cindy_root=root)
             output = StringIO()
-            with patch("local_agent_record_janitor.codex_desktop_state.inspect_client_ownership",
+            with patch("local_agent_manager.codex_desktop_state.inspect_client_ownership",
                        return_value={"clients_closed": False}) as inspect:
                 status = main(["records", "--client", "cindy", "--engine", "pi", "--inspect-clients", "--json"],
                               adapters=(adapter,), stdout=output, stderr=StringIO())
@@ -668,7 +673,7 @@ class ClientInventoryTests(unittest.TestCase):
     def test_incomplete_lineage_scan_does_not_prove_a_child_is_healthy(self):
         with tempfile.TemporaryDirectory() as temporary:
             adapter = self._lineage_fixture(Path(temporary).resolve(strict=True), {"parent": None, "child": "parent"})
-            with patch("local_agent_record_janitor.inventory.read_native_lineage",
+            with patch("local_agent_manager.inventory.read_native_lineage",
                        side_effect=OSError("fixture incomplete graph")):
                 inventory = build_client_inventory((adapter,), client="cindy")
             child = next(t for t in inventory.targets if t.record_id == "child")

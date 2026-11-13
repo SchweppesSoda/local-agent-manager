@@ -1,10 +1,15 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor import manual_delete, operation_coordinator
-from local_agent_record_janitor.manual_delete import ManualDeletePlanError
+from local_agent_manager import manual_delete, operation_coordinator
+from local_agent_manager.manual_delete import ManualDeletePlanError
 
 
 class PlanIndexingPerformanceTests(unittest.TestCase):
@@ -55,7 +60,7 @@ class PlanIndexingPerformanceTests(unittest.TestCase):
                 side_effect=counted_canonical,
             ),
             patch(
-                "local_agent_record_janitor.manual_delete.build_manual_delete_closure",
+                "local_agent_manager.manual_delete.build_manual_delete_closure",
                 side_effect=lambda _action: SimpleNamespace(frontend_actions=()),
             ),
         ):
@@ -93,7 +98,7 @@ class PlanIndexingPerformanceTests(unittest.TestCase):
                 side_effect=lambda path: "physical-codex-home",
             ),
             patch(
-                "local_agent_record_janitor.manual_delete.build_manual_delete_closure",
+                "local_agent_manager.manual_delete.build_manual_delete_closure",
                 side_effect=lambda _action: SimpleNamespace(frontend_actions=()),
             ),
         ):
@@ -143,7 +148,7 @@ class PlanIndexingPerformanceTests(unittest.TestCase):
             )
 
         with patch(
-            "local_agent_record_janitor.manual_delete.build_manual_delete_closure",
+            "local_agent_manager.manual_delete.build_manual_delete_closure",
             side_effect=closure_for,
         ):
             coalesced = operation_coordinator.OperationCoordinator._coalesce_manual_candidates(

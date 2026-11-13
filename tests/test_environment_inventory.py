@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from datetime import datetime
 import json
 import os
@@ -11,8 +16,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import frozen_files
-from local_agent_record_janitor.environment_inventory import collect_environment_inventory
+from local_agent_manager import frozen_files
+from local_agent_manager.environment_inventory import collect_environment_inventory
 
 
 class EnvironmentInventoryTests(unittest.TestCase):
@@ -386,7 +391,7 @@ class EnvironmentInventoryTests(unittest.TestCase):
     def test_directory_budget_does_not_select_an_order_dependent_subset(self):
         self.file("Local/OpenAI/Codex/bin/hash/codex.exe")
         self.file("Local/OpenAI/Codex/bin/another/codex.exe")
-        with patch("local_agent_record_janitor.environment_paths.MAX_DIRECTORY_ENTRIES", 1):
+        with patch("local_agent_manager.environment_paths.MAX_DIRECTORY_ENTRIES", 1):
             result = self.inventory(clients=("codex-desktop",))
         self.assertEqual(result["runtimes"], [])
         self.assertIn("directory_budget_exceeded", {issue["code"] for issue in result["coverage"]["issues"]})

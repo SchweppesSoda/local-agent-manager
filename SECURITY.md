@@ -1,10 +1,10 @@
 # Security Policy
 
-Local Agent Record Janitor / 本地 Agent 记录清理器处理本地聊天记录、数据库和不可
+Local Agent Manager / 本地 Agent 管理器处理本地聊天记录、数据库和不可
 恢复的删除操作。跨引擎对象称为原生记录：Codex 使用 thread，Pi Agent 与 Claude Code
 使用 session；Cindy 数据库行是只读 frontend reference。安全目标首先是
 **避免误删**，其次才是回收残留数据。仓库、发行包和命令统一使用
-`local-agent-record-janitor`，Python 模块统一使用 `local_agent_record_janitor`。
+`local-agent-manager`，Python 模块统一使用 `local_agent_manager`。
 
 ## 支持状态
 
@@ -227,10 +227,10 @@ Claude 直接文件删除只允许 `delete --platform claude`，并绑定 `(conf
 
 不要在 SQLite 仍有写入进程时只复制主 `.db` 文件。恢复时也应先关闭所有使用这些目录的进程，并恢复为一个一致的完整快照。
 
-旧索引修复器生成的局部备份位于对应 `CODEX_HOME/.local-agent-record-janitor/legacy-index-backups/<backup-id>/`。它用于精确撤销该次旧索引替换，不能代替执行会话硬删除前对完整 `CODEX_HOME` 的外部备份。
+旧索引修复器生成的局部备份位于对应 权威仓库 `.agent-manager-state/<store-key>/.local-agent-manager/legacy-index-backups/<backup-id>/`。它用于精确撤销该次旧索引替换，不能代替执行会话硬删除前对完整 `CODEX_HOME` 的外部备份。
 
 Desktop 宿主状态修复器生成的局部备份位于
-`CODEX_HOME/.local-agent-record-janitor/desktop-state-backups/<backup-id>/`，包含一致的
+权威仓库 `.agent-manager-state/<store-key>/.local-agent-manager/desktop-state-backups/<backup-id>/`，包含一致的
 catalog SQLite、发现到的全局状态 JSON 和 manifest。它只用于该次私有宿主状态修复，
 也不能代替完整 `CODEX_HOME` 外部备份。
 

@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import sqlite3
 import tempfile
 import unittest
@@ -7,27 +12,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import CindyAdapter
-from local_agent_record_janitor.blocker_codes import LIVE_FRONTEND_REFERENCE
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.frontend_reference_cleanup import (
+from local_agent_manager.adapters import CindyAdapter
+from local_agent_manager.blocker_codes import LIVE_FRONTEND_REFERENCE
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.frontend_reference_cleanup import (
     FrontendReferenceGuardError,
     guard_frontend_reference_closure,
 )
-from local_agent_record_janitor.inventory import (
+from local_agent_manager.inventory import (
     FrontendSessionRecord,
     ManagedConversation,
     SessionCatalog,
 )
-from local_agent_record_janitor.manual_delete import (
+from local_agent_manager.manual_delete import (
     build_manual_delete_closure,
     build_manual_delete_plan,
     frontend_actions_after_native_success,
 )
-from local_agent_record_janitor.models import ConversationSummary
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.models import ConversationSummary
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.support import create_cindy_database, write_rollout
-from local_agent_record_janitor.codex_state import find_thread_rollouts
+from local_agent_manager.codex_state import find_thread_rollouts
 
 
 class FrontendClosureTests(unittest.TestCase):
@@ -105,13 +110,13 @@ class FrontendClosureTests(unittest.TestCase):
                 return cindy.list_sessions()
 
             def scan(self):
-                from local_agent_record_janitor.adapters import NativeIntegrityAdapter
+                from local_agent_manager.adapters import NativeIntegrityAdapter
 
                 return NativeIntegrityAdapter(codex_home=self.codex_home).scan()
 
             def describe_client(self):
-                from local_agent_record_janitor.client_contracts import ClientDescriptor
-                from local_agent_record_janitor.record_identity import StoreKey, capability_for
+                from local_agent_manager.client_contracts import ClientDescriptor
+                from local_agent_manager.record_identity import StoreKey, capability_for
                 # The native adapter owns its native database. Forwarding
                 # exact Cindy references does not make it their writer.
                 return ClientDescriptor("native", sources=(self.codex_home / "state_5.sqlite",),

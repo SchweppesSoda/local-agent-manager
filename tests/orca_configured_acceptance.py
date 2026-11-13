@@ -10,6 +10,11 @@ the public coordinator; negative guard cases must not start an app-server.
 
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import argparse
 from contextlib import closing
 import hashlib
@@ -111,8 +116,8 @@ def save_json(path, value):
 
 def imports(repository):
     sys.path[:0] = [str(repository), str(repository / "src")]
-    from local_agent_record_janitor import orca_runtime as runtime
-    from local_agent_record_janitor import orca_target_safety as safety
+    from local_agent_manager import orca_runtime as runtime
+    from local_agent_manager import orca_target_safety as safety
     if (os.name != "nt" or not runtime.RUNTIME_ACCEPTED
             or runtime.PINNED_BINARY_SHA256 != CANDIDATE_SHA256
             or runtime.RUNTIME_POLICY_SCHEMA != "larj.orca-runtime.v2"
@@ -139,8 +144,8 @@ def cold_action(repository, root, action):
     """Fresh process: recover adapters and authority solely from persisted plan."""
     root = require_owned(root)
     imports(repository)
-    from local_agent_record_janitor.cleanup_service import CleanupService
-    from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+    from local_agent_manager.cleanup_service import CleanupService
+    from local_agent_manager.operation_coordinator import OperationCoordinator
     context = json.loads((root / "cold-context.json").read_text(encoding="utf-8"))
     coordinator = OperationCoordinator(CleanupService())
     if action == "apply":
@@ -162,10 +167,10 @@ def cold_action(repository, root, action):
 def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     root = require_owned(root)
     runtime, safety = imports(repository)
-    from local_agent_record_janitor.adapters import OrcaAdapter
-    from local_agent_record_janitor.cleanup_service import CleanupService
-    from local_agent_record_janitor.cli import main
-    from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+    from local_agent_manager.adapters import OrcaAdapter
+    from local_agent_manager.cleanup_service import CleanupService
+    from local_agent_manager.cli import main
+    from local_agent_manager.operation_coordinator import OperationCoordinator
     from tests.orca_native_support import add_native_record, create_native_schema
     from tests.orca_support import create_profile
 
@@ -402,6 +407,7 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
         environment_root = root / ("cold-" + action + "-environment")
         environment_root.mkdir()
         environment, cwd = runtime.isolated_environment(environment_root, empty)
+        environment["_LAM_TEST_INSTALLATION"] = os.environ["_LAM_TEST_INSTALLATION"]
         command = [sys.executable, "-I", "-B", str(script), "--cold", action, "--repository", str(repository),
                    "--binary", str(binary), "--root", str(root)]
         completed = subprocess.run(command, env=environment, cwd=cwd, capture_output=True, text=True,
@@ -447,7 +453,7 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
 def run_isolated(repository, binary, script, maintenance_warm_seconds=0):
     # Only the environment helper is imported before the fresh worker.
     sys.path.insert(0, str(repository / "src"))
-    from local_agent_record_janitor.orca_runtime import isolated_environment
+    from local_agent_manager.orca_runtime import isolated_environment
     root = Path(tempfile.mkdtemp(prefix="janitor-orca-configured-acceptance-")).resolve(strict=True)
     empty = root / "empty-default-home"
     empty.mkdir()
@@ -457,6 +463,7 @@ def run_isolated(repository, binary, script, maintenance_warm_seconds=0):
     work.mkdir()
     (work / OWNERSHIP_MARKER).write_text(uuid.uuid4().hex + "\n", encoding="ascii")
     environment, cwd = isolated_environment(environment_root, empty)
+    environment["_LAM_TEST_INSTALLATION"] = os.environ["_LAM_TEST_INSTALLATION"]
     command = [sys.executable, "-I", "-B", str(script), "--worker", "--repository", str(repository),
                "--binary", str(binary), "--root", str(work), "--maintenance-warm-seconds", str(maintenance_warm_seconds)]
     completed = subprocess.run(command, env=environment, cwd=cwd, capture_output=True, text=True,

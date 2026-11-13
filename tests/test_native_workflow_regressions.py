@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import sqlite3
@@ -12,15 +17,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.agent_operations import action_binding
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.codex_state import read_native_lineage, read_spawn_descendants
-from local_agent_record_janitor.inventory import build_session_catalog
-from local_agent_record_janitor.manual_delete import build_manual_delete_plan
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import plan_sha256, write_new_json
+from local_agent_manager.state_paths import manager_state_base
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.agent_operations import action_binding
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.codex_state import read_native_lineage, read_spawn_descendants
+from local_agent_manager.inventory import build_session_catalog
+from local_agent_manager.manual_delete import build_manual_delete_plan
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import plan_sha256, write_new_json
 from tests.support import create_thread_index
 
 
@@ -217,7 +223,7 @@ class NativeWorkflowRegressions(unittest.TestCase):
         calls = []
         service = CleanupService(client_inspector=lambda *_: ())
         coordinator = OperationCoordinator(service)
-        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
             result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
                 plan_path=self.root / "run.json", clients_closed=True, app_server_factory=self.server(calls),
                 binary_resolver=lambda _: Path("codex"))
@@ -238,7 +244,7 @@ class NativeWorkflowRegressions(unittest.TestCase):
             source.backup(target)
         calls = []
         coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
-        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
             result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
                 plan_path=self.root / "dual-run.json", clients_closed=True, app_server_factory=self.server(calls),
                 binary_resolver=lambda _: Path("codex"))
@@ -251,8 +257,8 @@ class NativeWorkflowRegressions(unittest.TestCase):
         self.assertEqual({r.thread_id for r in build_session_catalog((self.adapter,)).records}, {"keep"})
 
     def test_residual_rounds_retain_new_guard_sources_after_environment_changes(self):
-        from local_agent_record_janitor.adapters import OrcaAdapter
-        from local_agent_record_janitor.record_identity import canonical_path
+        from local_agent_manager.adapters import OrcaAdapter
+        from local_agent_manager.record_identity import canonical_path
         from tests.orca_support import create_profile
 
         self.fixture([("delete", "work", None)])
@@ -324,7 +330,7 @@ class NativeWorkflowRegressions(unittest.TestCase):
                 self.paths[record_id].write_bytes(raw)
         server.delete_thread = leave_rollout
         coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
-        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
             result = coordinator.run_operation(client="native", record_ids=("a", "b"), adapters=(self.adapter,),
                 plan_path=self.root / "mixed.json", clients_closed=True, app_server_factory=lambda **_: server,
                 binary_resolver=lambda _: Path("codex"))
@@ -354,7 +360,7 @@ class NativeWorkflowRegressions(unittest.TestCase):
             db.commit()
         coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
         calls = []
-        with patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
             result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
                 plan_path=self.root / "guardian.json", clients_closed=True, app_server_factory=self.server(calls),
                 binary_resolver=lambda _: Path("codex"))
@@ -365,8 +371,53 @@ class NativeWorkflowRegressions(unittest.TestCase):
         remaining = {r.thread_id for r in build_session_catalog((self.adapter,)).records}
         self.assertEqual(remaining, {"keep", "kept-child"})
 
+    def test_guardian_child_first_partial_retains_frozen_scope_and_never_replays(self):
+        self.fixture([("delete", "work", None), ("child", "work", "delete"),
+            ("grandchild", "work", "child"), ("keep", "other", None)])
+        # The indexed root's missing rollout selects the native anomaly writer.
+        self.paths["delete"].unlink()
+        coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
+        plan = coordinator.plan_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
+            plan_path=self.root / "guardian-partial.json")
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        original = Path(plan["plan_path"]).read_bytes()
+        native = next(action for action in plan["actions"] if action["kind"] == "delete_conversation")
+        self.assertEqual(set(native["impact"]["affected_thread_ids"]), {"delete", "child", "grandchild"})
+        calls = []
+        factory = self.server(calls)
+        def interrupted(**kwargs):
+            server = factory(**kwargs)
+            delete = server.delete_thread
+            def request(record_id):
+                if record_id == "delete":
+                    calls.append(record_id)
+                    raise TimeoutError("parent result interrupted")
+                return delete(record_id)
+            server.delete_thread = request
+            return server
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
+            result = coordinator.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter,),
+                clients_closed=True, app_server_factory=interrupted, binary_resolver=lambda _: Path("codex"))
+        self.assertNotEqual(result["goal_status"], "complete", result)
+        self.assertEqual(calls, ["grandchild", "child", "delete"])
+        with closing(sqlite3.connect(self.home / "state_5.sqlite")) as db:
+            self.assertEqual(db.execute("SELECT id FROM threads WHERE id='delete'").fetchone(), ("delete",))
+        self.assertFalse(self.paths["child"].exists())
+        self.assertFalse(self.paths["grandchild"].exists())
+        self.assertTrue(self.paths["keep"].exists())
+        cold = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
+        with patch.object(cold.service, "execute", side_effect=AssertionError("partial native replayed")) as execute:
+            repeated = cold.apply_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter,), clients_closed=True)
+        self.assertNotEqual(repeated["goal_status"], "complete", repeated)
+        execute.assert_not_called()
+        with patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
+            verified = cold.verify_operation(plan_path=Path(plan["plan_path"]), adapters=(self.adapter,))
+        self.assertNotEqual(verified["goal_status"], "complete", verified)
+        self.assertEqual(Path(plan["plan_path"]).read_bytes(), original)
+        self.assertEqual(calls, ["grandchild", "child", "delete"])
+
     def test_native_cascade_covers_separately_selected_children(self):
-        from local_agent_record_janitor.planning import ActionKind
+        from local_agent_manager.planning import ActionKind
 
         def action(action_id, kind, descendants=(), affected=()):
             return SimpleNamespace(action_id=action_id, kind=kind, target=SimpleNamespace(storage_id="s"),
@@ -379,22 +430,28 @@ class NativeWorkflowRegressions(unittest.TestCase):
             "record-c1": SimpleNamespace(codex_home=self.home, thread_id="c1", descendants=(), affected_thread_ids=("c1",)),
             "record-x": SimpleNamespace(codex_home=self.home, thread_id="x", descendants=(), affected_thread_ids=("x",)),
         }
-        with patch("local_agent_record_janitor.manual_delete.build_manual_delete_closure",
-                   return_value=SimpleNamespace(frontend_actions=())):
-            kept = OperationCoordinator._coalesce_manual_candidates((parent, child, outside), manual)
-        self.assertEqual([item.action_id for item in kept], ["orphan-root", "record-x"])
+        reference = action("child-reference", ActionKind.REMOVE_FRONTEND_REFERENCE, affected=("c1",))
+        with patch("local_agent_manager.manual_delete.build_manual_delete_closure",
+                   return_value=SimpleNamespace(frontend_actions=(reference,))):
+            kept = OperationCoordinator._coalesce_manual_candidates((parent, child, reference, outside), manual)
+        self.assertEqual([item.action_id for item in kept], ["orphan-root", "child-reference", "record-x"])
+        frozen = {"actions": [{"action_id": a.action_id, "kind": a.kind.value,
+                  "target": {"storage_id": a.target.storage_id},
+                  "impact": {"affected_thread_ids": a.impact.affected_thread_ids}} for a in kept]}
+        self.assertEqual(OperationCoordinator._frontend_native_dependencies(frozen),
+                         {"child-reference": frozenset({"orphan-root"})})
 
     def test_all_operation_evidence_stays_in_manager_state(self):
-        from local_agent_record_janitor.operation_coordinator import _find_operation_plan
-        from local_agent_record_janitor.state_paths import control_directory
+        from local_agent_manager.operation_coordinator import _find_operation_plan
+        from local_agent_manager.state_paths import control_directory
 
         self.fixture([("delete", "work", None), ("keep", "work", None)])
-        base = Path(os.environ["LAM_STATE_DIR"])
+        base = manager_state_base()
         store_before = {path.name for path in self.home.iterdir()}
         legacy = self.root / "localappdata"
         calls = []
         with patch.dict(os.environ, {"LOCALAPPDATA": str(legacy), "XDG_STATE_HOME": str(legacy), "CODEX_HOME": str(self.home)}), \
-                patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()):
+                patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()):
             coordinator = OperationCoordinator(CleanupService(client_inspector=lambda *_: ()))
             result = coordinator.run_operation(client="native", record_ids=("delete",), adapters=(self.adapter,),
                 clients_closed=True, app_server_factory=self.server(calls), binary_resolver=lambda _: Path("codex"))
@@ -461,9 +518,9 @@ class NativeWorkflowRegressions(unittest.TestCase):
         self.assertEqual(plan["goal_status"], "blocked", plan)
 
     def test_frontend_coverage_requires_exact_database_and_discovery_family(self):
-        from local_agent_record_janitor.planning import StorageLocation, ScanStatus
-        from local_agent_record_janitor.record_identity import canonical_path
-        from local_agent_record_janitor.operation_coordinator import OperationCoordinatorError
+        from local_agent_manager.planning import StorageLocation, ScanStatus
+        from local_agent_manager.record_identity import canonical_path
+        from local_agent_manager.operation_coordinator import OperationCoordinatorError
         db = self.home / "a.sqlite"
         storage = StorageLocation(storage_id="store", label="fixture", path=self.home, scan_status=ScanStatus.OK)
         doc = {"storages": [storage.to_dict()], "child_batches": [{"storage_id": "store"}],
@@ -509,7 +566,7 @@ class NativeWorkflowRegressions(unittest.TestCase):
         apply_out = StringIO()
         with (
             patch.dict(os.environ, {"PATH": ""}, clear=False),
-            patch("local_agent_record_janitor.codex_desktop_state.running_related_clients", return_value=()),
+            patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()),
         ):
             status = main(
                 [

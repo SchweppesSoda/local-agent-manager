@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from local_agent_manager.state_paths import control_directory
 
 import json
@@ -9,8 +14,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.operation_store import plan_sha256
+from local_agent_manager.cli import main
+from local_agent_manager.operation_store import plan_sha256
 
 
 ONE = "11111111-1111-4111-8111-111111111111"
@@ -143,7 +148,7 @@ class SessionCleanupServiceTests(unittest.TestCase):
         self.assertEqual(document["counts"]["artifact_count"], 1)
         self.assertNotIn("SECRET_SELECTED_PI", plan_path.read_text(encoding="utf-8"))
 
-        from local_agent_record_janitor import session_catalog_factory
+        from local_agent_manager import session_catalog_factory
 
         original_builder = session_catalog_factory.build_pi_catalog
         full_scans = 0

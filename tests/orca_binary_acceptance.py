@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Opt-in fixed-binary P5 acceptance; creates only fresh owned TEMP stores.
 
 Run from this checkout with PYTHONPATH=src:
@@ -35,10 +40,10 @@ def row_digest(home):
 
 def run(binary):
     # Only the fresh isolated worker imports/discovers product stores.
-    from local_agent_record_janitor.adapters import OrcaAdapter
-    from local_agent_record_janitor.cleanup_service import CleanupService
-    from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-    from local_agent_record_janitor.orca_runtime import PINNED_BINARY_SHA256, RUNTIME_ACCEPTED, invocation_policy
+    from local_agent_manager.adapters import OrcaAdapter
+    from local_agent_manager.cleanup_service import CleanupService
+    from local_agent_manager.operation_coordinator import OperationCoordinator
+    from local_agent_manager.orca_runtime import PINNED_BINARY_SHA256, RUNTIME_ACCEPTED, invocation_policy
     from tests.orca_native_support import create_native_schema, add_native_record
     from tests.orca_support import create_profile
     if os.name != "nt" or not RUNTIME_ACCEPTED or not binary.is_absolute():
@@ -96,7 +101,7 @@ def run(binary):
 
 def run_isolated(binary):
     """Enter an entirely new process before any profile discovery/API cache."""
-    from local_agent_record_janitor.orca_runtime import isolated_environment
+    from local_agent_manager.orca_runtime import isolated_environment
     if os.name != "nt":
         raise ValueError("Fixed binary acceptance requires Windows")
     root = Path(tempfile.mkdtemp(prefix="janitor-orca-acceptance-wrapper-")).resolve(strict=True)
@@ -105,6 +110,7 @@ def run_isolated(binary):
     scratch = root / "environment"
     scratch.mkdir()
     environment, cwd = isolated_environment(scratch, home)
+    environment["_LAM_TEST_INSTALLATION"] = os.environ["_LAM_TEST_INSTALLATION"]
     repository = Path(__file__).resolve().parents[1]
     command = [sys.executable, "-I", "-B", "-c",
         "import sys;from pathlib import Path;sys.path[:0]=[sys.argv[1],str(Path(sys.argv[1])/'src')];"

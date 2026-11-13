@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import unittest
 from unittest import mock
 from pathlib import Path
 
-from local_agent_record_janitor.rendering import (
+from local_agent_manager.rendering import (
     DEFAULT_MAX_WIDTH,
     escape_terminal_controls,
     safe_single_line,
@@ -126,7 +131,7 @@ class SafeSingleLineTests(unittest.TestCase):
             self.fail("truncated display consumed an irrelevant suffix")
 
         with mock.patch(
-            "local_agent_record_janitor.rendering._safe_display_units",
+            "local_agent_manager.rendering._safe_display_units",
             side_effect=bounded_units,
         ):
             self.assertEqual(safe_single_line("large input", max_width=10), "x" * 9 + "…")

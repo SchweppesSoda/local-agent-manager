@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import hashlib
 import json
 import os
@@ -9,9 +14,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import HerdrAdapter
-from local_agent_record_janitor.client_inventory import build_client_engine_contexts
-from local_agent_record_janitor.herdr_discovery import bounded_entries
+from local_agent_manager.adapters import HerdrAdapter
+from local_agent_manager.client_inventory import build_client_engine_contexts
+from local_agent_manager.herdr_discovery import bounded_entries
 from tests.herdr_support import CODEX_ID, SENTINEL, agent_session, create_profile, pane, recovery_name, snapshot, tab, write_snapshot
 
 
@@ -49,7 +54,7 @@ class HerdrAdapterTests(unittest.TestCase):
         write_snapshot(self.root / "sessions" / "unknown" / "session.json", snapshot(self.project,
             (tab({1: pane(self.project, agent_session("Future_Agent"))}),)))
         adapter = HerdrAdapter(profile_root=self.root)
-        with patch("local_agent_record_janitor.inventory._read_rollouts_partial", side_effect=AssertionError("native walk")):
+        with patch("local_agent_manager.inventory._read_rollouts_partial", side_effect=AssertionError("native walk")):
             contexts = build_client_engine_contexts((adapter,), client="herdr")
         targets = tuple(t for context in contexts for t in context.targets)
         unknown = next(t for t in targets if t.engine == "unsupported:future-agent")

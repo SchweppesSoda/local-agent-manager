@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 from contextlib import closing
 import json
 from pathlib import Path
@@ -5,19 +10,19 @@ import sqlite3
 import tempfile
 import unittest
 
-from local_agent_record_janitor.adapters.cindy import CindyAdapter
-from local_agent_record_janitor.cindy_schema import (
+from local_agent_manager.adapters.cindy import CindyAdapter
+from local_agent_manager.cindy_schema import (
     CindySchemaError, FTS_TRIGGER_VERSIONS, guard_cindy_triggers,
 )
-from local_agent_record_janitor.frontend_reference_cleanup import (
+from local_agent_manager.frontend_reference_cleanup import (
     FrontendReferenceError, execute_frontend_reference_cleanup, guard_frontend_reference_closure,
 )
-from local_agent_record_janitor.frontend_session_cleanup import (
+from local_agent_manager.frontend_session_cleanup import (
     FrontendSessionGuardError, build_cindy_session_delete_evidence,
     execute_cindy_session_cleanup,
 )
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.support import create_cindy_database
 
 
@@ -176,7 +181,7 @@ class CindySchemaTests(unittest.TestCase):
                 self.assertEqual(database.read_bytes(), before)
 
     def test_reference_role_and_owner_are_required_even_with_matching_fingerprint(self):
-        from local_agent_record_janitor.sqlite_identity import row_fingerprint
+        from local_agent_manager.sqlite_identity import row_fingerprint
         for column, value in (("role", "user"), ("session_id", "keep")):
             with self.subTest(column=column), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve(strict=True)

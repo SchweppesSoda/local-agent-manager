@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import copy
 import json
 import os
@@ -8,10 +13,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.herdr_discovery import (
+from local_agent_manager.herdr_discovery import (
     default_herdr_roots, local_herdr_path, valid_recovery_name, valid_session_name,
 )
-from local_agent_record_janitor.herdr_metadata import parse_herdr_snapshot, read_herdr_snapshot
+from local_agent_manager.herdr_metadata import parse_herdr_snapshot, read_herdr_snapshot
 from tests.herdr_support import CODEX_ID, SENTINEL, agent_session, pane, recovery_name, snapshot, tab, write_snapshot
 
 
@@ -98,7 +103,7 @@ class HerdrMetadataTests(unittest.TestCase):
 
     def test_host_namespace_and_foreign_os_gate_precede_path_or_syscalls(self):
         foreign = "/foreign/root" if os.name == "nt" else r"C:\foreign\root"
-        with patch("local_agent_record_janitor.herdr_discovery.Path", side_effect=AssertionError("Path interpreted")):
+        with patch("local_agent_manager.herdr_discovery.Path", side_effect=AssertionError("Path interpreted")):
             for args in ((str(self.root), {"host": "remote"}), (str(self.root), {"path_namespace": "wsl"}),
                          (foreign, {}), (r"\\remote\share\root", {}), ("relative", {})):
                 with self.subTest(args=args), self.assertRaises(ValueError):
@@ -115,7 +120,7 @@ class HerdrMetadataTests(unittest.TestCase):
         for raw in ("", "relative"):
             with self.assertRaises(ValueError):
                 default_herdr_roots(environ={"XDG_CONFIG_HOME": raw})
-        with patch("local_agent_record_janitor.herdr_discovery.tempfile.gettempdir", return_value=str(self.root)):
+        with patch("local_agent_manager.herdr_discovery.tempfile.gettempdir", return_value=str(self.root)):
             self.assertEqual(default_herdr_roots(environ={})[0], self.root / "herdr")
 
     def test_recovery_and_server_names_use_persisted_conventions(self):

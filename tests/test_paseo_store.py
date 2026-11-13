@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from io import StringIO
 import hashlib
 import json
@@ -9,9 +14,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.client_inventory import build_client_inventory, build_client_engine_contexts
-from local_agent_record_janitor.paseo_store import PaseoAdapter, build_inventory, default_root
+from local_agent_manager.cli import main
+from local_agent_manager.client_inventory import build_client_inventory, build_client_engine_contexts
+from local_agent_manager.paseo_store import PaseoAdapter, build_inventory, default_root
 
 PRIVATE = "PASEO_PRIVATE_PROMPT_CREDENTIAL_AND_BODY_SENTINEL"
 STAMP = "2026-10-04T00:00:00.000Z"
@@ -154,7 +159,7 @@ class PaseoStoreTests(unittest.TestCase):
         base = ("--client", "paseo", "--paseo-root", str(self.home),
             "--record-id", "selected", "--engine", "unsupported:antigravity", "--json")
 
-        with patch("local_agent_record_janitor.cleanup_service.CleanupService.execute",
+        with patch("local_agent_manager.cleanup_service.CleanupService.execute",
                    side_effect=AssertionError("Unexpected cleanup writer")) as execute:
             for verb in ("plan", "run"):
                 options = ("--clients-closed",) if verb == "run" else ()
@@ -278,13 +283,13 @@ class PaseoStoreTests(unittest.TestCase):
         code, result = self.invoke("records", "--client", "paseo", "--json")
         self.assertEqual(code, 0, result)
         for setting, limit in (("MAX_FILE_BYTES", 20), ("MAX_TOTAL_BYTES", 20), ("MAX_ENTRIES", 1)):
-            with self.subTest(setting=setting), patch("local_agent_record_janitor.paseo_store." + setting, limit):
+            with self.subTest(setting=setting), patch("local_agent_manager.paseo_store." + setting, limit):
                 code, result = self.invoke("records", "--client", "paseo", "--json")
                 self.assertNotEqual(code, 0)
                 self.assertIn("paseo_inventory_budget_exceeded", {row["message"] for row in result["errors"]})
 
     def test_growing_failed_reads_still_consume_aggregate_byte_budget(self):
-        import local_agent_record_janitor.paseo_store as store
+        import local_agent_manager.paseo_store as store
         path = self.write()
         size = path.stat().st_size
         original_open = Path.open
@@ -317,13 +322,13 @@ class PaseoStoreTests(unittest.TestCase):
             self.assertEqual(code, 0, result)
             with self.assertRaisesRegex(ValueError, "paseo_environment_root_unproven"):
                 default_root()
-        with patch("local_agent_record_janitor.paseo_store.PaseoAdapter.snapshot_references",
+        with patch("local_agent_manager.paseo_store.PaseoAdapter.snapshot_references",
                    side_effect=AssertionError("unselected default must not be read")):
             self.invoke("records", "--client", "native", "--json")
 
     def test_fstat_ctime_difference_does_not_misreport_stable_windows_file(self):
         from types import SimpleNamespace
-        import local_agent_record_janitor.paseo_store as store
+        import local_agent_manager.paseo_store as store
         path = self.write()
         original = os.fstat
         def alternate_ctime(fd):
@@ -354,7 +359,7 @@ class PaseoStoreTests(unittest.TestCase):
 
     def test_source_drift_and_permission_failure_reported_without_private_details(self):
         path = self.write()
-        import local_agent_record_janitor.paseo_store as store
+        import local_agent_manager.paseo_store as store
         original = store._plain
         calls = 0
         def changed(candidate, **kwargs):

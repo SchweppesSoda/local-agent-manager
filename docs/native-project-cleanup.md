@@ -70,11 +70,11 @@ removed. A fresh plan is required for any newly discovered work.
 ## Usage
 
 ```powershell
-local-agent-record-janitor records --client native --json
-local-agent-record-janitor delete plan --client native --record-id '<complete-project-id>' --out .\environment-plan.json
-local-agent-record-janitor delete apply --operation-id '<operation-id>' --plan .\environment-plan.json --clients-closed
-local-agent-record-janitor operation status --operation-id '<operation-id>' --plan .\environment-plan.json
-local-agent-record-janitor operation verify --operation-id '<operation-id>' --plan .\environment-plan.json
+local-agent-manager records --client native --json
+local-agent-manager delete plan --client native --record-id '<complete-project-id>' --out .\environment-plan.json
+local-agent-manager delete apply --operation-id '<operation-id>' --plan .\environment-plan.json --clients-closed
+local-agent-manager operation status --operation-id '<operation-id>' --plan .\environment-plan.json
+local-agent-manager operation verify --operation-id '<operation-id>' --plan .\environment-plan.json
 ```
 
 Only pass `--clients-closed` after confirming the owning client is closed. The

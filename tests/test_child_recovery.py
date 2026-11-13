@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -9,12 +14,12 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.mutation_guard import MutationScope, UnknownMutationError, mutation_guard
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import OperationStore, plan_sha256
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.mutation_guard import MutationScope, UnknownMutationError, mutation_guard
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import OperationStore, plan_sha256
 from tests.support import create_thread_index, write_rollout
 from tests.test_mutation_guard import write_journal
 
@@ -100,31 +105,6 @@ class ChildRecoveryTests(unittest.TestCase):
         result = self.verify()
         self.assertEqual(result["goal_status"], "unknown")
         self.assertEqual(before, self.snapshot_journal())
-
-    def test_relocated_child_status_and_verify_accept_original_exact_locator(self):
-        import shutil
-        from local_agent_manager.state_maintenance import run_state_command
-        from local_agent_manager.state_paths import LEGACY_CONTROL
-
-        self.assertEqual(self.verify()["goal_status"], "completed_with_residuals")
-        # Put the journal where an earlier version kept it, inside the store.
-        legacy = self.home / LEGACY_CONTROL / "operations"
-        legacy.mkdir(parents=True)
-        shutil.move(str(self.store.directory), str(legacy / self.store.operation_id))
-        original = legacy / self.store.operation_id / "plan.json"
-        before = original.read_bytes()
-        preview = run_state_command("relocate", self.home)
-        done = run_state_command("relocate", self.home, apply=True, approved_hash=preview["plan_sha256"])
-        self.assertEqual(done["completed"], [self.store.operation_id])
-        self.assertEqual(done["removed_controls"], [str(self.home / LEGACY_CONTROL)])
-        self.assertFalse(original.exists())
-        self.store = OperationStore(self.home, self.store.operation_id)
-        self.assertEqual(self.store.plan_path.read_bytes(), before)
-        self.assertEqual(self.coordinator.status_operation(**self.args)["goal_status"], "completed_with_residuals")
-        with patch.object(self.coordinator.service, "execute", side_effect=AssertionError("No record writes during recovery")):
-            result = self.coordinator.verify_operation(**self.args, plan_path=original)
-        self.assertEqual(result["goal_status"], "completed_with_residuals", result)
-        self.assertTrue(self.rollout.is_file())
 
     def test_tampered_plan_and_truncated_events_remain_unknown(self):
         original = self.store.plan_path.read_bytes()
@@ -259,7 +239,7 @@ class ChildRecoveryTests(unittest.TestCase):
         import os
         import subprocess
         import sys
-        from local_agent_record_janitor.operation_store import utc_now
+        from local_agent_manager.operation_store import utc_now
 
         self.assertEqual(self.verify()["goal_status"], "completed_with_residuals")
         crashed = write_journal(self.home, "preflight-crashed-1", self.action, started=False)

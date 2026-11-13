@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import hashlib
 import json
 import os
@@ -11,17 +16,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.codex_desktop_state import _relevant_client_names
-from local_agent_record_janitor.cleanup_service import partition_actions
-from local_agent_record_janitor.frontend_session_cleanup import (
+from local_agent_manager.codex_desktop_state import _relevant_client_names
+from local_agent_manager.cleanup_service import partition_actions
+from local_agent_manager.frontend_session_cleanup import (
     FrontendSessionCleanupError,
     FrontendSessionGuardError,
     build_cindy_session_delete_evidence,
     execute_cindy_session_cleanup,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import OperationStore
-from local_agent_record_janitor.planning import (
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import OperationStore
+from local_agent_manager.planning import (
     ActionImpact,
     ActionKind,
     CandidateAction,
@@ -267,7 +272,7 @@ class AcceptanceBoundaryTests(unittest.TestCase):
             )
 
     def test_batch_sizes_have_constant_snapshot_and_process_preflight_counts(self) -> None:
-        import local_agent_record_janitor.frontend_session_cleanup as module
+        import local_agent_manager.frontend_session_cleanup as module
 
         observed: list[tuple[int, int]] = []
         for count in (1, 10, 100):
@@ -451,7 +456,7 @@ class AcceptanceBoundaryTests(unittest.TestCase):
             database, ids = self._database(Path(temporary).resolve(strict=True), 1)
             evidence = self._evidence(database, ids)
             mutation_calls = 0
-            import local_agent_record_janitor.frontend_session_cleanup as module
+            import local_agent_manager.frontend_session_cleanup as module
 
             original_delete = module._delete
 

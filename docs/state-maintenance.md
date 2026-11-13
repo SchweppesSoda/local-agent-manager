@@ -7,13 +7,19 @@ temporary rollback copies and T3 desktop cleanup journals. Top-level plans
 and `delete run` receipts (`<operation-id>.json`, `<operation-id>.run.json`)
 go to its `plans/` directory and T3 `--handoff` evidence to `handoffs/`.
 
-The directory is chosen in this order:
+One editable installation of `local-agent-manager` is the authority for the
+selected Python installation. Its `direct_url.json` registration identifies
+the repository; state is always that repository's Git-ignored
+`.agent-manager-state`. All commands and subprocesses use that same registered
+checkout, even when source is imported from another checkout or the working
+directory changes. `LAM_STATE_DIR` does not select another coordination domain.
+Missing, non-editable or duplicate registrations in the selected installation
+are rejected before a record operation can create state.
 
-1. `LAM_STATE_DIR`, an absolute path;
-2. for a source checkout, its Git-ignored `.agent-manager-state`;
-3. for an installed package, the per-user
-   `local-agent-manager/state` (`%LOCALAPPDATA%` on Windows,
-   `$XDG_STATE_HOME` or `~/.local/state` elsewhere).
+Use one Python installation and one authoritative editable checkout per machine.
+This is not a registry shared by independently installed Python interpreters.
+Inventory/resource-only package use does not require another journal location;
+wheel-only record operations have no supported state authority.
 
 ```text
 <state directory>/
@@ -29,10 +35,13 @@ The directory is chosen in this order:
 The store key is derived from the store's canonical path, so the same store
 always maps to the same subdirectory. Keep this directory out of Git and
 build-output cleanup, and use one state directory for every writer of a
-store: processes that use different state directories do not exclude each
-other.
+store. Repointing the installation is an explicit administrative operation;
+preserve its existing state before changing the registered repository.
+`store.json` binds each partition to its exact physical store. It is published
+atomically under the permanent root gate and every writer validates an existing
+binding. An incomplete or mismatched binding fails closed.
 
-`state inventory`, `state cleanup` and `state relocate` operate on one
+`state inventory` and `state cleanup` operate on one
 explicit store root. Select the physical root separately for official Codex,
 Cindy's SDK home, and Cindy's frontend store. Follow the host-context checks
 in the Agent management skill when AppData is redirected by a packaged
@@ -42,8 +51,6 @@ application.
 local-agent-manager state inventory --root '<physical store root>' --json
 local-agent-manager state cleanup --root '<physical store root>' --json
 local-agent-manager state cleanup --root '<physical store root>' --apply --plan-sha256 '<preview hash>' --json
-local-agent-manager state relocate --root '<physical store root>' --json
-local-agent-manager state relocate --root '<physical store root>' --apply --plan-sha256 '<preview hash>' --json
 ```
 
 ## Inspection and cleanup
@@ -52,8 +59,7 @@ Inventory and previews validate plans, checkpoint/event bindings, terminal
 results, receipts, and ordinary file boundaries. They preserve journal bytes
 and expired receipts. Access to a store with manager state acquires its
 permanent OS coordination lock. Inspecting a root with no manager state
-creates nothing. Inventory lists old in-store locations that still exist as
-`historical_controls`.
+creates nothing.
 
 Cleanup applies the exact current preview hash while holding the root lock.
 It compacts validated terminal journals into the existing seven-day metadata
@@ -78,44 +84,18 @@ and `unmanaged_entries` for remaining evidence. A CLI failure reports
 `modified=null` because some earlier maintenance actions may have finished.
 Inventory reports use `lam.state-inventory.v1`. Exit codes are `0` for a
 successful report or application, `2` for invalid arguments, and `3` for a
-blocked command or pending relocation. JSON is emitted with or without `--json`.
+blocked command. JSON is emitted with or without `--json`.
 
-## Move old in-store state out of a store
+## Current layout and retained historical files
 
-Earlier versions kept journals and locks inside the store, in
-`<root>/.local-agent-record-janitor` (and, after the old `state migrate`, in
-`<root>/.local-agent-manager`), optionally with a routing marker that pointed
-journals elsewhere. These locations are now read only as history: their
-journals still take part in admission, inventory, recovery and cleanup, and
-an unresolved one still blocks new mutations of that store.
-
-`state relocate` moves that history into the manager state directory and
-then removes the old in-store directory:
-
-- Validated receipts and terminal journals, including historical checkpoints
-  that lack a final result, are copied, verified and published in the
-  store's current location before the originals are removed. Operation IDs,
-  plan hashes, events and receipt bytes are preserved.
-- An old in-store directory is removed only when nothing else remains in it
-  but the old coordination lock, layout marker, legacy index lock and empty
-  containers. Each lock file is proven free (an older manager process would
-  still hold it) immediately before it is unlinked.
-- Unknown or unqualified journals and any unrecognized entry are retained;
-  their directory stays in place and is listed under `retained_controls`.
-  Resolve them with `operation status`/`verify` and run `state relocate`
-  again.
-
-During an interrupted relocation, inventory reports the original hash and
-normal operations fail closed. Resume with `state relocate --apply` and that
-hash. The command checks both copies before removing any remaining original
-files.
-
-Plans that earlier versions wrote to the per-user
-`local-agent-record-janitor/plans` directory stay readable by operation ID;
-new plans are written only to the manager state directory.
-
-`state route` and `state migrate` are retired. They return a blocked result
-that names the current state directory.
+The current store-key layout and persisted `larj.*` journal/receipt schemas are
+unchanged. Existing state in the authoritative repository remains readable.
+The old project command/package aliases, per-user plan fallback, in-store
+journal lookup, layout-marker recovery and `state route/migrate/relocate`
+commands have been removed. Historical files are not moved or removed
+implicitly. Review any older installation's outstanding operations separately
+before retiring that installation; their old locations are not an alternate
+coordination domain for current commands.
 
 ## Client artifact maintenance
 
@@ -331,7 +311,7 @@ The remaining client-specific qualification work follows the design below.
 | Existing entry | Reuse | Missing capability |
 |---|---|---|
 | `environment inventory/doctor` | Physical roots, installation/layout evidence, configured runtime bindings, observation coverage | Bounded storage accounting, backup roles, updater selection/rollback slots, complete consumer graph; WorkBuddy/Orca/Herdr/QwenWork environment discovery |
-| `state inventory/cleanup/migrate` | Journal validation, exact preview hash, permanent root locks, terminal receipt compaction | Qualification of nonempty historical rollback directories; never infer their outcome from age |
+| `state inventory/cleanup` | Journal validation, exact preview hash, permanent root locks, terminal receipt compaction | Qualification of nonempty historical rollback directories; never infer their outcome from age |
 | `delete plan/apply/run`, `operation status/verify` | Frozen approval, mutation admission, event/result binding, unknown-outcome protection, final evidence | Distinct artifact-maintenance mutation families and client rules, not reuse of session-delete authority |
 | Software lifecycle skill | Owning installer/updater/uninstaller, active version and consumers | Format-qualified download/pruning adapters when the owner exposes no suitable operation |
 | Skill management | Source/discovery bindings, shared resources, deployment journals | Vendor plugin-cache version/refcount rules; a plugin or Skill source is not disposable merely because it is cached |

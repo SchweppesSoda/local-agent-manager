@@ -29,7 +29,6 @@ dependencies = ["PyYAML>=6.0.3,<7", "jsonschema>=4.26,<5", "tomli>=2.0.1,<2.4; p
 
 [project.scripts]
 local-agent-manager = "local_agent_manager.entrypoint:main"
-local-agent-record-janitor = "local_agent_manager.entrypoint:main"
 
 [project.urls]
 Homepage = "https://github.com/SchweppesSoda/local-agent-manager"

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from local_agent_record_janitor.cleaner import VerificationResult, scan_adapters
-from local_agent_record_janitor.inventory import (
+from local_agent_manager.cleaner import VerificationResult, scan_adapters
+from local_agent_manager.inventory import (
     FrontendSessionRecord,
     SessionCatalog,
     build_codex_thread_catalog,
@@ -15,14 +20,14 @@ from local_agent_record_janitor.inventory import (
     select_codex_threads,
     select_managed_conversations,
 )
-from local_agent_record_janitor.manual_delete import (
+from local_agent_manager.manual_delete import (
     ManualDeleteSelectionError,
     build_manual_delete_plan,
     execute_manual_delete,
 )
-from local_agent_record_janitor.models import Finding
-from local_agent_record_janitor.path_identity import canonical_existing_path_key
-from local_agent_record_janitor.planning import (
+from local_agent_manager.models import Finding
+from local_agent_manager.path_identity import canonical_existing_path_key
+from local_agent_manager.planning import (
     ActionKind,
     build_cleanup_plan,
 )

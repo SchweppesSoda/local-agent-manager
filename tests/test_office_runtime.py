@@ -1,10 +1,15 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
-from local_agent_record_janitor import office_runtime as runtime, office_leveldb
+from local_agent_manager import office_runtime as runtime, office_leveldb
 
 
 class OfficeRuntimeTests(unittest.TestCase):
@@ -26,7 +31,7 @@ class OfficeRuntimeTests(unittest.TestCase):
         try:
             node = office_leveldb._node()
         except office_leveldb.OfficeLevelDBError:
-            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1":
+            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1" or os.environ.get("LARJ_LEVELDB_RUNTIME") or __import__("local_agent_manager.office_leveldb", fromlist=["_runtime_directory"])._runtime_directory().exists():
                 raise
             self.skipTest("Node runtime not visible for synthetic process fixture")
         with tempfile.TemporaryDirectory() as temporary:

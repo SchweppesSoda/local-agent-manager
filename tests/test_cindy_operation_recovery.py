@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import sqlite3
 import tempfile
 import unittest
@@ -8,13 +13,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.cleanup_service import partition_actions
-from local_agent_record_janitor.frontend_session_cleanup import (
+from local_agent_manager.cleanup_service import partition_actions
+from local_agent_manager.frontend_session_cleanup import (
     build_cindy_session_delete_evidence,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import OperationStore, write_new_json
-from local_agent_record_janitor.planning import (
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import OperationStore, write_new_json
+from local_agent_manager.planning import (
     ActionImpact,
     ActionKind,
     CandidateAction,
@@ -25,8 +30,8 @@ from local_agent_record_janitor.planning import (
     TargetRef,
     storage_id_for_path,
 )
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.record_identity import canonical_path
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.record_identity import canonical_path
 
 
 class CindyOperationRecoveryTests(unittest.TestCase):
@@ -140,7 +145,7 @@ class CindyOperationRecoveryTests(unittest.TestCase):
         return context, session, reference
 
     def test_branch_specific_selection_flags_rebind_without_expanding_old_scope(self):
-        from local_agent_record_janitor.agent_operations import action_binding
+        from local_agent_manager.agent_operations import action_binding
         import copy
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(strict=True)

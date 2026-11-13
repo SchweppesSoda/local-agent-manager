@@ -11,9 +11,9 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 
 两个权威管理 Skill 是 [agent-management](skills/agent-management/SKILL.md) 与 [skill-management](skills/skill-management/SKILL.md)。后者管理各类 Skill 的创建、内容维护、发现、导入、部署、同步、验证与恢复，按所选源和客户端执行。`work-skills` 作为独立源接入，`mount-work-skills` 保留该源的兼容入口。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。各源维护自身内容、运行时与客户端配置；普通 Skill 内容修改无需先登记部署。
 
-旧 `local-agent-record-janitor` CLI 和 `local_agent_record_janitor` 子模块导入继续转发到同一实现。历史 `larj.*` 文档、`LARJ_*` 变量和恢复数据保留原契约。管理器状态统一放在自身状态目录，旧版本留在数据目录内的状态用 `state relocate` 搬出并清除。实现和运行路径改变后，受绑定的未执行计划须重新生成。
+主命令与 Python 模块统一使用 `local-agent-manager` 和 `local_agent_manager`。现行 `larj.*` journal/schema、`LARJ_*` 运行时变量和恢复证据保持原契约。每机使用一个 Python 安装登记的权威 editable 仓库，全部协调状态固定在该仓库 `.agent-manager-state`；运行其他 checkout 或设置状态目录环境变量不会另起锁与日志。详见[状态维护](docs/state-maintenance.md)。
 
-完整边界和迁移方法见 [整合设计](docs/manager-integration.md)。
+完整设计和入口边界见 [整合设计](docs/manager-integration.md)。
 
 ## Agent 环境管理
 
@@ -107,16 +107,16 @@ Magpie 的会话列表、解析缓存、网关历史和回收站是原生记录�
 原生会话映射生成绑定，再通过 `delete plan --magpie-bindings` 纳入同一操作。
 支持范围、关闭要求及阻挡条件见 [Magpie 关联清理](docs/operation-cli.md#magpie-关联清理)。
 
-管理器自身的日志、锁和计划统一存放在管理器状态目录（源码仓库为 `.agent-manager-state`），不写入任何 Agent 数据目录；通过 `state inventory/cleanup/relocate --root '<数据根>'` 维护。
-清理和迁移先输出预览，应用时需要 `--apply --plan-sha256 '<预览哈希>'`。
-清理保留未解决的恢复材料，迁移保留旧位置的永久锁和布局标记。
+管理器自身的日志、锁和计划固定存放在权威 editable 仓库 `.agent-manager-state`，不写入任何 Agent 数据目录；通过 `state inventory/cleanup --root '<数据根>'` 维护。
+清理先输出预览，应用时需要 `--apply --plan-sha256 '<预览哈希>'`。
+未解决的恢复材料与永久协调锁保留。
 适用范围、中断恢复及剩余目录见 [状态维护](docs/state-maintenance.md)。
 
-### 命名兼容
+### 安装登记与入口
 
-新安装使用 `local-agent-manager`。从旧 editable 安装迁移时，先核对原解释器和源码位置，卸载旧发行包，再安装新发行包，避免两个包同时拥有兼容命令。旧 CLI 与 Python 子模块入口由新包提供。
+只使用当前项目命令与模块；旧项目 CLI 和 package 别名已移除。每台电脑以一个 Python 安装登记一个权威 editable checkout，所有记录操作均由该登记定位 `.agent-manager-state`，未登记或登记冲突时拒绝操作。其他 checkout 使用同一解释器即可共享协调状态。
 
-历史 operation 文档、恢复证据和相关 schema 保持原有读取与验证契约。具体兼容范围见 [整合设计](docs/manager-integration.md)。
+当前 store key、journal 与 receipt 格式不变，原仓库现用状态可继续读取。旧目录 marker、旧用户计划目录和 `state route/migrate/relocate` 不再参与查找，不自动迁删旧文件。实现和运行路径改变后，受绑定的未执行计划重新生成。
 
 它主要处理两类问题：
 
@@ -384,7 +384,7 @@ broken 的完整发现仍走 anomaly scan，不保证从 `records` 统一进入�
 - Claude Code 的普通 `~/.claude`/`CLAUDE_CONFIG_DIR` 清单和逐项删除可在 Windows、macOS 和 Linux 使用；Cindy profile 的自动发现仍受上一条 Windows 边界约束。
 - WorkBuddy 的本地元数据清单使用其独立 root；当前删除需要 Windows 上完整的已知 writer 进程探测，其他系统只读盘点并阻止写入。
 
-安装后通常使用 `local-agent-manager` 命令（旧名 `local-agent-record-janitor` 仍可用）。如果 pip 安装的 console script 尚未进入 `PATH`，所有示例都可以改用 `python -m local_agent_manager`（macOS/Linux 常用 `python3 -m local_agent_manager`）。
+安装后使用 `local-agent-manager` 命令。如果 pip 安装的 console script 尚未进入 `PATH`，所有示例都可以改用 `python -m local_agent_manager`（macOS/Linux 常用 `python3 -m local_agent_manager`）。
 
 ### Windows PowerShell
 
@@ -917,8 +917,19 @@ Pi 没有对应的 Codex app-server 删除 API。Pi 上游将会话保存为 `se
 ## 开发
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```
+
+每个测试入口先建立临时 editable 安装登记，实际生产状态选择器照常运行；不使用生产状态路径 monkeypatch。以下单文件入口也会先隔离：
+
+```powershell
+python -m unittest discover -s tests -p test_legacy_index.py -v
+python tests/test_legacy_index.py
+```
+
+测试 subprocess 校验并复用父登记，只有创建者清理临时仓库。测试数据、journal 和锁都在临时目录中，测试不会写真实仓库 `.agent-manager-state` 或 Agent 数据目录。`LAM_STATE_DIR`、`LAM_TEST_STATE_DIR` 均不选择测试或生产状态。
+
+LevelDB 集成测试复用已配置的固定运行时，与测试数据隔离分别管理。可用 `LARJ_LEVELDB_RUNTIME` 指定已安装的 pinned runtime；父子进程沿用同一路径。仅未配置且默认路径不存在时跳过；显式路径错误、已存在但损坏的依赖都会失败。CI 设置 `LARJ_REQUIRE_LEVELDB_TESTS=1` 强制运行，并单独准备其精确依赖。真实桌面/CLI rehearsal 仍通过各自显式运行时选项启用，不把可选运行时缺失扩成整类普通恢复测试的跳过。
 
 贡献新 adapter 前，请先阅读 [docs/adapters.md](docs/adapters.md)。任何扩大自动删除范围的修改，都必须同时提供误删反例测试。
 

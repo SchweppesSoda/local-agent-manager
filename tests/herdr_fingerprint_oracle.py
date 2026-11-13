@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Compare synthetic Herdr fingerprints against the pinned Rust serializer."""
 import copy
 import json
@@ -9,7 +14,7 @@ import struct
 import subprocess
 import tempfile
 
-from local_agent_record_janitor.herdr_cleanup_json import fingerprint, normalized
+from local_agent_manager.herdr_cleanup_json import fingerprint, normalized
 from tests.herdr_support import pane, snapshot, tab
 
 

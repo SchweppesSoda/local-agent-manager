@@ -74,6 +74,7 @@ class _ChildStateInspection:
     """Read-only recovery view of every child journal in an operation."""
 
     completed_child_ids: frozenset[str] = frozenset()
+    positively_deleted_action_ids: frozenset[str] = frozenset()
     batches: tuple[dict[str, Any], ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
     modified: bool = False
@@ -493,6 +494,8 @@ class OperationCoordinator:
                     document,
                     context,
                     skip_child_ids=child_inspection.completed_child_ids,
+                    positively_deleted_action_ids=child_inspection.positively_deleted_action_ids,
+                    native_catalog=manual_catalog,
                 )
                 if blockers:
                     return self._result_document(
@@ -836,9 +839,9 @@ class OperationCoordinator:
                     if recoveries and computed.get('goal_satisfied') is True:
                         computed['recovery'] = [{'reservation_operation_id': e['store'].operation_id,
                             'parent_plan_sha256': document['plan_sha256'],
-                            'audit_path': str(e['store'].directory/('recovery-'+e['proof']['sha256']+'.json')),
+                            'audit_path': str(e['audit_path']),
                             'verification_only': True, 'mutation_replayed': False}
-                            for e in recoveries.values() if e['completed']]
+                            for e in recoveries.values() if e['completed'] or e['proof'] is None]
                     if recoveries:
                         computed['recovery_current'] = current_proofs(recoveries)
             return dict(computed)
@@ -2329,6 +2332,33 @@ class OperationCoordinator:
         # reference closure, so those reference actions stay selected.
         omitted = covered | covered_by_native | (covered_references - retained_references)
         return tuple(action for action in candidates if str(action.action_id) not in omitted)
+
+    @staticmethod
+    def _frontend_native_dependencies(document: Mapping[str, Any]) -> dict[str, frozenset[str]]:
+        """Bind retained frontend closures to all frozen native writers they cover.
+
+        Manual closure targets/bindings identify the native store; their physical
+        frontend databases live separately in impact.frontend_database_paths.
+        Matching record IDs without this storage binding is never sufficient.
+        """
+        def binding(raw):
+            return raw.get("binding") or {**raw.get("target", {}),
+                "affected_thread_ids": raw.get("impact", {}).get("affected_thread_ids", ())}
+
+        natives = [(raw, binding(raw)) for raw in document.get("actions", ())
+                   if raw.get("kind") == "delete_conversation"]
+        dependencies = {}
+        for frontend in document.get("actions", ()):
+            if frontend.get("kind") != "remove_frontend_reference":
+                continue
+            frozen = binding(frontend)
+            affected = set(frozen.get("affected_thread_ids", ()))
+            covers = frozenset(str(native["action_id"]) for native, native_binding in natives
+                if native_binding.get("storage_id") == frozen.get("storage_id")
+                and affected.intersection(native_binding.get("affected_thread_ids", ())))
+            if covers:
+                dependencies[str(frontend["action_id"])] = covers
+        return dependencies
 
     def _merge_cindy_orphan_references(self, context: Any, inventory: Any, *, client: str) -> Any:
         """Plan exact references only after a complete native absence proof."""
@@ -4060,6 +4090,8 @@ class OperationCoordinator:
         context: Any,
         *,
         skip_child_ids: Iterable[str] = (),
+        positively_deleted_action_ids: Iterable[str] = (),
+        native_catalog: Any = None,
     ) -> tuple[tuple[Any, ...], list[dict[str, Any]]]:
         frozen = {
             str(item.get("action_id")): item
@@ -4146,6 +4178,9 @@ class OperationCoordinator:
                         ),
                         key,
                     )
+                    if rebound_action is None:
+                        rebound_action = self._rebind_completed_native_references(
+                            frozen_action, document, context, positively_deleted_action_ids, native_catalog)
                     if rebound_action is not None:
                         action = rebound_action
                         rebound = True
@@ -4172,6 +4207,85 @@ class OperationCoordinator:
                     continue
                 selected.append(action)
         return tuple(selected), blockers
+
+    @classmethod
+    def _rebind_completed_native_references(cls, frozen_action, document, context, positively_deleted_action_ids, native_catalog=None):
+        """Rebind one unchanged Cindy closure after its native child completed.
+
+        Fresh native-absent references are normally individual actions with new
+        IDs. Their exact evidence union may prove the original combined action;
+        the original approval, identity and hash are never rewritten.
+        """
+        from .frontend_reference_cleanup import guard_frontend_reference_closure
+        from .operation_store import canonical_json_bytes
+        from .planning import ActionImpact, ActionKind, CandidateAction, RiskLevel, TargetRef, storage_id_for_path
+
+        if document.get("scope", {}).get("client") != "cindy" or frozen_action.get("kind") != "remove_frontend_reference":
+            return None
+        dependencies = cls._frontend_native_dependencies(document).get(str(frozen_action.get("action_id")))
+        if not dependencies or not dependencies <= set(positively_deleted_action_ids):
+            return None
+        binding = frozen_action.get("binding", {})
+        impact = binding.get("impact", {})
+        storage = binding.get("storage_id")
+        inventory = native_catalog or getattr(context, "client_inventory", None)
+        if inventory is None or inventory.errors:
+            return None
+        if storage not in {storage_id_for_path(home) for home in inventory.scanned_native_homes}:
+            return None
+        affected = set(binding.get("affected_thread_ids", ()))
+        for raw in document.get("actions", ()):
+            if str(raw.get("action_id")) in dependencies:
+                native = raw.get("binding", {})
+                if native.get("storage_id") != storage:
+                    return None
+                affected.update(native.get("affected_thread_ids", ()))
+        for record in inventory.records:
+            if storage_id_for_path(record.codex_home) == storage and record.thread_id in affected:
+                if (record.indexed or record.legacy_indexed or record.artifact_present or record.rollouts
+                        or record.descendant_thread_ids or record.cascade_unknown):
+                    return None
+        evidence = impact.get("frontend_reference_evidence", ())
+        databases = tuple(impact.get("frontend_database_paths", ()))
+        owner = impact.get("owner_process_root")
+        if not evidence or len(databases) != 1 or not owner or impact.get("owner_client") != "cindy":
+            return None
+        native_ids = {item.get("expected", {}).get("native_session_id") for item in evidence}
+        if None in native_ids or not native_ids <= affected:
+            return None
+        current_evidence = []
+        for action in context.plan.actions:
+            if (getattr(action.kind, "value", action.kind) != "remove_frontend_reference"
+                    or action.target.storage_id != storage or action.target.thread_id not in native_ids):
+                continue
+            current = action.impact
+            if tuple(current.frontend_database_paths) != databases:
+                continue
+            if not action.available or current.owner_client != "cindy" or current.owner_process_root != owner:
+                return None
+            current_evidence.extend(current.frontend_reference_evidence)
+        if set(map(canonical_json_bytes, cls._metadata(current_evidence))) != set(map(canonical_json_bytes, evidence)):
+            return None
+        try:
+            guard_frontend_reference_closure(evidence)
+            restored = CandidateAction(
+                action_id=str(frozen_action["action_id"]), kind=ActionKind.REMOVE_FRONTEND_REFERENCE,
+                target=TargetRef(str(storage), str(binding["thread_id"])),
+                risk=RiskLevel(frozen_action["risk"]), available=True, unavailable_reason=None,
+                impact=ActionImpact(affected_thread_ids=tuple(impact.get("affected_thread_ids", ())),
+                    descendant_thread_ids=tuple(impact.get("descendant_thread_ids", ())),
+                    frontend_reference_count=impact["frontend_reference_count"],
+                    frontend_residual_count=impact["frontend_residual_count"],
+                    frontend_references_preserved=False, frontend_database_paths=databases,
+                    frontend_reference_evidence=tuple(dict(item) for item in evidence),
+                    owner_client="cindy", owner_process_root=owner, resource_path=impact.get("resource_path"),
+                    external_action_payload=impact.get("external_action_payload")),
+                snapshot_fingerprint=str(binding["snapshot_fingerprint"]),
+                observation_ids=tuple(binding.get("observation_ids", ())),
+                requires_explicit_selection=True, resource_kind="frontend_reference")
+            return restored if cls._metadata(action_binding(restored)) == binding else None
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            return None
 
     @classmethod
     def _rebind_frontend_session_action(
@@ -4474,6 +4588,7 @@ class OperationCoordinator:
             and storage.get("path")
         }
         completed: set[str] = set()
+        positively_deleted: set[str] = set()
         batches: list[dict[str, Any]] = []
         blockers: list[dict[str, Any]] = []
         modified = False
@@ -4535,6 +4650,13 @@ class OperationCoordinator:
                     )
                     if goal in {"complete", "completed_with_residuals"}:
                         completed.add(child_id)
+                        # Terminal-with-residuals means do not replay; it does
+                        # not prove native success or release paired references.
+                        if goal == "complete" and raw.get("mutation_family") == "delete_conversation":
+                            verification = result.get("verification", {})
+                            if verification.get("all_satisfied") is True:
+                                positively_deleted.update(set(map(str, raw.get("action_ids", ()))) &
+                                    set(map(str, verification.get("verified_action_ids", ()))))
                         view["status"] = goal
                         batches.append(view)
                         continue
@@ -4618,6 +4740,10 @@ class OperationCoordinator:
                         and str(events[-1].get("goal_status") or "") == goal
                     ):
                         completed.add(child_id)
+                        if goal == "complete" and raw.get("mutation_family") == "delete_conversation":
+                            positively_deleted.update(str(event["action_id"]) for event in events
+                                if event.get("event") == "action_verified" and event.get("result_status") == "deleted"
+                                and str(event.get("action_id")) in set(map(str, raw.get("action_ids", ()))))
                         view["status"] = goal
                         batches.append(view)
                         continue
@@ -4668,6 +4794,7 @@ class OperationCoordinator:
 
         return _ChildStateInspection(
             completed_child_ids=frozenset(completed),
+            positively_deleted_action_ids=frozenset(positively_deleted),
             batches=tuple(batches),
             blockers=tuple(blockers),
             modified=modified,
@@ -4821,26 +4948,15 @@ class OperationCoordinator:
         total_action_count = sum(len(batch.actions) for batch in batches)
         completed_action_count = 0
         completed_action_ids: set[str] = set()
-        from .manual_delete import (
-            build_manual_delete_closure,
-            frontend_actions_after_native_success,
-        )
-
         manual_ids = {
             str(action.action_id) for action in live.candidates
             if str(action.action_id) in getattr(live, "manual_actions", {})
         }
-        closures_by_native: dict[str, Any] = {}
-        frontend_dependencies: dict[str, str] = {}
-        for action_id in manual_ids:
-            manual = getattr(live, "manual_actions", {}).get(action_id)
-            if manual is None:
-                continue
-            closure = build_manual_delete_closure(manual)
-            closures_by_native[action_id] = closure
-            for frontend_action in closure.frontend_actions:
-                frontend_dependencies[str(frontend_action.action_id)] = action_id
+        # Use the immutable full plan, including natives already absent during
+        # cold recovery and manual children omitted by cascade coalescing.
+        frontend_dependencies = self._frontend_native_dependencies(live.document)
         released_frontend_ids: set[str] = set()
+        verified_native_ids: set[str] = set()
         batch_results: list[dict[str, Any]] = []
         any_modified = child_inspection.modified
         mutation_started = child_inspection.mutation_started
@@ -4889,6 +5005,11 @@ class OperationCoordinator:
             str(action_id) for batch in live.document.get("child_batches", ())
             if str(batch.get("child_operation_id")) in completed_child_ids
             for action_id in batch.get("action_ids", ())
+        )
+        verified_native_ids.update(child_inspection.positively_deleted_action_ids)
+        released_frontend_ids.update(
+            frontend_id for frontend_id, native_ids in frontend_dependencies.items()
+            if native_ids <= verified_native_ids
         )
         if frozen_child_ids:
             unresolved = [
@@ -5196,29 +5317,15 @@ class OperationCoordinator:
                         )
                 any_modified = any_modified or batch_modified
                 stopped_unknown = stopped_unknown or batch_unknown
-                if (
-                    batch.actions
-                    and all(
-                        str(action.action_id) in manual_ids
-                        for action in batch.actions
-                    )
-                ):
+                if batch_status == "complete":
                     for native_action in batch.actions:
                         native_id = str(native_action.action_id)
-                        closure = closures_by_native.get(native_id)
-                        if closure is None:
-                            continue
-                        status = self._outcome_status_for_action(
-                            outcome,
-                            native_action,
-                        )
-                        released_frontend_ids.update(
-                            str(action.action_id)
-                            for action in frontend_actions_after_native_success(
-                                closure,
-                                SimpleNamespace(status=status),
-                            )
-                        )
+                        if self._outcome_status_for_action(outcome, native_action) == "deleted":
+                            verified_native_ids.add(native_id)
+                    released_frontend_ids.update(
+                        frontend_id for frontend_id, dependencies in frontend_dependencies.items()
+                        if dependencies <= verified_native_ids
+                    )
                 batch_result = {
                     "batch_id": batch.batch_id,
                     "child_operation_id": child_id,
@@ -6231,16 +6338,9 @@ def _default_plans_directory() -> Path:
     return manager_state_base() / PLANS_DIRECTORY
 
 
-def _historical_plans_directories() -> tuple[Path, ...]:
-    """Per-user plan directories written by earlier versions (read only)."""
-    from .state_paths import LEGACY_USER_STATE, PLANS_DIRECTORY, user_state_root
-
-    return (user_state_root() / LEGACY_USER_STATE / PLANS_DIRECTORY,)
-
-
 def _operation_plan_path(root: Path, operation_id: str) -> Path:
     """Map one explicit store/operation root to the canonical plan path."""
-    from .state_paths import LEGACY_CONTROL, MANAGER_CONTROL, operation_control, relocated_plan_path
+    from .state_paths import MANAGER_CONTROL, operation_control
 
     if not operation_id:
         raise OperationCoordinatorError("operation ID is required to locate a plan")
@@ -6248,11 +6348,11 @@ def _operation_plan_path(root: Path, operation_id: str) -> Path:
     name = root.name.casefold()
     operation_name = str(operation_id).casefold()
     if name == operation_name:
-        return relocated_plan_path(root / "plan.json")
+        return root / "plan.json"
     if name == "operations":
-        return relocated_plan_path(root / operation_id / "plan.json")
-    if name in {LEGACY_CONTROL, MANAGER_CONTROL}:
-        return relocated_plan_path(root / "operations" / operation_id / "plan.json")
+        return root / operation_id / "plan.json"
+    if name == MANAGER_CONTROL:
+        return root / "operations" / operation_id / "plan.json"
     return operation_control(root, operation_id) / "operations" / operation_id / "plan.json"
 
 
@@ -6289,7 +6389,6 @@ def _find_operation_plan(
     # Current plans live in manager state; earlier versions wrote them to a
     # per-user directory under the old project name.
     candidates.append(_default_plans_directory() / f"{operation_id}.json")
-    candidates.extend(directory / f"{operation_id}.json" for directory in _historical_plans_directories())
     seen: set[str] = set()
     for candidate in candidates:
         key = os.path.normcase(str(candidate))

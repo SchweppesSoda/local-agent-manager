@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import io
 import json
 import os
@@ -9,8 +14,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import paseo_daemon_delete as paseo
-from local_agent_record_janitor.cli import main
+from local_agent_manager import paseo_daemon_delete as paseo
+from local_agent_manager.cli import main
 from tests.orca_native_support import add_native_record, create_native_schema
 from tests.test_paseo_fullflow import AGENT, KEEP, NATIVE, OTHER, agent, write
 

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import closing
 import json
 import sqlite3
@@ -10,11 +15,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import EXIT_GOAL_NOT_SATISFIED, main
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.progress import ProgressReporter
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import EXIT_GOAL_NOT_SATISFIED, main
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.progress import ProgressReporter
 
 from tests.support import create_thread_index, write_rollout
 

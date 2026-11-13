@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import tempfile
 import unittest
@@ -8,9 +13,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleaner import CleanupReport, CleanupResult
-from local_agent_record_janitor.cli import (
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleaner import CleanupReport, CleanupResult
+from local_agent_manager.cli import (
     EXIT_CONFIRMATION_REQUIRED,
     EXIT_ERROR,
     EXIT_OK,
@@ -18,12 +23,12 @@ from local_agent_record_janitor.cli import (
     _path_identity,
     main,
 )
-from local_agent_record_janitor.inventory import (
+from local_agent_manager.inventory import (
     FrontendSessionRecord,
     ManagedConversation,
     SessionCatalog,
 )
-from local_agent_record_janitor.models import ConversationSummary, Finding
+from local_agent_manager.models import ConversationSummary, Finding
 
 from tests.support import create_cindy_database, create_thread_index, write_rollout
 
@@ -234,7 +239,7 @@ class RecordsCliTests(unittest.TestCase):
         catalog, _ = make_catalog()
         output = StringIO()
         with patch(
-            "local_agent_record_janitor.inventory.build_session_catalog",
+            "local_agent_manager.inventory.build_session_catalog",
             return_value=catalog,
         ):
             status = main(
@@ -254,7 +259,7 @@ class RecordsCliTests(unittest.TestCase):
         catalog, _ = make_catalog()
         output = StringIO()
         with patch(
-            "local_agent_record_janitor.inventory.build_session_catalog",
+            "local_agent_manager.inventory.build_session_catalog",
             return_value=catalog,
         ):
             status = main(
@@ -274,7 +279,7 @@ class RecordsCliTests(unittest.TestCase):
         catalog, _ = make_catalog()
         output = StringIO()
         with patch(
-            "local_agent_record_janitor.inventory.build_session_catalog",
+            "local_agent_manager.inventory.build_session_catalog",
             return_value=catalog,
         ):
             status = main(
@@ -310,7 +315,7 @@ class RecordsCliTests(unittest.TestCase):
         adapter = SimpleNamespace(name="cindy", codex_home=home)
         output = StringIO()
         with patch(
-            "local_agent_record_janitor.inventory.build_session_catalog",
+            "local_agent_manager.inventory.build_session_catalog",
             return_value=catalog,
         ):
             status = main(
@@ -343,15 +348,15 @@ class DeleteCliTests(unittest.TestCase):
     def _patches(self, *, report=None):
         return (
             patch(
-                "local_agent_record_janitor.inventory.build_session_catalog",
+                "local_agent_manager.inventory.build_session_catalog",
                 return_value=self.catalog,
             ),
             patch(
-                "local_agent_record_janitor.manual_delete.build_manual_delete_plan",
+                "local_agent_manager.manual_delete.build_manual_delete_plan",
                 return_value=self.plan,
             ),
             patch(
-                "local_agent_record_janitor.manual_delete.execute_manual_delete",
+                "local_agent_manager.manual_delete.execute_manual_delete",
                 return_value=report,
             ),
         )
@@ -489,15 +494,15 @@ class DeleteCliTests(unittest.TestCase):
         output = StringIO()
         with (
             patch(
-                "local_agent_record_janitor.inventory.build_session_catalog",
+                "local_agent_manager.inventory.build_session_catalog",
                 return_value=self.catalog,
             ) as catalog_builder,
             patch(
-                "local_agent_record_janitor.manual_delete.build_manual_delete_plan",
+                "local_agent_manager.manual_delete.build_manual_delete_plan",
                 return_value=self.plan,
             ),
             patch(
-                "local_agent_record_janitor.manual_delete.execute_manual_delete"
+                "local_agent_manager.manual_delete.execute_manual_delete"
             ) as execute,
         ):
             status = main(

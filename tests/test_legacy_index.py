@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from local_agent_manager.state_paths import control_directory
 
 import hashlib
@@ -12,7 +17,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-from local_agent_record_janitor.legacy_index import (
+from local_agent_manager.legacy_index import (
     LegacyIndexInventoryError,
     LegacyIndexManifestError,
     LegacyIndexOperationError,
@@ -136,7 +141,7 @@ class LegacyIndexTests(unittest.TestCase):
             return real_connect(*args, **kwargs)
 
         with mock.patch(
-            "local_agent_record_janitor.legacy_index.sqlite3.connect",
+            "local_agent_manager.legacy_index.sqlite3.connect",
             side_effect=touch_shm_then_connect,
         ):
             inventory = inventory_legacy_index(self.codex_home)
@@ -154,7 +159,7 @@ class LegacyIndexTests(unittest.TestCase):
             return real_connect(*args, **kwargs)
 
         with mock.patch(
-            "local_agent_record_janitor.legacy_index.sqlite3.connect",
+            "local_agent_manager.legacy_index.sqlite3.connect",
             side_effect=grow_shm_then_connect,
         ):
             with self.assertRaises(LegacyIndexInventoryError):
@@ -177,7 +182,7 @@ class LegacyIndexTests(unittest.TestCase):
             return real_connect(*args, **kwargs)
 
         with mock.patch(
-            "local_agent_record_janitor.legacy_index.sqlite3.connect",
+            "local_agent_manager.legacy_index.sqlite3.connect",
             side_effect=replace_shm_then_connect,
         ):
             with self.assertRaises(LegacyIndexInventoryError):
@@ -200,7 +205,7 @@ class LegacyIndexTests(unittest.TestCase):
             return real_connect(*args, **kwargs)
 
         with mock.patch(
-            "local_agent_record_janitor.legacy_index.sqlite3.connect",
+            "local_agent_manager.legacy_index.sqlite3.connect",
             side_effect=touch_database_then_connect,
         ):
             with self.assertRaises(LegacyIndexInventoryError):
@@ -229,7 +234,7 @@ class LegacyIndexTests(unittest.TestCase):
                     return real_connect(*args, **kwargs)
 
                 with mock.patch(
-                    "local_agent_record_janitor.legacy_index.sqlite3.connect",
+                    "local_agent_manager.legacy_index.sqlite3.connect",
                     side_effect=touch_sidecar_then_connect,
                 ):
                     with self.assertRaises(LegacyIndexInventoryError):
@@ -368,7 +373,7 @@ class LegacyIndexTests(unittest.TestCase):
         sessions = self.codex_home / "sessions"
         sessions.mkdir()
         with mock.patch(
-            "local_agent_record_janitor.legacy_index.os.scandir",
+            "local_agent_manager.legacy_index.os.scandir",
             side_effect=PermissionError("denied"),
         ):
             with self.assertRaises(LegacyIndexInventoryError):
@@ -376,7 +381,7 @@ class LegacyIndexTests(unittest.TestCase):
 
         self._write_rollout("live-rollout")
         with mock.patch(
-            "local_agent_record_janitor.legacy_index._read_stable_first_line",
+            "local_agent_manager.legacy_index._read_stable_first_line",
             side_effect=PermissionError("denied"),
         ):
             with self.assertRaises(PermissionError):
@@ -426,9 +431,15 @@ class LegacyIndexTests(unittest.TestCase):
         index = self._write_index(original)
         approved = inventory_legacy_index(self.codex_home)
 
+        replace = os.replace
+        def fail_index_publication(source, destination):
+            if Path(destination) == index:
+                raise OSError("replace failed")
+            return replace(source, destination)
+
         with mock.patch(
-            "local_agent_record_janitor.legacy_index.os.replace",
-            side_effect=OSError("replace failed"),
+            "local_agent_manager.legacy_index.os.replace",
+            side_effect=fail_index_publication,
         ):
             with self.assertRaises(LegacyIndexOperationError) as captured:
                 repair_legacy_index(
@@ -454,7 +465,7 @@ class LegacyIndexTests(unittest.TestCase):
         approved = inventory_legacy_index(self.codex_home)
         expected = b""
 
-        from local_agent_record_janitor import legacy_index as implementation
+        from local_agent_manager import legacy_index as implementation
 
         real_fsync_directory = implementation._fsync_directory
 

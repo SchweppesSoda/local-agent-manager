@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import os
 import sqlite3
 import tempfile
@@ -7,7 +12,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from local_agent_record_janitor.codex_state import (
+from local_agent_manager.codex_state import (
     CodexStateReadError,
     find_thread_rollouts,
     read_rollouts_at_paths,

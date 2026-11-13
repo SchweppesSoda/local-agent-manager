@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import os
 import tempfile
@@ -8,10 +13,10 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor.adapters import HerdrAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.adapters import HerdrAdapter, NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.herdr_support import CODEX_ID, SENTINEL, create_profile
 from tests.support import create_thread_index, write_rollout
 
@@ -147,7 +152,7 @@ class HerdrIntegrationTests(unittest.TestCase):
         self.writer.assert_not_called()
 
     def test_empty_process_snapshot_is_unknown_for_real_herdr_owner_projection(self):
-        with patch("local_agent_record_janitor.codex_desktop_state._running_related_process_records", return_value=()):
+        with patch("local_agent_manager.codex_desktop_state._running_related_process_records", return_value=()):
             code, result = self.invoke(["records", "--client", "herdr", "--herdr-root", str(self.profile), "--inspect-clients", "--json"])
         owner = result["client_ownership"][0]
         self.assertEqual(owner["owner_process_root"], str(self.profile))

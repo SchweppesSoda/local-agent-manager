@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import tempfile
 import unittest
@@ -9,16 +14,16 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.operation_store import (
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_store import (
     OperationStore,
     _receipt_sha256,
     plan_sha256,
 )
-from local_agent_record_janitor.planning import storage_id_for_path
+from local_agent_manager.planning import storage_id_for_path
 from tests.support import create_thread_index
 
 
@@ -55,7 +60,7 @@ class PersistedV1CompatibilityTests(unittest.TestCase):
     def invoke(self, argv: tuple[str, ...]) -> dict:
         output = StringIO()
         with patch(
-            "local_agent_record_janitor.agent_cli.running_related_clients",
+            "local_agent_manager.agent_cli.running_related_clients",
             return_value=(),
         ):
             main(
@@ -192,8 +197,8 @@ class PersistedV1CompatibilityTests(unittest.TestCase):
         self.assertEqual(result["goal_status"], "complete")
 
     def test_fixed_unknown_child_keeps_native_readonly_recovery_with_new_verify_false_guard(self) -> None:
-        from local_agent_record_janitor.client_contracts import ClientDescriptor, ReferenceSnapshot
-        from local_agent_record_janitor.record_identity import EngineCapability, StoreKey
+        from local_agent_manager.client_contracts import ClientDescriptor, ReferenceSnapshot
+        from local_agent_manager.record_identity import EngineCapability, StoreKey
 
         top, child, store = self.install_child(receipt=False)
         descriptor = ClientDescriptor("cindy", sources=(self.root / "metadata.json",),
@@ -239,7 +244,7 @@ class PersistedV1CompatibilityTests(unittest.TestCase):
         self.assertEqual(store.receipt_path.read_bytes(), before)
 
     def test_fixed_unknown_child_keeps_native_recovery_with_real_rootless_herdr(self) -> None:
-        from local_agent_record_janitor.adapters import HerdrAdapter
+        from local_agent_manager.adapters import HerdrAdapter
         from tests.herdr_support import create_profile
 
         top, child, store = self.install_child(receipt=False)
@@ -264,8 +269,8 @@ class PersistedV1CompatibilityTests(unittest.TestCase):
         self.assertEqual(store.read_result()["plan_sha256"], child["plan_sha256"])
 
     def test_fixed_started_child_reader_failure_preserves_fresh_and_live_verify_facts(self) -> None:
-        from local_agent_record_janitor.adapters import OrcaAdapter
-        from local_agent_record_janitor.operation_coordinator import _LiveOperation
+        from local_agent_manager.adapters import OrcaAdapter
+        from local_agent_manager.operation_coordinator import _LiveOperation
         from tests.orca_support import create_profile
 
         top, child, store = self.install_child(receipt=False)

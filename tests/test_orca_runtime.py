@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import ctypes
 import json
 import os
@@ -13,8 +18,8 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from local_agent_record_janitor.codex_app_server import CodexAppServer, CodexAppServerStartupError
-from local_agent_record_janitor.orca_runtime import (JobCodexAppServer, isolated_environment,
+from local_agent_manager.codex_app_server import CodexAppServer, CodexAppServerStartupError
+from local_agent_manager.orca_runtime import (JobCodexAppServer, isolated_environment,
     _WindowsJob, runtime_host_identity, runtime_instance_stopped)
 
 
@@ -45,7 +50,7 @@ class IsolatedCodexRuntimeTests(unittest.TestCase):
         if os.name == "nt":
             # CPython 3.10 needs the OS path to load its entropy provider.
             # This is an explicit fixture runtime prerequisite, not inheritance.
-            from local_agent_record_janitor.orca_runtime import _windows_directory
+            from local_agent_manager.orca_runtime import _windows_directory
             environment["SystemRoot"] = str(_windows_directory())
         server = CodexAppServer(codex_home=self.home, command=[sys.executable, "-I", str(script)],
                                 environment=environment, working_directory=self.root, timeout=10)
@@ -61,13 +66,13 @@ class IsolatedCodexRuntimeTests(unittest.TestCase):
     def test_explicit_empty_environment_reaches_process_boundary_without_inheritance(self):
         server = CodexAppServer(codex_home=self.home, command=["never-started"], environment={})
         with patch.dict(os.environ, {"OPENAI_API_KEY": "PRIVATE_TEST_SENTINEL"}), patch(
-            "local_agent_record_janitor.codex_app_server.subprocess.Popen", side_effect=OSError("fixture stop")) as launch:
+            "local_agent_manager.codex_app_server.subprocess.Popen", side_effect=OSError("fixture stop")) as launch:
             with self.assertRaises(CodexAppServerStartupError):
                 server.start()
         self.assertEqual(launch.call_args.kwargs["env"], {"CODEX_HOME": str(self.home)})
 
     def test_runtime_allowlist_isolates_all_homes_git_credentials_and_configuration(self):
-        with patch("local_agent_record_janitor.orca_runtime._windows_directory", return_value=self.root), patch.dict(
+        with patch("local_agent_manager.orca_runtime._windows_directory", return_value=self.root), patch.dict(
                 os.environ, {"OPENAI_API_KEY": "PRIVATE_TEST_SENTINEL", "SSH_AUTH_SOCK": "outside",
                              "GIT_CONFIG_COUNT": "99", "CODEX_SQLITE_HOME": "outside",
                              "CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED": "0"}):
@@ -107,7 +112,7 @@ class IsolatedCodexRuntimeTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows job behavior requires Windows")
     def test_job_launcher_contains_unbranded_descendants_before_protocol_start(self):
-        import local_agent_record_janitor.orca_runtime_launcher as launcher
+        import local_agent_manager.orca_runtime_launcher as launcher
         from ctypes import wintypes
 
         script = self.protocol_script(descendant=True)
@@ -156,7 +161,7 @@ class IsolatedCodexRuntimeTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows parent crash behavior requires Windows")
     def test_parent_crash_terminates_launcher_server_and_unbranded_child(self):
         from ctypes import wintypes
-        import local_agent_record_janitor.orca_runtime_launcher as launcher
+        import local_agent_manager.orca_runtime_launcher as launcher
         script = self.protocol_script(descendant=True)
         ready = self.root / "ready.json"
         pid_path = self.root / "child.pid"
@@ -164,7 +169,7 @@ class IsolatedCodexRuntimeTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / "src"
         worker.write_text("import ctypes,json,pathlib,sys,time\nfrom ctypes import wintypes as W\n"
             + "sys.path.insert(0," + repr(str(source)) + ")\n"
-            + "from local_agent_record_janitor.orca_runtime import JobCodexAppServer\n"
+            + "from local_agent_manager.orca_runtime import JobCodexAppServer\n"
             + "server=JobCodexAppServer(codex_home=pathlib.Path(sys.argv[1]), command=[sys.executable,'-I',sys.argv[2],sys.executable,'-I',sys.argv[3]],environment=dict(__import__('os').environ), timeout=10)\n"
             + "server.start()\n"
             + "class Pids(ctypes.Structure):\n _fields_=[('assigned',W.DWORD),('listed',W.DWORD),('ids',ctypes.c_size_t*128)]\n"

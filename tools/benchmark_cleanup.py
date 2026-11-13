@@ -18,11 +18,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from local_agent_record_janitor import codex_state
-from local_agent_record_janitor.adapters import CindyAdapter, NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.client_inventory import build_client_inventory
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager import codex_state
+from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.client_inventory import build_client_inventory
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.support import create_cindy_database
 from tests.test_core_batch_fast import CoreBatchFastTests
 

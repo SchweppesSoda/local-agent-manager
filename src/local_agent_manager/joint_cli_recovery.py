@@ -162,6 +162,8 @@ def recovery_scope(document, coordinator, approved_hash):
                         # the post-terminal scope ticket; it never reclaims a lock.
                         prior = store.read_result(maintain=False)
                         audits = list(store.directory.glob('recovery-*.json'))
+                        if len(audits) > 1:
+                            raise RuntimeError('joint_recovery_multiple_audits')
                         if prior and prior.get('goal_status') == 'complete' and prior.get('plan_sha256') == plan['plan_sha256'] and len(audits) == 1:
                             if store.read_plan() != plan:
                                 raise RuntimeError('joint_recovery_reservation_changed')
@@ -175,7 +177,7 @@ def recovery_scope(document, coordinator, approved_hash):
                                 raise RuntimeError('joint_recovery_retained_audit_untrusted')
                             entries[str(store.directory)] = {'store': store, 'plan': plan,
                                 'frontend': evidence, 'client': client, 'audit': audit,
-                                'proof': None, 'completed': False}
+                                'proof': None, 'audit_path': audits[0], 'completed': False}
                         continue
                     if store.read_plan() != plan:
                         raise RuntimeError('joint_recovery_reservation_changed')
@@ -337,7 +339,15 @@ def publish_completion(entry):
     if not native_evolution(entry['plan']['antigravity_cli_evidence']):
         raise RuntimeError('joint_recovery_current_native_unproven')
     audit = {**entry['audit'], 'goal_status': 'complete', 'goal_satisfied': True}
-    path = entry['store'].directory / ('recovery-'+audit['original_lock_sha256']+'.json')
+    entry['audit_path'] = _publish_audit(entry['store'].directory, audit)
+    entry['completed'] = True
+
+
+def _publish_audit(directory, audit):
+    audits = list(directory.glob('recovery-*.json'))
+    if len(audits) > 1:
+        raise RuntimeError('joint_recovery_multiple_audits')
+    path = audits[0] if audits else directory / 'recovery-audit.json'
     if path.exists():
         # A crash after publication but before handle disposition is safe to
         # finish, after repeating all guards/after-state checks. Retain the
@@ -352,4 +362,4 @@ def publish_completion(entry):
     else:
         from .operation_store import write_new_json
         write_new_json(path, audit)
-    entry['completed'] = True
+    return path

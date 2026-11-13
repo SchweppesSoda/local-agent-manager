@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from io import StringIO
 import json
 from pathlib import Path
@@ -8,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor.cli import main
+from local_agent_manager.cli import main
 
 
 class ConnectionCliTests(unittest.TestCase):
@@ -25,7 +30,7 @@ class ConnectionCliTests(unittest.TestCase):
 
     def run_cli(self, *arguments):
         output, errors = StringIO(), StringIO()
-        with patch("local_agent_record_janitor.cli.create_default_adapters") as adapters:
+        with patch("local_agent_manager.cli.create_default_adapters") as adapters:
             code = main(["environment", *arguments, "--json"], stdout=output, stderr=errors)
             adapters.assert_not_called()
         self.assertEqual(errors.getvalue(), "")
@@ -88,7 +93,7 @@ class ConnectionCliTests(unittest.TestCase):
         self.assertFalse((project / "CLAUDE.local.md").exists())
 
     def test_t3_exact_session_request_does_not_broaden_to_project_import(self):
-        with patch("local_agent_record_janitor.claude_session_import.prepare_t3code_import") as prepare:
+        with patch("local_agent_manager.claude_session_import.prepare_t3code_import") as prepare:
             code, report = self.run_cli("claude-import", "prepare", "--target", "t3code",
                 "--executable", str(self.binary), "--profile", str(self.home),
                 "--project", str(self.root), "--project-id", "project", "--native-id", "one-session",
@@ -102,7 +107,7 @@ class ConnectionCliTests(unittest.TestCase):
         out = self.root / "import.json"
         plan = {"status": "ready", "plan_sha256": "1" * 64}
         out.write_text(json.dumps(plan), encoding="utf-8")
-        with patch("local_agent_record_janitor.claude_session_import.run_session_import",
+        with patch("local_agent_manager.claude_session_import.run_session_import",
                    return_value={"status": "imported", "target": "t3code"}) as apply:
             code, report = self.run_cli("claude-import", "apply", "--plan", str(out),
                 "--approve", "1" * 64, "--accept-project-history")
@@ -112,7 +117,7 @@ class ConnectionCliTests(unittest.TestCase):
     def test_post_replace_verification_failure_is_unknown_not_blocked(self):
         out = self.root / "plan.json"
         _, plan = self.prepare(out)
-        with patch("local_agent_record_janitor.frozen_files.satisfied", return_value=False):
+        with patch("local_agent_manager.frozen_files.satisfied", return_value=False):
             code, result = self.run_cli("claude-connect", "apply", "--plan", str(out),
                 "--approve", plan["plan_sha256"], "--clients-closed")
         self.assertEqual((code, result["status"]), (1, "unknown"))
@@ -123,7 +128,7 @@ class ConnectionCliTests(unittest.TestCase):
     def test_paseo_prepare_forwards_explicit_transcript_without_inventory(self):
         transcript = self.root / "chosen.jsonl"
         plan = {"status": "ready", "plan_sha256": "2" * 64}
-        with patch("local_agent_record_janitor.claude_session_import.prepare_paseo_import",
+        with patch("local_agent_manager.claude_session_import.prepare_paseo_import",
                    return_value=plan) as prepare:
             code, result = self.run_cli("claude-import", "prepare", "--target", "paseo",
                 "--executable", str(self.binary), "--profile", str(self.home),
@@ -134,10 +139,10 @@ class ConnectionCliTests(unittest.TestCase):
                 native_id="selected-id", native_transcript=transcript, provider="claude-cindy")
 
     def test_failed_session_revocation_reports_unknown_side_effect(self):
-        from local_agent_record_janitor.claude_session_import import SessionImportError
+        from local_agent_manager.claude_session_import import SessionImportError
         out = self.root / "import.json"
         out.write_text('{"status":"ready"}', encoding="utf-8")
-        with patch("local_agent_record_janitor.claude_session_import.run_session_import",
+        with patch("local_agent_manager.claude_session_import.run_session_import",
                    side_effect=SessionImportError("t3code_import_preflight_and_session_revoke_unverified")):
             code, report = self.run_cli("claude-import", "apply", "--plan", str(out),
                 "--approve", "0" * 64, "--accept-project-history")

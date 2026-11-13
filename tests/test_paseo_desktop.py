@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 """Real Electron/LevelDB on fresh synthetic profiles, never the Paseo app."""
 import json
 import os
@@ -7,8 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import paseo_indexeddb as idb, paseo_cleanup, paseo_cleanup_files as files
-from local_agent_record_janitor.office_leveldb import _environment
+from local_agent_manager import paseo_indexeddb as idb, paseo_cleanup, paseo_cleanup_files as files
+from local_agent_manager.office_leveldb import _environment
 from tests.paseo_desktop_support import local_storage
 from tests.test_paseo_fullflow import AGENT, KEEP
 
@@ -169,7 +174,7 @@ class PaseoDesktopTests(unittest.TestCase):
         self.addCleanup(server.doCleanups)
         server.manifest["desktop_profiles"] = [{"root": str(self.profile), "electron_runtime": str(self.runtime),
                                                "runtime_binaries": [str(server.binary)]}]
-        from local_agent_record_janitor.paseo_bound_adapter import PaseoBoundAdapter
+        from local_agent_manager.paseo_bound_adapter import PaseoBoundAdapter
         server.adapter = PaseoBoundAdapter(server.manifest)
         plan = server.plan()
         result = server.coordinator().apply_operation(operation_id=plan["operation_id"], plan_path=server.plan_path,
@@ -183,7 +188,7 @@ class PaseoDesktopTests(unittest.TestCase):
     def managed_image_server(self):
         from tests.test_paseo_fullflow import PaseoFullflowTests
         from tests.test_paseo_managed_attachments import IMAGE, PNG
-        from local_agent_record_janitor.paseo_bound_adapter import PaseoBoundAdapter
+        from local_agent_manager.paseo_bound_adapter import PaseoBoundAdapter
         server = PaseoFullflowTests()
         server.setUp()
         self.addCleanup(server.doCleanups)

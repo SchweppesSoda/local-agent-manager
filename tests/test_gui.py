@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import json
 import sqlite3
 import tempfile
@@ -11,27 +16,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleaner import (
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleaner import (
     CleanupReport,
     CleanupResult,
     VerificationResult,
 )
-from local_agent_record_janitor.cli import EXIT_ERROR, EXIT_OK, build_parser, main
-from local_agent_record_janitor.codex_desktop_state import DesktopCleanupResult
-from local_agent_record_janitor.gui import (
+from local_agent_manager.cli import EXIT_ERROR, EXIT_OK, build_parser, main
+from local_agent_manager.codex_desktop_state import DesktopCleanupResult
+from local_agent_manager.gui import (
     GUI_DELETE_CONFIRMATION,
     build_gui_snapshot,
     confirmation_summary,
     execute_gui_delete,
 )
-from local_agent_record_janitor.inventory import (
+from local_agent_manager.inventory import (
     FrontendSessionRecord,
     ManagedConversation,
     SessionCatalog,
     build_session_catalog,
 )
-from local_agent_record_janitor.models import ConversationSummary, Finding
+from local_agent_manager.models import ConversationSummary, Finding
 
 from tests.support import create_thread_index, write_rollout
 
@@ -197,7 +202,7 @@ class GuiSnapshotTests(unittest.TestCase):
             )
 
         with patch(
-            "local_agent_record_janitor.gui.execute_manual_delete",
+            "local_agent_manager.gui.execute_manual_delete",
             side_effect=lambda *_args, **_kwargs: (
                 events.append("native") or native_report
             ),
@@ -247,7 +252,7 @@ class GuiSnapshotTests(unittest.TestCase):
         )
 
         with patch(
-            "local_agent_record_janitor.gui.execute_manual_delete"
+            "local_agent_manager.gui.execute_manual_delete"
         ) as native_delete:
             with self.assertRaisesRegex(ValueError, "changed after approval"):
                 execute_gui_delete(
@@ -369,7 +374,7 @@ class GuiSnapshotTests(unittest.TestCase):
                 )
 
             with patch(
-                "local_agent_record_janitor.gui.execute_manual_delete",
+                "local_agent_manager.gui.execute_manual_delete",
                 side_effect=delete_native,
             ):
                 report = execute_gui_delete(
@@ -447,7 +452,7 @@ class GuiCliTests(unittest.TestCase):
         self.assertIn("display unavailable", errors.getvalue())
 
     def test_confirmation_phrase_matches_existing_manual_delete_contract(self) -> None:
-        from local_agent_record_janitor.cli import MANUAL_DELETE_CONFIRMATION
+        from local_agent_manager.cli import MANUAL_DELETE_CONFIRMATION
 
         self.assertEqual(GUI_DELETE_CONFIRMATION, MANUAL_DELETE_CONFIRMATION)
 

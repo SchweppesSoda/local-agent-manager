@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 import json
 import os
@@ -9,15 +14,15 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from local_agent_record_janitor.adapters import NativeIntegrityAdapter
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.cli import main
-from local_agent_record_janitor.native_project_cleanup import (
+from local_agent_manager.adapters import NativeIntegrityAdapter
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.cli import main
+from local_agent_manager.native_project_cleanup import (
     NativeProjectError, STATE_FILES, discover_native_projects,
     execute_native_project_cleanup, remaining_native_project_markers,
     verify_native_project_recovery,
 )
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.support import create_thread_index
 
 
@@ -142,7 +147,7 @@ class NativeProjectCleanupTests(unittest.TestCase):
                 raise OSError("injected replacement failure")
             return replace(source, destination)
 
-        with patch("local_agent_record_janitor.native_project_cleanup.os.replace", side_effect=fail_once):
+        with patch("local_agent_manager.native_project_cleanup.os.replace", side_effect=fail_once):
             with self.assertRaises(NativeProjectError) as raised:
                 self.run_cleanup()
         self.assertTrue(raised.exception.outcome_known_rolled_back)
@@ -162,7 +167,7 @@ class NativeProjectCleanupTests(unittest.TestCase):
                 Path(destination).write_text('{"external-change":true}', encoding="utf-8")
             return result
 
-        with patch("local_agent_record_janitor.native_project_cleanup.os.replace", side_effect=change_after_write):
+        with patch("local_agent_manager.native_project_cleanup.os.replace", side_effect=change_after_write):
             with self.assertRaises(NativeProjectError) as raised:
                 self.run_cleanup()
         self.assertTrue(raised.exception.outcome_unknown)
@@ -227,12 +232,12 @@ class NativeProjectCleanupTests(unittest.TestCase):
                 Path(destination).write_text("{}")
             return result
 
-        with patch("local_agent_record_janitor.native_project_cleanup.running_related_clients", return_value=()), patch(
-            "local_agent_record_janitor.native_project_cleanup.os.replace", side_effect=corrupt_global_state
+        with patch("local_agent_manager.native_project_cleanup.running_related_clients", return_value=()), patch(
+            "local_agent_manager.native_project_cleanup.os.replace", side_effect=corrupt_global_state
         ):
             result = coordinator.apply_operation(operation_id=plan["operation_id"], plan_path=plan_path, clients_closed=True, adapters=(adapter,))
         self.assertEqual(result["goal_status"], "unknown", result)
-        with patch("local_agent_record_janitor.execution.execute_native_project_cleanup", side_effect=AssertionError("must not replay")):
+        with patch("local_agent_manager.execution.execute_native_project_cleanup", side_effect=AssertionError("must not replay")):
             repeated = coordinator.apply_operation(operation_id=plan["operation_id"], plan_path=plan_path, clients_closed=True, adapters=(adapter,))
         self.assertNotEqual(repeated["goal_status"], "complete", repeated)
         verify = coordinator.verify_operation(operation_id=plan["operation_id"], plan_path=plan_path, adapters=(adapter,))
@@ -269,8 +274,8 @@ class NativeProjectCleanupTests(unittest.TestCase):
                 raise OSError("injected rollback failure")
             return replace(source, destination)
 
-        with patch("local_agent_record_janitor.native_project_cleanup.os.replace", side_effect=fail_rollback), patch(
-            "local_agent_record_janitor.native_project_cleanup.remaining_native_project_markers", side_effect=OSError("verification interrupted")
+        with patch("local_agent_manager.native_project_cleanup.os.replace", side_effect=fail_rollback), patch(
+            "local_agent_manager.native_project_cleanup.remaining_native_project_markers", side_effect=OSError("verification interrupted")
         ):
             with self.assertRaises(NativeProjectError) as raised:
                 self.run_cleanup(evidence)
@@ -293,16 +298,16 @@ class NativeProjectCleanupTests(unittest.TestCase):
             self.assertEqual(set(json.loads((self.home / name).read_bytes())["local-projects"]), {"keep"})
 
     def test_direct_inventory_exposes_stale_registration(self):
-        from local_agent_record_janitor.client_inventory import build_client_inventory
+        from local_agent_manager.client_inventory import build_client_inventory
         adapter = NativeIntegrityAdapter(codex_home=self.home)
         inventory = build_client_inventory((adapter,), client="native")
         self.assertEqual(len(inventory.project_items), 2)
         self.assertTrue(any(t.record_id == self.project_id for t in inventory.targets))
 
     def test_readonly_native_project_remains_visible_with_a_capability_blocker(self):
-        from local_agent_record_janitor.client_inventory import build_client_inventory, build_native_client_inventory
-        from local_agent_record_janitor.inventory import build_session_catalog
-        from local_agent_record_janitor.record_identity import EngineCapability
+        from local_agent_manager.client_inventory import build_client_inventory, build_native_client_inventory
+        from local_agent_manager.inventory import build_session_catalog
+        from local_agent_manager.record_identity import EngineCapability
 
         class ReadonlyNative(NativeIntegrityAdapter):
             def capability_limit_for(self, engine):
@@ -338,7 +343,7 @@ class NativeProjectCleanupTests(unittest.TestCase):
         self.assertEqual(plan["goal_status"], "ready", plan)
         self.assertEqual(plan["counts"]["action_count"], 1)
         self.assertEqual(plan["child_batches"][0]["mutation_family"], "delete_native_project")
-        with patch("local_agent_record_janitor.native_project_cleanup.running_related_clients", return_value=()):
+        with patch("local_agent_manager.native_project_cleanup.running_related_clients", return_value=()):
             result = coordinator.apply_operation(operation_id=plan["operation_id"], plan_path=plan_path, clients_closed=True, adapters=(adapter,))
         self.assertEqual(result["goal_status"], "complete", result)
         verify = OperationCoordinator(CleanupService()).verify_operation(operation_id=plan["operation_id"], plan_path=plan_path, codex_home=self.home, adapters=(adapter,))

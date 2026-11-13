@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 from contextlib import closing, contextmanager, ExitStack
 import json
@@ -8,11 +13,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import t3code_cleanup as cleanup, t3code_database as database
-from local_agent_record_janitor import t3code_cleanup_files as files, t3code_lifecycle as lifecycle
-from local_agent_record_janitor.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, T3CodeBoundAdapter, SCHEMA
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
+from local_agent_manager import t3code_cleanup as cleanup, t3code_database as database
+from local_agent_manager import t3code_cleanup_files as files, t3code_lifecycle as lifecycle
+from local_agent_manager.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, T3CodeBoundAdapter, SCHEMA
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.orca_native_support import create_native_schema, add_native_record
 from tests.t3code_support import create_store, add_thread, insert, V2, PRIVATE
 
@@ -47,7 +52,7 @@ class T3CodeFullflowTests(unittest.TestCase):
                 {"thread_id": KEEP, "engine": "codex", "root": str(self.home)}]}
         self.adapter = T3CodeBoundAdapter(self.manifest)
         self.plan_path = self.base / "plan.json"
-        for item in (patch("local_agent_record_janitor.office_runtime.processes", return_value=[]),
+        for item in (patch("local_agent_manager.office_runtime.processes", return_value=[]),
                      patch("pathlib.Path.home", return_value=self.base),
                      patch.dict(os.environ, {"APPDATA": str(self.base / "appdata"), "LOCALAPPDATA": str(self.base / "localappdata"),
                          "PASEO_HOME": str(self.base / "absent-paseo"), "T3CODE_HOME": str(self.root)})):
@@ -320,7 +325,7 @@ class T3CodeFullflowTests(unittest.TestCase):
             cleanup.execute(evidence, phase_callback=lambda _: self.fail("standalone denied"))
 
     def test_long_native_title_persisted_fingerprint_is_stable_but_real_drift_blocks(self):
-        from local_agent_record_janitor.office_cleanup import digest
+        from local_agent_manager.office_cleanup import digest
         add_native_record(self.home, NATIVE)
         title = 'Synthetic title\n  ' + 'long display metadata ' * 60
         with closing(sqlite3.connect(self.home / 'state_5.sqlite')) as db:
@@ -365,7 +370,7 @@ class T3CodeFullflowTests(unittest.TestCase):
         self.assertIn('native_writer_missing',str(plan['blockers']))
 
     def test_absent_and_partial_child_journals_have_distinct_cold_status(self):
-        from local_agent_record_janitor.operation_store import OperationStore
+        from local_agent_manager.operation_store import OperationStore
         plan = self.plan()
         cold = self.coordinator()
         result = cold.status_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
@@ -547,12 +552,12 @@ class T3CodeFullflowTests(unittest.TestCase):
                       {item['blocker_code'] for item in result['blockers']})
 
     def test_database_and_bound_desktop_apply_as_one_operation(self):
-        from local_agent_record_janitor import office_leveldb as level
+        from local_agent_manager import office_leveldb as level
         from tests.test_t3code_localstorage import local_storage
         try:
             level.runtime()
         except level.OfficeLevelDBError:
-            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1":
+            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1" or os.environ.get("LARJ_LEVELDB_RUNTIME") or __import__("local_agent_manager.office_leveldb", fromlist=["_runtime_directory"])._runtime_directory().exists():
                 raise
             self.skipTest("Pinned LevelDB runtime not configured")
         profile = self.base / "desktop"

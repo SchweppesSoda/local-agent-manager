@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from local_agent_record_janitor.path_identity import (
+from local_agent_manager.path_identity import (
     canonical_existing_path_key,
 )
 
@@ -54,7 +59,7 @@ class ExistingPathIdentityTests(unittest.TestCase):
             alternate = Path(root) / "mixed.JSONL"
 
             with mock.patch(
-                "local_agent_record_janitor.path_identity.os.path.samefile",
+                "local_agent_manager.path_identity.os.path.samefile",
                 wraps=os.path.samefile,
             ) as samefile:
                 self.assertEqual(
@@ -70,7 +75,7 @@ class ExistingPathIdentityTests(unittest.TestCase):
             alternate = Path(root) / "mixed.JSONL"
 
             with mock.patch(
-                "local_agent_record_janitor.path_identity.os.path.samefile",
+                "local_agent_manager.path_identity.os.path.samefile",
                 side_effect=OSError("identity unavailable"),
             ):
                 self.assertNotEqual(
@@ -110,7 +115,7 @@ class ExistingPathIdentityTests(unittest.TestCase):
             extended = "\\\\?\\" + str(path)
 
             with mock.patch(
-                "local_agent_record_janitor.path_identity.os.path.samefile",
+                "local_agent_manager.path_identity.os.path.samefile",
                 side_effect=OSError("identity unavailable"),
             ):
                 self.assertNotEqual(
@@ -123,15 +128,15 @@ class ExistingPathIdentityTests(unittest.TestCase):
         plain = r"\\server\share\rollout.jsonl"
         with (
             mock.patch(
-                "local_agent_record_janitor.path_identity.Path.resolve",
+                "local_agent_manager.path_identity.Path.resolve",
                 return_value=Path(extended),
             ),
             mock.patch(
-                "local_agent_record_janitor.path_identity.Path.exists",
+                "local_agent_manager.path_identity.Path.exists",
                 return_value=True,
             ),
             mock.patch(
-                "local_agent_record_janitor.path_identity.os.path.samefile",
+                "local_agent_manager.path_identity.os.path.samefile",
                 return_value=True,
             ) as samefile,
         ):

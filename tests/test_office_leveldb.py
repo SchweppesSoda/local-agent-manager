@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 import hashlib
 import json
 import os
@@ -10,21 +15,21 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import office_leveldb as drafts
+from local_agent_manager import office_leveldb as drafts
 
 PRIVATE = "PRIVATE_OFFICE_DRAFT_SENTINEL"
 RELATIVE = "Partitions/main/Local Storage/leveldb"
 
 
 class LevelDBRuntimeDiscoveryTests(unittest.TestCase):
-    def test_explicit_current_and_existing_legacy_runtime_precedence(self):
+    def test_only_current_default_or_explicit_runtime(self):
         with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'LOCALAPPDATA': raw}, clear=True):
             root = Path(raw)
             current = root/'local-agent-manager/runtimes/leveldb-v1'
             legacy = root/'local-agent-record-janitor/leveldb-v1'
             self.assertEqual(drafts._runtime_directory(), current)
             legacy.mkdir(parents=True)
-            self.assertEqual(drafts._runtime_directory(), legacy)
+            self.assertEqual(drafts._runtime_directory(), current)
             current.mkdir(parents=True)
             self.assertEqual(drafts._runtime_directory(), current)
             os.environ['LARJ_LEVELDB_RUNTIME'] = str(root/'explicit')
@@ -37,7 +42,7 @@ class OfficeLevelDBTests(unittest.TestCase):
         try:
             cls.node, cls.dependency, cls.helper = drafts.runtime()
         except drafts.OfficeLevelDBError:
-            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1":
+            if os.environ.get("LARJ_REQUIRE_LEVELDB_TESTS") == "1" or os.environ.get("LARJ_LEVELDB_RUNTIME") or __import__("local_agent_manager.office_leveldb", fromlist=["_runtime_directory"])._runtime_directory().exists():
                 raise
             raise unittest.SkipTest("Pinned office LevelDB runtime is not installed")
 

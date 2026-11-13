@@ -1,3 +1,8 @@
+
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
 import copy
 from contextlib import closing
 import hashlib
@@ -8,8 +13,8 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from local_agent_record_janitor import antigravity_acp_cleanup as acp, t3code_cleanup as cleanup
-from local_agent_record_janitor.t3code_bound_adapter import T3CodeBoundAdapter
+from local_agent_manager import antigravity_acp_cleanup as acp, t3code_cleanup as cleanup
+from local_agent_manager.t3code_bound_adapter import T3CodeBoundAdapter
 from tests import test_t3code_fullflow as fullflow
 from tests.test_t3code_fullflow import THREAD, KEEP, NATIVE, OTHER
 from tests.t3code_support import V2, insert

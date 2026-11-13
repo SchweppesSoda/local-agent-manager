@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from tests import bootstrap as _test_bootstrap
+
 from contextlib import closing
 import io
 import json
@@ -9,13 +14,13 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from local_agent_record_janitor import workbuddy_store as store
-from local_agent_record_janitor.workbuddy_store import WorkBuddyAdapter, WorkBuddyStoreError
-from local_agent_record_janitor.cleanup_service import CleanupService
-from local_agent_record_janitor.operation_coordinator import OperationCoordinator
-from local_agent_record_janitor.client_inventory import build_client_inventory, build_client_engine_contexts
-from local_agent_record_janitor.operation_store import OperationStore
-from local_agent_record_janitor import workbuddy_runtime as runtime
+from local_agent_manager import workbuddy_store as store
+from local_agent_manager.workbuddy_store import WorkBuddyAdapter, WorkBuddyStoreError
+from local_agent_manager.cleanup_service import CleanupService
+from local_agent_manager.operation_coordinator import OperationCoordinator
+from local_agent_manager.client_inventory import build_client_inventory, build_client_engine_contexts
+from local_agent_manager.operation_store import OperationStore
+from local_agent_manager import workbuddy_runtime as runtime
 
 SID = "00000000-0000-4000-8000-000000000001"
 OTHER = "00000000-0000-4000-8000-000000000002"
@@ -770,7 +775,7 @@ class WorkBuddyTests(unittest.TestCase):
         operation_store.lock_path.unlink()
 
     def test_cli_records_and_operation_root_options(self):
-        from local_agent_record_janitor.cli import main, build_parser
+        from local_agent_manager.cli import main, build_parser
         args = build_parser().parse_args(["delete", "plan", "--client", "workbuddy", "--workbuddy-root", str(self.root),
                                         "--record-id", SID, "--out", str(self.base / "cli.json"), "--json"])
         self.assertEqual(args.workbuddy_root, [self.root])
@@ -786,7 +791,7 @@ class WorkBuddyTests(unittest.TestCase):
         self.assertNotIn(SECRET, stdout.getvalue())
 
     def test_cli_native_plan_without_usage_survives_fresh_apply_and_verify(self):
-        from local_agent_record_janitor.cli import main
+        from local_agent_manager.cli import main
         with closing(sqlite3.connect(self.root / "workbuddy.db")) as db:
             db.execute("DELETE FROM session_usage WHERE session_id=?", (SID,)); db.commit()
         path = self.base / "cli-native-no-usage.json"
@@ -809,7 +814,7 @@ class WorkBuddyTests(unittest.TestCase):
         self.assertEqual(self.ids(), [OTHER])
 
     def test_cli_ui_only_plan_survives_fresh_apply_and_verify(self):
-        from local_agent_record_janitor.cli import main
+        from local_agent_manager.cli import main
         self.add_pinned_only((ORPHAN, ORPHAN_TWO))
         path = self.base / "cli-ui-only.json"
         output = io.StringIO()
