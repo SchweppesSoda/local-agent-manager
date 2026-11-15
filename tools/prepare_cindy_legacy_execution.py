@@ -240,13 +240,16 @@ def prepare():
         spec['protected_second_account']:supported_account(spec,home=second['path'])['identity_sha256']}
     spec['controller']['window_behavior_before']=window_behavior(spec)
     from local_agent_manager.cindy_isolation_windows import auth_protocol_census
-    binaries = {native_binary}
+    binaries = {native_binary.resolve(strict=True)}
+    binary_aliases = {str(native_binary): str(native_binary.resolve(strict=True))}
     for record in auth_protocol_census():
         if record['name'].casefold() != 'codex.exe': continue
         if not record.get('codex_home'): raise RuntimeError('Native auth writer home is unknown')
         if any(os.path.samefile(record['codex_home'], root) for root in (source, target)):
             if not record.get('executable_path'): raise RuntimeError('Native auth writer executable is unknown')
-            binaries.add(Path(record['executable_path']))
+            alias = Path(record['executable_path']); physical = alias.resolve(strict=True)
+            if not os.path.samefile(alias, physical): raise RuntimeError('Native runtime alias changed')
+            binaries.add(physical); binary_aliases[str(alias)] = str(physical)
     auth_runtimes = {}
     for binary in sorted(binaries):
         ff._plain(binary.lstat())
@@ -255,6 +258,7 @@ def prepare():
             raise RuntimeError('Native auth writer release does not have this qualified auth.lock protocol')
         auth_runtimes[str(binary)] = {'version': probe.stdout.strip(), 'sha256': digest(binary)}
     spec['controller']['auth_lock_runtimes'] = auth_runtimes
+    spec['controller']['auth_runtime_aliases'] = binary_aliases
     spec['controller']['native_auth_lock_paths'] = [str(root / 'auth.lock') for root in (source, target)]
     spec["controller"]["protected_snapshot"] = protected_snapshot(spec)
     draft["draft_sha256"] = fingerprint({k: v for k, v in draft.items() if k != "draft_sha256"})

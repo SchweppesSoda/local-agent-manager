@@ -11,9 +11,10 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from local_agent_manager.cindy_isolation_lifecycle import CindyLifecycle, windows_identity
-from local_agent_manager.cindy_isolation_windows import ReadLeases, auth_permissions, NativeAuthLocks
+from local_agent_manager.cindy_isolation_windows import ReadLeases, auth_permissions, NativeAuthLocks, qualify_auth_writers
 from local_agent_manager.lifecycle_confirmation import LifecycleGate
 
 
@@ -115,6 +116,24 @@ raise SystemExit(0 if ok else 23 if error==33 else 24)
             self.assertEqual(subprocess.run([sys.executable,'-c',script,str(path)],timeout=5).returncode,23)
         self.assertEqual(subprocess.run([sys.executable,'-c',script,str(path)],timeout=5).returncode,0)
         self.assertEqual(path.stat().st_ino, identity); self.assertEqual(path.stat().st_size, 0)
+
+    def test_native_runtime_junction_is_qualified_separately_from_home(self):
+        from local_agent_manager.cindy_isolation_recovery import digest
+        import shutil
+        source, target, physical = (self.root/name for name in ('official','legacy','release'))
+        for directory in (source,target,physical): directory.mkdir()
+        binary = physical/'codex.exe'; shutil.copyfile(Path(os.environ['SystemRoot'])/'System32/cmd.exe', binary)
+        alias = self.root/'runtime-bin'
+        result = subprocess.run([str(Path(os.environ['SystemRoot'])/'System32/cmd.exe'),'/d','/c','mklink','/J',str(alias),str(physical)],
+            capture_output=True,timeout=5,creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(result.returncode,0)
+        spec={'source':{'path':str(source)},'target':{'path':str(target)},'controller':{'auth_lock_runtimes':{
+            str(binary):{'version':'codex-cli 0.167.2','sha256':digest(binary)}}}}
+        with patch('local_agent_manager.cindy_isolation_windows.auth_protocol_census',return_value=[
+            {'name':'codex.exe','codex_home':str(target),'executable_path':str(alias/'codex.exe')}]):
+            qualify_auth_writers(spec)
+            spec['controller']['auth_lock_runtimes'][str(binary)]['sha256']='0'*64
+            with self.assertRaises(ValueError): qualify_auth_writers(spec)
 
 
 if __name__ == '__main__': unittest.main()

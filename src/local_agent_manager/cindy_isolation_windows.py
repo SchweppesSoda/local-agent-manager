@@ -85,11 +85,14 @@ def qualify_auth_writers(spec):
         if not home: fail('native_auth_writer_home_unproven')
         if not any(os.path.samefile(home, root) for root in homes): continue
         binary = record.get('executable_path')
-        entry = approved.get(binary)
+        if not binary: fail('native_auth_writer_image_unproven')
+        physical = Path(binary).resolve(strict=True)
+        if not os.path.samefile(binary, physical): fail('native_auth_writer_alias_changed')
+        entry = approved.get(str(physical))
         if not entry or entry.get('version') not in {'codex-cli 0.166.0', 'codex-cli 0.167.2'}:
             fail('native_auth_writer_protocol_unqualified')
-        ff._plain(Path(binary).lstat())
-        if digest(binary) != entry['sha256']: fail('native_auth_writer_binary_changed')
+        ff._plain(physical.lstat())
+        if digest(physical) != entry['sha256']: fail('native_auth_writer_binary_changed')
 
 
 def process_evidence():
