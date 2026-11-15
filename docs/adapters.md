@@ -110,6 +110,27 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 官方 Home 的 Cindy 引用；它们的其他 Home 不会因此成为清理候选。同名原生 ID 仍按
 物理 Home 区分。注册表中的已知绑定不代表其他未登记路径已完成覆盖。
 
+旧 Home 隔离的内部准备、执行阶段和恢复观察分别位于
+[计划原语](../src/local_agent_manager/cindy_isolation_plan.py)、
+[导入阶段](../src/local_agent_manager/cindy_isolation_execution.py)和
+[只读恢复观察](../src/local_agent_manager/cindy_isolation_recovery.py)。它们尚不提供对活动库的
+端到端迁移命令：执行调用者必须持有已核实的产品启动／原子替换边界、源文件租约和源数据库
+事务，取得边界后重新比较闭包及完整选定行。仅有进程缺席检查或 LifecycleGate 同意不构成
+启动隔离；[普通权限生命周期调用端](../src/local_agent_manager/cindy_isolation_lifecycle.py)
+只负责本轮明确确认、身份重核和正常退出，不强制结束进程，也不关闭 T3。
+
+原生文件通过同目录临时文件完整写入后以不覆盖的方式发布；两份 WAL 数据库仍是分别提交。
+跨库中断、认证／注册表／location 切换中断均须保留累积 mutation 与已完成批次，先独立观察
+before/after/diverged 状态，再准备新剩余计划；不能重放原 apply、清除未知 journal 或整库
+回滚目标。导入后的目标增量留在原处，不能因恢复而丢弃。完整行比较还包括冻结时为空的
+附件、实时消息等表，不能把固定原生 ID 数量当作依赖未变化的证明。只读在线观察不声称
+一致离线快照，也不自动解除源删除门槛。
+
+Windows 独占文件句柄会阻止路径替换；释放句柄后再 `os.replace` 并不是持有租约的原子
+compare/exchange。调用者须另行证明产品及其他 writer 的完整边界，不能用一次 hash 比较
+掩盖该窗口。认证普通文件还需核验权限和冷启动后实体；源侧正式 native 删除计划必须在
+产品验收后新冻结，保持目标 Home 的 Cindy 引用，并逐一核实受支持的共享索引格式。
+
 Claude 订阅账号 Home 和旧 `codex-accounts` 的逐 provider 绑定仍未适配。自定义回调
 目录、已移除绑定且专属目录中也不存在的历史记录仍需显式提供可验证的存储位置。
 

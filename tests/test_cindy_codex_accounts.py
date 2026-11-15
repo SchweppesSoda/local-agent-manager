@@ -137,6 +137,60 @@ class CindyCodexAccountTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertEqual(failures[0].platform, "live-reference-guard")
 
+    def test_native_source_plan_keeps_same_id_reference_in_legacy_home(self):
+        self.config.write_text(json.dumps({
+            "pools": {"openai": {"legacyCodexDefault": True}},
+            "bindings": {"openai:native:thread": self.binding("default")},
+        }), encoding="utf-8")
+        create_cindy_database(self.database, [
+            {"id": "retained-task", "sdk_session_id": "thread", "agent_kind": "codex", "status": "active"},
+        ])
+        official = self.user / ".codex"
+        paths = {}
+        for home in (official, self.legacy):
+            rollout = write_rollout(home, "thread", originator="cindy")
+            create_thread_index(home, [{"id": "thread", "rollout_path": str(rollout)}])
+            paths[home] = rollout
+        preserved = {p: p.read_bytes() for p in (paths[self.legacy], self.legacy / "state_5.sqlite", self.database, self.config)}
+        adapter = self.adapter()
+        service = CleanupService(client_inspector=lambda *_: ())
+        plan = OperationCoordinator(service).plan_operation(
+            client="native", record_ids=("thread",), codex_home=official,
+            adapters=(NativeIntegrityAdapter(codex_home=official), adapter),
+            plan_path=self.root / "source-only-plan.json")
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        self.assertEqual({action["kind"] for action in plan["actions"]}, {"delete_conversation"})
+        self.assertEqual(adapter.list_sessions()[0].codex_home, self.legacy)
+        # The execution-time guard also qualifies physical home, not ID alone.
+        TargetedReferenceGuard((adapter,), {})._check_home(official, frozenset({"thread"}))
+        with self.assertRaises(TargetedGuardError):
+            TargetedReferenceGuard((adapter,), {})._check_home(self.legacy, frozenset({"thread"}))
+        calls = []
+        def server(**kwargs):
+            self.assertEqual(Path(kwargs["codex_home"]), official)
+            class Server:
+                def __enter__(inner): return inner
+                def __exit__(inner, *_): pass
+                def delete_thread(inner, ident):
+                    calls.append(ident)
+                    with closing(sqlite3.connect(official / "state_5.sqlite")) as c:
+                        c.execute("delete from threads where id=?", (ident,)); c.commit()
+                    paths[official].unlink()
+            return Server()
+        result = OperationCoordinator(service).apply_operation(
+            plan_path=Path(plan["plan_path"]), adapters=(NativeIntegrityAdapter(codex_home=official), adapter),
+            clients_closed=True, app_server_factory=server, binary_resolver=lambda _: self.root / "fixture-codex")
+        self.assertEqual(result["goal_status"], "complete", result)
+        cold = OperationCoordinator(service)
+        status = cold.status_operation(plan_path=Path(plan["plan_path"]))
+        self.assertEqual(status["goal_status"], "complete", status)
+        verified = cold.verify_operation(plan_path=Path(plan["plan_path"]),
+            adapters=(NativeIntegrityAdapter(codex_home=official), adapter))
+        self.assertEqual(verified["goal_status"], "complete", verified)
+        self.assertEqual(calls, ["thread"])
+        self.assertFalse(paths[official].exists())
+        for path, before in preserved.items(): self.assertEqual(path.read_bytes(), before, str(path))
+
     def test_missing_registry_preserves_dedicated_home(self):
         self.assertEqual(codex_account_bindings(self.database, self.profile), {})
 
