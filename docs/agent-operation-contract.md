@@ -67,6 +67,11 @@ and unknown Magpie children use the same status/verify and no-replay contract.
    process identities and file evidence available in expandable details.
    It does not itself operate clients. New callers must supply fresh identities
    immediately before dispatch and retain normal startup fences/exit checks.
+   For an already stopped product, a restart-only scope can use PID `0` and
+   `created=not-running`, with the exact executable SHA-256/device/inode. It
+   displays the stopped state and requires new in-memory consent. Callers must
+   recheck process absence and file identity after the dialog. Such a target
+   cannot authorize close or a mixed close/restart scope.
    T3 handoff closure additionally requires current target-file occupancy,
    bound to PID/start time and the confirmed desktop ancestry. Names, shared
    runtimes and caller-supplied extra PIDs alone do not authorize closure.
@@ -129,6 +134,18 @@ Orca startup Job and all other journal locks are outside this recovery protocol.
 The root mutex and a receipt alone remain insufficient. See
 [joint reservation recovery](operation-cli.md#joint-cli-reservation-recovery)
 for after-state and evidence retention requirements.
+
+The owner's fixed Cindy legacy-import controller has a separate, task-bound
+[recovery executor](../src/local_agent_manager/cindy_isolation_resume.py).
+It does not enable the joint CLI recovery flag: it proves the original
+synchronous import writer's kernel exit and immutable physical scope, leases
+only that import's original locks, independently observes all staged outcomes
+under the real Windows boundary, and publishes cumulative mutations/batches.
+Only known outcomes can settle those journals. A new scope-preserving remaining
+operation owns subsequent writes and exact owned-stage cleanup; repeated
+interruption follows that operation's journal. Unknown/diverged outcomes,
+ambiguous chains and other journal locks remain blocked. Permanent locks and
+their ACLs never change. See [the task execution boundary](adapters.md#cindy).
 
 Legacy direct CLI/GUI and service writers share this admission gate, so they
 cannot bypass an existing journal's unknown outcome. They do not create a new

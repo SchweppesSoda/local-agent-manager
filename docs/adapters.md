@@ -110,26 +110,45 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 官方 Home 的 Cindy 引用；它们的其他 Home 不会因此成为清理候选。同名原生 ID 仍按
 物理 Home 区分。注册表中的已知绑定不代表其他未登记路径已完成覆盖。
 
-旧 Home 隔离的内部准备、执行阶段和恢复观察分别位于
-[计划原语](../src/local_agent_manager/cindy_isolation_plan.py)、
-[导入阶段](../src/local_agent_manager/cindy_isolation_execution.py)和
-[只读恢复观察](../src/local_agent_manager/cindy_isolation_recovery.py)。它们尚不提供对活动库的
-端到端迁移命令：执行调用者必须持有已核实的产品启动／原子替换边界、源文件租约和源数据库
-事务，取得边界后重新比较闭包及完整选定行。仅有进程缺席检查或 LifecycleGate 同意不构成
-启动隔离；[普通权限生命周期调用端](../src/local_agent_manager/cindy_isolation_lifecycle.py)
-只负责本轮明确确认、身份重核和正常退出，不强制结束进程，也不关闭 T3。
+本机旧 Home 隔离使用[任务准备器](../tools/prepare_cindy_legacy_execution.py)另存精确
+spec、文件清单及哈希绑定的 `entry.py`；这是本机既定迁移范围的专用入口。
+[普通权限控制端](../src/local_agent_manager/cindy_isolation_entry.py)负责实际产品设置、
+本轮 LifecycleGate、WM_CLOSE、正常启动及观察／动作／刷新后的验收，保留 T3。
+`execute --manifest-sha256 HASH --uac-authorized` 仅在另一次 UAC 已获授权时使用。
+它只调用一次固定管理员入口；[有限监督器](../src/local_agent_manager/cindy_isolation_controller.py)
+执行冻结导入、等待普通用户验收，再生成正式 source-only native 清理计划，默认总窗口
+2400 秒的等待／阶段准入期限，无任意命令、路径或追加 ID 通道；已派发的同步 native
+调用仍按其有界超时和 unknown 契约结算，不在写入中途强杀。不同阶段的正常关开各需真实 fresh gate；
+磁盘回执不是生命周期许可。窗口关闭行为为托盘时，先通过产品 UI 暂改退出，结束后经 UI 恢复。
+
+[Windows 边界](../src/local_agent_manager/cindy_isolation_windows.py)持实际 exe／package
+独占启动 fence、源文件只读共享租约和源数据库写事务，取得边界后比较完整闭包及选定行。
+目标两库分别持 `BEGIN IMMEDIATE`，每次提交都验证未选行；产品配置使用父目录 namespace
+租约、实际单 writer 启动排除和 manager root 锁完成原子替换。目标库不整库复制，运行中
+T3 的未选数据及随后增量留在原处。认证先赋原权限后写入独立普通文件，不输出凭据。
+审核过的源码／清单／runtime 保持只读共享句柄，管理员延迟导入不读取用户可写 pycache。
 
 原生文件通过同目录临时文件完整写入后以不覆盖的方式发布；两份 WAL 数据库仍是分别提交。
-跨库中断、认证／注册表／location 切换中断均须保留累积 mutation 与已完成批次，先独立观察
-before/after/diverged 状态，再准备新剩余计划；不能重放原 apply、清除未知 journal 或整库
+跨库中断、认证／注册表／location 切换中断均保留累积 mutation 与已完成批次。
+`status/verify --manifest-sha256 HASH [--run RUN]` 在线只读观察，不释放锁。
+[qualified recovery](../src/local_agent_manager/cindy_isolation_resume.py)只在另一次 execute 的
+真实离线边界内核实原同步 writer 已退出、原 journal／锁及物理范围，结算确切 before／after
+后生成新剩余操作；再次中断沿剩余操作链核验，歧义和 diverged 保持阻塞。不能重放原 apply、
+清除其他未知 journal、改永久锁 ACL 或整库
 回滚目标。导入后的目标增量留在原处，不能因恢复而丢弃。完整行比较还包括冻结时为空的
 附件、实时消息等表，不能把固定原生 ID 数量当作依赖未变化的证明。只读在线观察不声称
 一致离线快照，也不自动解除源删除门槛。
 
 Windows 独占文件句柄会阻止路径替换；释放句柄后再 `os.replace` 并不是持有租约的原子
 compare/exchange。调用者须另行证明产品及其他 writer 的完整边界，不能用一次 hash 比较
-掩盖该窗口。认证普通文件还需核验权限和冷启动后实体；源侧正式 native 删除计划必须在
-产品验收后新冻结，保持目标 Home 的 Cindy 引用，并逐一核实受支持的共享索引格式。
+掩盖该窗口。认证普通文件还需核验权限和冷启动后实体；验收驱动要求原 task 根／长历史
+真实 nonce 续聊、长历史翻页、侧聊、自动化、实际账号 Home 归属的新 task 和冷启动后的
+再次续聊。账号池权重保持原值，新 task 可分配到已核实的第二账号，不能写回官方源。
+源侧正式 native 删除计划在产品验收后新冻结，源再次在租约／事务内核对，交给正式 manager
+前才释放源保留，产品 fence 持续到 plan/apply/status/verify 完成。同 ID 的 Cindy 目标引用
+按物理 Home 保留，未知共享索引格式或 native 结果阻止完成。验收前失败／超时保留源；
+native 派发后失败时保留剩余源和所有证据，只允许正式 status/verify，不重发。最终普通启动和设置恢复后才可报告完整完成；
+fixture 演练和 `completed_with_residuals` 导入结果都不等于 live 迁移验收。
 
 Claude 订阅账号 Home 和旧 `codex-accounts` 的逐 provider 绑定仍未适配。自定义回调
 目录、已移除绑定且专属目录中也不存在的历史记录仍需显式提供可验证的存储位置。

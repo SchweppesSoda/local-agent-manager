@@ -69,6 +69,8 @@ class CindyIsolationExecutionTests(unittest.TestCase):
         self.spec = {"target": {"path": str(self.target)}, "native_files": [
             {"native_id": "selected", "path": str(self.packet_source), "target_path": str(self.dest), "sha256": digest(self.packet_source)}],
             "database_packets": [], "location_changes": []}
+        self.spec["auth"] = {"target": {"path": str(self.auth)}}
+        self.spec['registry_path'] = str(self.registry)
         for name, table, schema, rows in [
             ("state.sqlite", "threads", "id text primary key,rollout_path text,title text",
              [("selected", str(self.dest), "opaque title")]),
@@ -95,6 +97,7 @@ class CindyIsolationExecutionTests(unittest.TestCase):
         self.events.append({"event": event, "mutation": mutation, "batch": batch})
 
     def run_stages(self, callback=None):
+        if 'plan_sha256' not in self.spec:self.spec['plan_sha256']=fingerprint(self.spec)
         return execute_stages(self.spec, ["selected"], boundary=self.boundary, checkpoint=callback or self.checkpoint)
 
     def db_states(self):

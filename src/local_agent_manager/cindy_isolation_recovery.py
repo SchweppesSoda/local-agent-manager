@@ -169,8 +169,13 @@ def projected_registry(before, spec):
 
 def registry_state(current, before, spec):
     after = projected_registry(before, spec)
-    # Unselected/new keys are retained, but a mismatch is not completion proof.
-    return "before" if current == before else "after" if current == after else "diverged"
+    # New unrelated bindings are positive protection sources, never overwritten.
+    for state, expected in (("before", before), ("after", after)):
+        projected = deepcopy(current)
+        for key in set(projected.get("bindings", {})) - set(expected.get("bindings", {})):
+            projected["bindings"].pop(key)
+        if projected == expected: return state
+    return "diverged"
 
 
 def auth_state(spec):
@@ -234,6 +239,7 @@ def observe(spec, draft, *, registry_before=None):
             "source": observe_database(Path(spec["source"]["path"]) / name, packet, ids, source_paths=paths),
             "target": observe_database(Path(spec["target"]["path"]) / name, packet, ids)}
     current = json.loads(Path(spec["registry_path"]).read_text(encoding="utf-8-sig"))
+    result["registry_current"] = current
     result["registry"] = (registry_state(current, registry_before, spec) if registry_before is not None else
                           "before" if digest(spec["registry_path"]) == spec["registry_before_sha256"] else "unqualified")
     result["bindings"] = {change["key"]: (
@@ -265,7 +271,7 @@ def remaining_plan(observation, *, original_sha256, cumulative_mutations, comple
     states.update({"database:" + k: v["target"]["state"] for k, v in observation["databases"].items()})
     states.update({"location:" + k: v for k, v in observation["locations"].items()})
     states.update(registry=observation["registry"], auth=observation["auth"]["state"])
-    blockers = [key for key, value in states.items() if value not in ("before", "after")]
+    blockers = [key for key, value in states.items() if value not in ("before", "after", "after_with_increments")]
     blockers += ["source:" + key for key, value in observation["databases"].items() if value["source"]["state"] != "after"]
     blockers += ["identity:" + key for key, value in observation["physical_roots"].items() if value is not True]
     blockers += ["dependency:" + key for key, value in observation.get("empty_dependencies", {}).items()
@@ -279,9 +285,16 @@ def remaining_plan(observation, *, original_sha256, cumulative_mutations, comple
         blockers.append("auth_source_generation_changed")
     if observation["auth"]["state"] == "after" and not observation["auth"].get("permissions_verified"):
         blockers.append("auth_permissions_unverified")
+    batch_components = {"auth-file": "auth", "registry": "registry"}
+    for batch in completed_batches:
+        component = batch_components.get(batch, batch)
+        if component.startswith("file:"):
+            # Early execution versions named file batches by absolute path.
+            component = observation.get("file_batch_components", {}).get(component, component)
+        if states.get(component) == "before": blockers.append("previously_verified_component_reverted:" + component)
     result = {"kind": "cindy_legacy_remaining_draft", "original_spec_sha256": original_sha256,
               "writes": sorted(k for k, v in states.items() if v == "before"),
-              "already_after": sorted(k for k, v in states.items() if v == "after"),
+              "already_after": sorted(k for k, v in states.items() if v in ("after", "after_with_increments")),
               "blockers": sorted(blockers), "cumulative_mutations": deepcopy(cumulative_mutations),
               "completed_batches": list(completed_batches), "target_restore_or_delete": False,
               "apply_permitted": False, "source_cleanup_permitted": False,

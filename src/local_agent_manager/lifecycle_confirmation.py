@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 import os
 import time
+import re
 
 from .windows_dialogs import ConfirmationDialog, show_confirmation
 
@@ -21,6 +22,9 @@ class LifecycleTarget:
     home: str
     affected_tasks: tuple[str, ...]
     details: tuple[str, ...] = ()
+    file_sha256: str | None = None
+    file_device: int | None = None
+    file_inode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,12 @@ class LifecycleScope:
             raise ValueError('exact lifecycle scope required')
         for t in self.targets:
             values = (t.software, t.created, t.executable, t.home, *t.affected_tasks, *t.details)
-            if (t.pid <= 0 or not t.affected_tasks
+            file_start = (type(t.pid) is int and t.pid == 0 and self.actions == ('restart',)
+                          and t.created == 'not-running' and isinstance(t.file_sha256, str)
+                          and re.fullmatch(r'[0-9a-f]{64}', t.file_sha256)
+                          and type(t.file_device) is int and t.file_device > 0
+                          and type(t.file_inode) is int and t.file_inode > 0)
+            if ((type(t.pid) is not int or t.pid <= 0) and not file_start or not t.affected_tasks
                     or any(not v or any(ord(c) < 32 for c in v) for v in values)):
                 raise ValueError('software, process identity and affected tasks required')
         if any(ord(c) < 32 for c in self.run_id):
@@ -115,9 +124,13 @@ def lifecycle_dialog(scope: LifecycleScope) -> ConfirmationDialog:
                '操作：' + '、'.join('关闭' if a == 'close' else '重新打开' for a in scope.actions)]
     for target in scope.targets:
         content.append(f'• {target.software}\n  ' + '；'.join(target.affected_tasks))
-        details.extend((f'\n{target.software}（PID {target.pid}）',
+        identity = f'PID {target.pid}' if target.pid else '当前未运行；按已复核的程序文件启动'
+        details.extend((f'\n{target.software}（{identity}）',
                         f'进程启动时间：{target.created}', f'程序路径：{target.executable}',
                         f'数据目录：{target.home}', *target.details))
+        if target.file_sha256:
+            details.extend((f'程序 SHA-256：{target.file_sha256}',
+                            f'程序文件实体：{target.file_device}:{target.file_inode}'))
     if scope.details:
         details.append('\n' + scope.details)
     return ConfirmationDialog(

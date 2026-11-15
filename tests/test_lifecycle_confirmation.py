@@ -105,6 +105,20 @@ class LifecycleConfirmationTests(unittest.TestCase):
                 windows_confirmation('fixture')
             show.assert_not_called()
 
+    def test_not_running_restart_requires_frozen_file_identity_and_fresh_gate(self):
+        target=replace(self.target,pid=0,created='not-running',file_sha256='a'*64,file_device=1,file_inode=2)
+        scope=replace(self.scope,targets=(target,),actions=('restart',))
+        gate=LifecycleGate(scope,prompt=self.prompt,clock=self.clock)
+        with self.assertRaises(RuntimeError):gate.arm(scope)
+        gate.confirm();gate.arm(scope)
+        with self.assertRaises(RuntimeError):gate.perform('close',current_run_id=scope.run_id,current_target=target,execute=self.action)
+        gate.perform('restart',current_run_id=scope.run_id,current_target=target,execute=self.action)
+        self.action.assert_called_once_with(target)
+        for bad in (replace(scope,actions=('close',)),replace(scope,actions=('close','restart')),
+                    replace(scope,targets=(replace(target,file_sha256=None),)),
+                    replace(scope,targets=(replace(target,file_inode=None),))):
+            with self.assertRaises(ValueError):LifecycleGate(bad,prompt=self.prompt)
+
 
 if __name__ == '__main__':
     unittest.main()

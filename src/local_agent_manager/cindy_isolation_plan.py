@@ -10,6 +10,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import stat
 import sqlite3
@@ -18,6 +19,24 @@ from typing import Mapping
 
 class IsolationPlanError(ValueError):
     pass
+
+
+def physical_descendant(path: Path, root: Path) -> Path:
+    """Qualify the same Windows file despite an extended-drive spelling.
+
+    Do not resolve arbitrary descendant links or normalize away traversal.
+    Only the OS namespace prefix may change, after proving samefile.
+    """
+    from . import frozen_files as ff
+    original = Path(path)
+    text = str(original)
+    if text.startswith('\\\\?\\') and len(text) > 7 and text[4].isalpha() and text[5:7] == ':\\':
+        path = Path(text[4:])
+        if not os.path.samefile(original, path): raise IsolationPlanError('extended_path_identity_changed')
+    else: path = original
+    relative = path.relative_to(root)
+    checked = ff.checked_path(root, relative.as_posix()); ff._plain(checked.lstat())
+    return checked
 
 
 @contextmanager
