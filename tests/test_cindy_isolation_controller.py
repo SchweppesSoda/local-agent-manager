@@ -93,6 +93,7 @@ class CindyControllerTests(unittest.TestCase):
         controller['protected_snapshot']=protected_snapshot(self.spec)
         self.spec.pop('plan_sha256');self.spec['plan_sha256']=fingerprint(self.spec)
         p=patch('local_agent_manager.cindy_isolation_windows.no_cindy');p.start();self.addCleanup(p.stop)
+        p=patch('local_agent_manager.cindy_isolation_windows.auth_protocol_census', return_value=[]);p.start();self.addCleanup(p.stop)
         self.key=secrets.token_bytes(32);self.nonce='fixture-nonce'
 
     def source_server(self,**kwargs):

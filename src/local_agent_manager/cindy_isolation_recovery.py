@@ -283,7 +283,7 @@ def remaining_plan(observation, *, original_sha256, cumulative_mutations, comple
         blockers.append("source_closure_changed_or_unqualified")
     if observation["auth"].get("source_generation_matches_freeze") is False:
         blockers.append("auth_source_generation_changed")
-    if observation["auth"]["state"] == "after" and not observation["auth"].get("permissions_verified"):
+    if observation["auth"]["state"] in {"after", 'after_with_increments'} and not observation["auth"].get("permissions_verified"):
         blockers.append("auth_permissions_unverified")
     batch_components = {"auth-file": "auth", "registry": "registry"}
     for batch in completed_batches:

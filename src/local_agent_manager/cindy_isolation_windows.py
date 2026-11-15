@@ -34,6 +34,64 @@ def no_cindy():
         fail("cindy_must_be_closed_before_startup_fence")
 
 
+def auth_protocol_census():
+    from .codex_desktop_state import _running_related_process_records
+    return _running_related_process_records()
+
+
+class NativeAuthLocks:
+    """The native 0.166/0.167 auth.lock protocol, not a destination file lease.
+
+    This preserves T3 while serializing its credential commits with the one
+    atomic auth-link replacement. Empty native coordination files persist;
+    existing locks and their ACLs are never changed or removed.
+    """
+    def __init__(self, homes):
+        self.homes = sorted({Path(home) for home in homes}, key=lambda p: str(p).casefold())
+        self.stack = ExitStack()
+        self.created = []
+
+    def __enter__(self):
+        from .mutation_guard import _os_lock
+        try:
+            for home in self.homes:
+                path = home / 'auth.lock'
+                self.stack.enter_context(ff._parent_fence(home, 'auth.lock'))
+                if not os.path.lexists(path):
+                    try:
+                        created = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_BINARY, 0o600)
+                    except FileExistsError: pass
+                    else:
+                        os.close(created); self.created.append(str(path))
+                before = path.lstat(); ff._plain(before)
+                fd = ff._windows_fd(path)
+                self.stack.callback(os.close, fd)
+                if ff._identity(os.fstat(fd)) != ff._identity(before): fail('native_auth_lock_replaced')
+                _os_lock(fd)
+                self.stack.callback(_os_lock, fd, unlock=True)
+            return self
+        except BaseException:
+            self.stack.close(); raise
+
+    def __exit__(self, *args): return self.stack.__exit__(*args)
+
+
+def qualify_auth_writers(spec):
+    approved = spec['controller'].get('auth_lock_runtimes', {})
+    homes = [Path(spec[key]['path']) for key in ('source', 'target')]
+    for record in auth_protocol_census():
+        if record['name'].casefold() != 'codex.exe': continue
+        home = record.get('codex_home')
+        if not home: fail('native_auth_writer_home_unproven')
+        if not any(os.path.samefile(home, root) for root in homes): continue
+        binary = record.get('executable_path')
+        entry = approved.get(binary)
+        if not entry or entry.get('version') not in {'codex-cli 0.166.0', 'codex-cli 0.167.2'}:
+            fail('native_auth_writer_protocol_unqualified')
+        ff._plain(Path(binary).lstat())
+        if digest(binary) != entry['sha256']: fail('native_auth_writer_binary_changed')
+
+
 def process_evidence():
     """A synchronous writer identity, never a caller-supplied PID."""
     from .cindy_isolation_lifecycle import windows_identity
@@ -302,6 +360,8 @@ class WindowsImportBoundary:
             no_cindy()  # after executable/package and ancestor namespace leases
             self.stack.enter_context(self.source_stack)
             self.sources_active = True
+            qualify_auth_writers(self.spec)
+            self.auth_locks = self.source_stack.enter_context(NativeAuthLocks([self.spec[key]['path'] for key in ('source', 'target')]))
             self.leases = self.source_stack.enter_context(ReadLeases())
             deps = self.draft["groups"]["current_shared_candidates"]["dependencies"]
             for dependency in sorted(deps, key=lambda d: d["identity"]["path"]):
@@ -354,6 +414,11 @@ class WindowsImportBoundary:
     def validate_source(self):
         self.require_held()
         if not self.sources_active: fail("source_reservations_already_released_to_native_manager")
+        if not auth_state(self.spec).get('source_generation_matches_freeze'):
+            fail('auth_source_generation_changed_since_freeze')
+        expected_acl = self.spec['controller'].get('auth_effective_acl_sha256')
+        if expected_acl and auth_permissions(self.spec['auth']['source']['path'])['effective_acl_sha256'] != expected_acl:
+            fail('auth_source_permissions_changed_since_freeze')
         group = self.draft["groups"]["current_shared_candidates"]
         roots = sorted({i for b in group["batches"] for i in b["root_ids"]})
         state = self.sources["state_5.sqlite"]
@@ -434,11 +499,30 @@ class WindowsImportBoundary:
 
     def verify_auth(self):
         state = auth_state(self.spec)
-        if state["state"] != "after": fail("auth_entity_or_generation_unverified")
+        if state['state'] != 'after':
+            if self.spec.get('allow_target_progress'):
+                self.verify_auth_progress(state)
+                return
+            fail("auth_entity_or_generation_unverified")
         source, target = (self.spec["auth"][key]["path"] for key in ("source", "target"))
         a, b = auth_permissions(source), auth_permissions(target)
         if a["effective_acl_sha256"] != b["effective_acl_sha256"] or not b["protected"]:
             fail("independent_auth_permissions_changed")
+
+    def verify_auth_progress(self, state):
+        # A T3 continuation can refresh the now independent credential file.
+        # Keep it; account/read with refresh disabled must prove the frozen
+        # existing identity, and the protected original grants must remain.
+        from .cindy_isolation_controller import supported_account
+        expected = self.spec['controller'].get('account_identity_sha256')
+        if not expected or not state.get('independent_regular_file') or not state.get('source_generation_matches_freeze'):
+            fail('auth_progress_entity_unqualified')
+        source_acl = auth_permissions(self.spec['auth']['source']['path'])
+        target_acl = auth_permissions(self.spec['auth']['target']['path'])
+        if source_acl['effective_acl_sha256'] != target_acl['effective_acl_sha256'] or not target_acl['protected']:
+            fail('auth_progress_permissions_changed')
+        if supported_account(self.spec)['identity_sha256'] != expected:
+            fail('auth_progress_existing_account_changed')
 
     def switch_registry(self):
         self.require_held()
@@ -482,6 +566,7 @@ class WindowsImportBoundary:
         from .cindy_isolation_recovery import observe
         result = observe(self.spec, self.draft, registry_before=self.spec["controller"]["registry_before"])
         result["snapshot_consistency"] = "source_write_reservations_and_file_leases_product_startup_fence"
+        result['native_auth_coordination_created'] = list(self.auth_locks.created)
         result["file_batch_components"] = {"file:" + f["target_path"]: "file:" + f["native_id"] for f in self.spec["native_files"]}
         progressive_files = {i for i, state in result["files"].items() if state != "before"}
         progressive_packets = {name for name, states in result["databases"].items() if states["target"]["state"] != "before"}
@@ -495,4 +580,8 @@ class WindowsImportBoundary:
                 if result["databases"][name]["target"]["state"] != "after": result["databases"][name]["target"]["state"] = "after_with_increments"
         if result["auth"]["state"] == "after":
             self.verify_auth(); result["auth"]["permissions_verified"] = True
+        elif result['auth']['state'] == 'diverged':
+            self.verify_auth_progress(result['auth'])
+            result['auth'].update(state='after_with_increments', permissions_verified=True,
+                existing_account_identity_verified=True)
         return result

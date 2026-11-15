@@ -29,6 +29,8 @@ class WindowsCindyImportTests(unittest.TestCase):
         self.spec, self.draft = make_fixture(self.root)
         patcher = patch("local_agent_manager.cindy_isolation_windows.no_cindy")
         patcher.start(); self.addCleanup(patcher.stop)
+        patcher = patch('local_agent_manager.cindy_isolation_windows.auth_protocol_census', return_value=[])
+        patcher.start(); self.addCleanup(patcher.stop)
 
     def boundary(self, spec=None): return WindowsImportBoundary(spec or self.spec, self.draft)
 
@@ -145,6 +147,24 @@ class WindowsCindyImportTests(unittest.TestCase):
         _, result = self.recover()
         self.assertTrue(result['offline_import_verified']); self.assertFalse(old_stage.exists())
 
+    def test_auth_generation_drift_blocks_before_any_history_copy(self):
+        Path(self.spec['auth']['source']['path']).write_text('changed synthetic credential')
+        with self.assertRaisesRegex(ValueError, 'auth_source_generation_changed'):
+            admitted_import(self.spec, ['selected'], import_entries(self.spec, writer=process_evidence()), boundary_factory=self.boundary)
+        self.assertFalse(Path(self.spec['native_files'][0]['target_path']).exists())
+
+    def test_qualified_same_account_auth_refresh_is_preserved_by_remaining_plan(self):
+        from local_agent_manager.cindy_isolation_plan import fingerprint
+        self.spec['controller']['account_identity_sha256'] = 'same-synthetic-account'
+        self.spec.pop('plan_sha256'); self.spec['plan_sha256'] = fingerprint(self.spec)
+        with self.interrupt_at('registry_verified'), self.assertRaises(KeyboardInterrupt):
+            admitted_import(self.spec, ['selected'], import_entries(self.spec, writer=process_evidence()), boundary_factory=self.boundary)
+        target = Path(self.spec['auth']['target']['path']); refreshed = b'{"synthetic":"new generation"}'
+        target.write_bytes(refreshed)
+        with patch('local_agent_manager.cindy_isolation_controller.supported_account', return_value={'identity_sha256':'same-synthetic-account'}):
+            _, result = self.recover()
+        self.assertTrue(result['offline_import_verified']); self.assertEqual(target.read_bytes(), refreshed)
+
     def test_second_interruption_uses_latest_remaining_journal(self):
         from local_agent_manager.cindy_isolation_resume import latest_import_spec
         bundle = self.root / 'bundle'; directory = bundle / 'runs' / ('run-' + 'a' * 24); directory.mkdir(parents=True)
@@ -186,6 +206,7 @@ from local_agent_manager.cindy_isolation_windows import WindowsImportBoundary,pr
 from local_agent_manager.operation_store import OperationStore
 import local_agent_manager.cindy_isolation_windows as windows
 windows.no_cindy=lambda:None
+windows.auth_protocol_census=lambda:[]
 s=json.loads(Path(sys.argv[1]).read_text());d=json.loads(Path(sys.argv[2]).read_text())
 original=OperationStore.append_event
 def checkpoint(store,event,**kw):

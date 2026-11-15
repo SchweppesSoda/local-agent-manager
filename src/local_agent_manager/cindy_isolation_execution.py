@@ -248,7 +248,9 @@ def finish_import_journals(entries, states, *, mutations, batches, event="operat
 def admitted_import(spec, ids, entries, *, boundary_factory):
     """Admit all three roots/locks before the first stage, never replay a run.
 
-    Boundary acquisition and validation must be read-only on product stores.
+    All three journals/locks precede boundary acquisition. The held native
+    auth protocol can create only its two empty, persistent coordination files;
+    no credential or history write precedes the durable boundary intent.
     Failed journal admission is retained. A new run cannot clear the partial
     journals or bypass the manager's pre-existing unknown-outcome occupancy.
     """
@@ -286,9 +288,6 @@ def admitted_import(spec, ids, entries, *, boundary_factory):
         if any(store.directory.exists() for store, _ in entries):
             raise IsolationPlanError("prior_journal_status_verify_only")
         with ExitStack() as stack:
-            boundary = stack.enter_context(boundary_factory())
-            boundary.require_held()
-            boundary.validate_source()
             for store, plan in entries:
                 store.accept_plan(plan)
                 state = {"schema_version": "larj.agent-state.v1", "operation_id": store.operation_id,
@@ -320,6 +319,10 @@ def admitted_import(spec, ids, entries, *, boundary_factory):
                                         "completed_batches": list(batches)}, state_updates=state)
             try:
                 checkpoint("mutation_started")
+                checkpoint('native_auth_boundary_intent', mutation={'kind': 'native_auth_coordination',
+                    'paths': [str(Path(spec[key]['path']) / 'auth.lock') for key in ('source', 'target')]})
+                boundary = stack.enter_context(boundary_factory())
+                boundary.require_held(); boundary.validate_source()
                 result = execute_stages(spec, ids, boundary=boundary, checkpoint=checkpoint)
                 checkpoint("offline_stages_verified_runtime_acceptance_pending")
                 finish_import_journals(entries, states, mutations=mutations, batches=batches)

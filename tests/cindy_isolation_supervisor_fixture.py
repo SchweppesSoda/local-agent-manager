@@ -40,6 +40,7 @@ def main():
             coordinator=OperationCoordinator(CleanupService(client_inspector=lambda *_: ())))
     with patch.object(entry, 'ctypes_is_admin', return_value=True), \
          patch('local_agent_manager.cindy_isolation_windows.no_cindy'), \
+         patch('local_agent_manager.cindy_isolation_windows.auth_protocol_census', return_value=[]), \
          patch.object(entry, 'cleanup_source', cleanup):
         return entry.elevated(bundle, spec, draft, 'fixture-manifest', run_name)
 

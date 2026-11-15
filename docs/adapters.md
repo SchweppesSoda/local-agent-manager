@@ -126,6 +126,14 @@ spec、文件清单及哈希绑定的 `entry.py`；这是本机既定迁移范�
 目标两库分别持 `BEGIN IMMEDIATE`，每次提交都验证未选行；产品配置使用父目录 namespace
 租约、实际单 writer 启动排除和 manager root 锁完成原子替换。目标库不整库复制，运行中
 T3 的未选数据及随后增量留在原处。认证先赋原权限后写入独立普通文件，不输出凭据。
+T3 同样可刷新旧 Home 的认证。冻结实际运行的 Codex binary／版本／hash，按已核实的
+[0.166.0](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/login/src/auth/storage.rs)
+和 [0.167.2](https://github.com/openai/codex/blob/rust-v0.167.2/codex-rs/login/src/auth/storage.rs)
+跨进程 `auth.lock` 协议，在源和目标 Home 同时持原生认证写锁，再租约凭据并原子替换
+链接；未知 provider home／runtime 保持阻塞。三个 journal／apply 锁及持久化 intent 先于
+边界取得。原生协议缺失的空 `auth.lock` 可在固定 Home 新建并永久保留，已有锁及 ACL
+不修改。T3 进程继续运行，其凭据提交在短暂离线窗口后恢复。凭据 generation／权限变化
+在复制历史前即阻止执行；恢复只在现有账号身份和权限均已核实时保留目标刷新后的凭据。
 审核过的源码／清单／runtime 保持只读共享句柄，管理员延迟导入不读取用户可写 pycache。
 
 原生文件通过同目录临时文件完整写入后以不覆盖的方式发布；两份 WAL 数据库仍是分别提交。

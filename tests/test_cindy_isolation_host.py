@@ -13,7 +13,7 @@ import time
 import unittest
 
 from local_agent_manager.cindy_isolation_lifecycle import CindyLifecycle, windows_identity
-from local_agent_manager.cindy_isolation_windows import ReadLeases, auth_permissions
+from local_agent_manager.cindy_isolation_windows import ReadLeases, auth_permissions, NativeAuthLocks
 from local_agent_manager.lifecycle_confirmation import LifecycleGate
 
 
@@ -89,6 +89,32 @@ $f.add_Shown({[IO.File]::WriteAllText($env:LAM_TEMP_READY,'ready')})
         proof = auth_permissions(path)
         self.assertTrue(proof['protected'])
         with self.assertRaises(OSError): private_run_directory(path)
+
+    def test_native_auth_lock_blocks_full_range_peer_without_replacing_lock(self):
+        home = self.root/'home'; home.mkdir()
+        script = '''
+import ctypes,sys
+from ctypes import wintypes
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.CreateFileW.argtypes=(wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE)
+k.CreateFileW.restype=wintypes.HANDLE
+class OVERLAPPED(ctypes.Structure):
+ _fields_=[('internal',ctypes.c_size_t),('high',ctypes.c_size_t),('offset',wintypes.DWORD),('offsetHigh',wintypes.DWORD),('event',wintypes.HANDLE)]
+k.LockFileEx.argtypes=(wintypes.HANDLE,wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,ctypes.POINTER(OVERLAPPED))
+k.LockFileEx.restype=wintypes.BOOL
+h=k.CreateFileW(sys.argv[1],0xc0000000,7,None,3,0,None)
+o=OVERLAPPED()
+ok=k.LockFileEx(h,3,0,0xffffffff,0xffffffff,ctypes.byref(o))
+error=ctypes.get_last_error()
+raise SystemExit(0 if ok else 23 if error==33 else 24)
+'''
+        import sys
+        with NativeAuthLocks([home]) as locks:
+            path = home/'auth.lock'; identity = path.stat().st_ino
+            self.assertEqual(locks.created, [str(path)])
+            self.assertEqual(subprocess.run([sys.executable,'-c',script,str(path)],timeout=5).returncode,23)
+        self.assertEqual(subprocess.run([sys.executable,'-c',script,str(path)],timeout=5).returncode,0)
+        self.assertEqual(path.stat().st_ino, identity); self.assertEqual(path.stat().st_size, 0)
 
 
 if __name__ == '__main__': unittest.main()

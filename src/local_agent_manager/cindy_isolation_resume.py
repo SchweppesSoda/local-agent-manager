@@ -171,7 +171,8 @@ def resolve_import(spec, draft, *, boundary_factory, evidence_directory,
                      "writer_exit": proofs, "physical_scope": {k: spec[k] for k in ("profile", "source", "target")},
                      "original_locks": [e for _, e in original_locks], "observation": observation,
                      "cumulative_mutations": journal["cumulative_mutations"], "completed_batches": journal["completed_batches"],
-                     "remaining": remaining, "product_mutation_dispatched": False}
+                     "remaining": remaining, "product_record_mutation_dispatched": False,
+                     'native_auth_coordination_created': observation.get('native_auth_coordination_created', [])}
             audit["audit_sha256"] = fingerprint(audit)
             audit_path = evidence_directory / ("recovery-" + audit["audit_sha256"][:20] + ".json")
             if not audit_path.exists(): write_new_json(audit_path, audit)

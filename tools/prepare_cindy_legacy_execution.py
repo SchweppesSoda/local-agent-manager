@@ -239,6 +239,23 @@ def prepare():
     spec['controller']['allowed_test_accounts']={'default':spec['controller']['account_identity_sha256'],
         spec['protected_second_account']:supported_account(spec,home=second['path'])['identity_sha256']}
     spec['controller']['window_behavior_before']=window_behavior(spec)
+    from local_agent_manager.cindy_isolation_windows import auth_protocol_census
+    binaries = {native_binary}
+    for record in auth_protocol_census():
+        if record['name'].casefold() != 'codex.exe': continue
+        if not record.get('codex_home'): raise RuntimeError('Native auth writer home is unknown')
+        if any(os.path.samefile(record['codex_home'], root) for root in (source, target)):
+            if not record.get('executable_path'): raise RuntimeError('Native auth writer executable is unknown')
+            binaries.add(Path(record['executable_path']))
+    auth_runtimes = {}
+    for binary in sorted(binaries):
+        ff._plain(binary.lstat())
+        probe = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+        if probe.returncode or probe.stdout.strip() not in {'codex-cli 0.166.0','codex-cli 0.167.2'}:
+            raise RuntimeError('Native auth writer release does not have this qualified auth.lock protocol')
+        auth_runtimes[str(binary)] = {'version': probe.stdout.strip(), 'sha256': digest(binary)}
+    spec['controller']['auth_lock_runtimes'] = auth_runtimes
+    spec['controller']['native_auth_lock_paths'] = [str(root / 'auth.lock') for root in (source, target)]
     spec["controller"]["protected_snapshot"] = protected_snapshot(spec)
     draft["draft_sha256"] = fingerprint({k: v for k, v in draft.items() if k != "draft_sha256"})
     spec["source_draft_sha256"] = draft["draft_sha256"]
@@ -257,6 +274,7 @@ def prepare():
     files = {p for p in (ROOT / "src/local_agent_manager").rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.suffix in {".py", ".json", ".cjs", ".manifest", ".ps1"}}
     files.update({bundle / "entry.py", bundle / "execution-spec.json", bundle / "source-draft.json", Path(sys.executable), native_binary, executable, package})
     files.update(Path(f["path"]) for f in staged); files.update(Path(p["packet"]) for p in spec["database_packets"])
+    files.update(binaries)
     manifest = {"task": TASK, "spec_sha256": spec["plan_sha256"], "source_path": str(ROOT / "src"),
                 'python_executable': sys.executable,
                 "files": [{"path": str(p), "sha256": digest(p), "size": p.stat().st_size} for p in sorted(files, key=str)]}
