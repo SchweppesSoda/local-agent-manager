@@ -14,6 +14,21 @@ for selection and downstream instruction loading.
 
 ## Storage and selection
 
+`cindy_isolation_plan.py` prepares an existing-default split using the product's
+`legacyCodexDefault` discriminator and the verified physical `codex-home`.
+Registration and an auth file do not prove authentication. Its field patches
+preserve unrelated bindings and reject concurrent changes; recovery retains
+completed batches and target increments instead of restoring a whole database.
+
+`cindy_isolation_merge.py` supplies a transaction-only native-row merge from an
+attached, frozen `incoming` snapshot. It rejects primary-key conflicts, unknown
+triggers and schema differences, rewrites only frozen rollout paths and compares
+complete inserted rows inside SQLite without returning chat payloads. The caller
+still owns mutation admission, lifecycle confirmation, durable checkpoints and
+cross-database consistency. These internal preparation primitives are not a live
+migration CLI or deletion authority; source cleanup requires a fresh verified
+record-operation plan after runtime acceptance.
+
 Cindy's frontend SQLite database, dedicated `codex-home`, `pi-agent-home`, and
 Claude store remain separate physical stores. The official Codex home is never
 substituted. The native catalog supplies project and parent/descendant evidence
