@@ -75,6 +75,22 @@ class TargetedReferenceGuard:
                 continue
             name = str(getattr(adapter, "name", type(adapter).__name__))
             name_key = name.casefold()
+            if name_key == "cindy":
+                database = getattr(adapter, "database", None)
+                pending = affected - approved_ids.get(
+                    (name_key, canonical_existing_path_key(Path(database))), frozenset())
+                try:
+                    snapshot = adapter.snapshot_sessions(refresh=True)
+                    matching = {
+                        row.thread_id for row in snapshot.records
+                        if row.is_live and row.backend == "codex" and row.thread_id in pending
+                        and canonical_existing_path_key(row.codex_home) == target_home
+                    }
+                except Exception as exc:
+                    raise TargetedGuardError("could not inspect current Cindy account references") from exc
+                if matching:
+                    live_by_source.setdefault(name, set()).update(matching)
+                continue
             raw_home = getattr(adapter, "codex_home", None)
             if raw_home is None:
                 # Compatibility-only native test adapters have no frontend

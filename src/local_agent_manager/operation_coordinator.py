@@ -1907,7 +1907,7 @@ class OperationCoordinator:
             from .manual_delete import build_manual_delete_plan
             from .native_project_cleanup import merge_project_context, projects_for_adapters
 
-            catalog = build_session_catalog(selected)
+            catalog = build_session_catalog(selected, guard_adapters=source)
             manual_plan = build_manual_delete_plan(catalog)
             # Exact IDs can outlive both the native record and Desktop catalog
             # as JSON-only UI references. Keep this discovery explicitly scoped;

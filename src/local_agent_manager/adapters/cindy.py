@@ -11,6 +11,7 @@ from ..blocker_codes import (
     SPAWN_EDGE_OPEN,
 )
 from ..codex_state import iter_rollouts
+from ..cindy_codex_accounts import codex_account_bindings
 from ..cindy_references import (
     CindyNativeReference,
     build_cindy_reference_catalog,
@@ -105,13 +106,17 @@ class CindyAdapter(FrontendAdapter):
             for reference in catalog.references
             if requested_backend is None or reference.backend == requested_backend
         )
+        account_homes = self._codex_account_homes()
         return [
             FrontendSessionRecord(
                 platform=self.name,
                 platform_session_id=reference.cindy_session_id,
                 thread_id=reference.native_session_id,
                 database=self.database,
-                codex_home=self.codex_home,
+                codex_home=(
+                    account_homes.get(reference.native_session_id, self.codex_home)
+                    if reference.backend == "codex" else self.codex_home
+                ),
                 owner_process_root=self.owner_process_root,
                 owner_client=self.client,
                 backend=reference.backend,
@@ -138,6 +143,14 @@ class CindyAdapter(FrontendAdapter):
             )
             for reference in references
         ]
+
+    def _codex_account_homes(self) -> dict[str, Path]:
+        if self.codex_home != self.cindy_root / "codex-home":
+            return {}
+        try:
+            return codex_account_bindings(self.database, self.cindy_root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise AdapterScanError("Cindy native-account bindings are unavailable") from exc
 
     def list_references(self) -> list["FrontendSessionRecord"]:
         """Alias making the frontend-reference boundary explicit."""
@@ -207,6 +220,9 @@ class CindyAdapter(FrontendAdapter):
                  ("claude", self.cindy_root / "claude-home", "config_dir"))
         return replace(descriptor, profile_root=self.cindy_root, native_stores=(
             *descriptor.native_stores,
+            *(StoreKey("codex", home, kind="codex_home")
+              for home in sorted(set(self._codex_account_homes().values()))
+              if home != self.codex_home),
             *(StoreKey(engine, root, kind=kind) for engine, root, kind in roots if root.is_dir()),
         ))
 
@@ -281,7 +297,7 @@ class CindyAdapter(FrontendAdapter):
 
     def scan(self) -> list[Finding]:
         self._replace_live_thread_ids(set())
-        if not self.available:
+        if not self.database.is_file():
             return []
         references = self._references()
         live_references = [
@@ -300,20 +316,28 @@ class CindyAdapter(FrontendAdapter):
         if not rows:
             return []
 
-        thread_ids = [reference.native_session_id for reference in rows if reference.native_session_id]
-        try:
-            rollout_groups = _rollouts_by_thread(self.codex_home, set(thread_ids))
-        except OSError as exc:
-            raise AdapterScanError(
-                f"Could not inspect Codex rollouts in {self.codex_home}: {exc}"
-            ) from exc
-        evidence = read_codex_evidence(self.codex_home, thread_ids)
+        account_homes = self._codex_account_homes()
+        ids_by_home: dict[Path, set[str]] = defaultdict(set)
+        for reference in rows:
+            thread_id = reference.native_session_id
+            assert thread_id is not None
+            ids_by_home[account_homes.get(thread_id, self.codex_home)].add(thread_id)
+        rollout_groups_by_home = {}
+        evidence_by_home = {}
+        for home, thread_ids in ids_by_home.items():
+            try:
+                rollout_groups_by_home[home] = _rollouts_by_thread(home, thread_ids)
+            except OSError as exc:
+                raise AdapterScanError(f"Could not inspect Codex rollouts in {home}") from exc
+            evidence_by_home[home] = read_codex_evidence(home, thread_ids)
 
         findings: list[Finding] = []
         for reference in rows:
             thread_id = reference.native_session_id
             assert thread_id is not None
-            records = rollout_groups.get(thread_id, [])
+            home = account_homes.get(thread_id, self.codex_home)
+            evidence = evidence_by_home[home]
+            records = rollout_groups_by_home[home].get(thread_id, [])
             rollout = _preferred_rollout(records)
             state_row = evidence.indexed_threads.get(thread_id)
             # A live frontend row can outlast an explicitly deleted native
@@ -391,7 +415,7 @@ class CindyAdapter(FrontendAdapter):
                         else "Cindy session is soft-deleted but its Codex thread remains"
                     ),
                     platform_db=self.database,
-                    codex_home=self.codex_home,
+                    codex_home=home,
                     platform_updated_at_ms=reference.session_updated_at_ms,
                     rollout=rollout,
                     codex_indexed=state_row is not None,

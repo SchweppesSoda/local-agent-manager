@@ -293,17 +293,17 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
     # Legacy guard rows on an already selected home remain approval evidence;
     # guard-only homes never become native catalog candidates.
     readers = (*adapter_list, *(adapter for adapter in active if id(adapter) not in candidate_ids
-        and isinstance(home := getattr(adapter, "codex_home", None), Path)
-        and _normalized_path(_absolute_path(home)) in candidate_homes))
+        and isinstance(home := getattr(adapter, "codex_home", None), Path)))
     for adapter in readers:
         raw_home = getattr(adapter, "codex_home", None)
         if not isinstance(raw_home, Path):
             continue
         home = _absolute_path(raw_home)
         home_key = _normalized_path(home)
-        home_paths.setdefault(home_key, home)
+        if id(adapter) in candidate_ids or home_key in candidate_homes:
+            home_paths.setdefault(home_key, home)
         hint = getattr(adapter, "codex_bin_hint", None)
-        if isinstance(hint, Path):
+        if isinstance(hint, Path) and home_key in home_paths:
             bin_hints[home_key].add(_absolute_path(hint))
         try:
             sessions = list(adapter.list_sessions())
@@ -339,6 +339,8 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
             if id(adapter) not in candidate_ids and session_key not in candidate_homes:
                 continue
             home_paths.setdefault(session_key, session_home)
+            if isinstance(hint, Path):
+                bin_hints[session_key].add(_absolute_path(hint))
             owner_process_root = (
                 _absolute_path(session.owner_process_root)
                 if session.owner_process_root is not None

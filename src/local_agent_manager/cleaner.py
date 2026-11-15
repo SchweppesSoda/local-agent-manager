@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .adapters.base import FrontendAdapter
+from .adapters.cindy import CindyAdapter
 from .blocker_codes import (
     CASCADE_REQUIRES_EXPLICIT_SCOPE,
     INTEGRITY_REVIEW_REQUIRED,
@@ -2763,7 +2764,18 @@ def _apply_live_reference_protection(
     adapters: Sequence[FrontendAdapter],
 ) -> tuple[list[Finding], list[ScanFailure]]:
     protected: dict[str, set[str]] = defaultdict(set)
+    errors: list[ScanFailure] = []
     for adapter in adapters:
+        if isinstance(adapter, CindyAdapter):
+            try:
+                sessions = adapter.list_sessions()
+                for session in sessions:
+                    if session.is_live and session.backend == "codex" and session.thread_id:
+                        protected[canonical_existing_path_key(session.codex_home)].add(session.thread_id)
+            except Exception as exc:
+                errors.append(ScanFailure(platform="live-reference-guard",
+                    message="Could not inspect Cindy native-account references", error_type=type(exc).__name__))
+            continue
         live_ids = getattr(adapter, "live_thread_ids", ())
         if not live_ids:
             continue
@@ -2777,14 +2789,13 @@ def _apply_live_reference_protection(
             if isinstance(thread_id, str) and thread_id
         )
     if not any(protected.values()):
-        return findings, []
+        return findings, errors
 
     by_home: dict[str, list[Finding]] = defaultdict(list)
     for finding in findings:
         by_home[finding_key(finding)[0]].append(finding)
 
     descendants: dict[tuple[str, str], set[str]] = {}
-    errors: list[ScanFailure] = []
     for home, home_findings in by_home.items():
         live_ids = protected.get(home, set())
         if not live_ids:

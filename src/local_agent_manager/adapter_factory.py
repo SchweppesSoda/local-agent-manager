@@ -218,6 +218,8 @@ def create_default_adapters(args: Any) -> list[object]:
                 codex_bin_hint=codex_bin,
             )
         )
+        if "cindy" not in selected:
+            adapters.extend(discover_shared_codex_guards(appdata=appdata))
     # Protection discovery is independent of candidate selection. Typed
     # adapters never become legacy native/home or scan candidates.
     adapters.extend(discover_orca_guards(args))

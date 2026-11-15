@@ -60,7 +60,7 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 
 | 引擎 | 管理器的程序路径选择 | 管理器的数据根解析及限制 |
 |---|---|---|
-| Codex | 显式 `--codex-bin` 优先；否则从该 profile 的已知托管布局发现候选 | `--cindy-codex-home` 可独立指定；当前自动发现默认 `<profile>/codex-home`。前端 profile 与数据库另有选择器；尚未逐账号解析下述其他 Home。 |
+| Codex | 显式 `--codex-bin` 优先；否则从该 profile 的已知托管布局发现候选 | `--cindy-codex-home` 可独立指定；自动发现按 owner 注册表中精确的 `openai:native:<thread-id>` 绑定解析原生账号 Home。没有原生绑定的旧记录沿用 `<profile>/codex-home`。前端 profile 与数据库另有选择器。 |
 | Claude | 环境盘点只发现 `<profile>/claude-code` 下的程序候选；逐会话清理不调用该 BIN | 生产品牌 `CindyGlobal/Cindy` 的引用按有效 `CLAUDE_CONFIG_DIR` 或 `~/.claude` 归属；其他已支持 profile 使用专属 `claude-home`。自定义根不能唯一归属时阻挡；尚未解析订阅账号绑定。 |
 | Pi | 环境盘点只发现 `<profile>/pi` 下的程序候选；逐会话清理不调用该 BIN | Cindy adapter 当前按 `<profile>/pi-agent-home/sessions` 绑定，尚无逐 provider 的任意 Pi 根配置读取。独立 Pi 的路径参数不等于重绑 Cindy。 |
 | agy | 尚无 Cindy / agy 原生绑定与 writer | 未实现的组合保留未知能力；不能借用 T3、Paseo 或独立 agy 的目录规则。 |
@@ -98,19 +98,20 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 删除原生目录，不保证清除 Cindy 数据库中的会话、消息与索引。应分别说明授权与验证
 范围，不能以登录成功、账号从 UI 消失或一个目录消失作为全部迁移／清理完成的证据。
 
-#### 尚未实现的多账号解析
+#### Codex 逐条原生账号绑定
 
-当前 `CindyProfile` 为每个前端数据库保存一个 `codex_home`；自动发现仍填入
-`<profile>/codex-home`，显式 `--cindy-codex-home` 则替换这一字段。代码尚未读取上述
-订阅账号注册表和绑定，也未自动把旧 `codex-accounts` 逐 provider 关联到会话。
-因此单个 Home 参数不能表达同一数据库中多个账号的逐会话存储归属。Claude 的生产
-profile 分支同样尚未读取这些订阅账号 Home；上述新布局不能算作已覆盖的清理能力。
+管理器根据 `cindy-<owner>.db` 的 owner 哈希定位其账号注册表，只使用
+`openai:native:<thread-id>` 的原生绑定解析对应 Codex Home。`task:` 绑定可能已随当前
+账号切换而变化，不能用来改写历史原生记录的归属。非默认账号必须属于该 owner，未知
+账号格式、重复 JSON 键或损坏注册表会阻止盘点进入可删除状态。显式指定的自定义
+`--cindy-codex-home` 保持优先；没有原生绑定的旧记录保留专属目录解析。
 
-后续适配需先建立 owner／provider／account 的元数据发现，再结合每条会话的历史引用
-验证实际 native store，分别保存 BIN、Home 与存储身份。当前绑定变化、缺失或移除后，
-证据不足的历史记录应保持未定位；不能批量扫描同名前缀目录后按裸 ID 合并，也不能因
-默认 Home 未找到记录而判定孤儿、已删除或可清理。验证应使用临时存储覆盖多账号、
-共享 BIN、跨机器自定义路径，以及不同 root 下同名 native ID；这些代码工作尚未完成。
+引用盘点、异常扫描和活跃会话保护使用每条绑定的实际 Home。只读保护源可以提供所选
+官方 Home 的 Cindy 引用；它们的其他 Home 不会因此成为清理候选。同名原生 ID 仍按
+物理 Home 区分。注册表中的已知绑定不代表其他未登记路径已完成覆盖。
+
+Claude 订阅账号 Home 和旧 `codex-accounts` 的逐 provider 绑定仍未适配。自定义回调
+目录、已移除绑定且专属目录中也不存在的历史记录仍需显式提供可验证的存储位置。
 
 实现入口：[Cindy profile 与 Codex 发现](../src/local_agent_manager/discovery.py)、
 [Cindy adapter](../src/local_agent_manager/adapters/cindy.py)、
