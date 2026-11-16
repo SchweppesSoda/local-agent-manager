@@ -143,8 +143,34 @@ the current trace and terminal transcripts remain retained.
 
 WorkBuddy diagnostics support named root log envelopes and direct files inside
 `logs/YYYY-MM-DD`: workspace logger headers, edge-sync, memory and extension
-scheduler diagnostics. Unknown nested SDK/session, migration, update and crash
-data stays retained. Browser-skill `daemon.log.YYYY-MM-DD` requires its dated
+scheduler diagnostics. Registered nested paths also cover SDK operation/cloud
+and conversation diagnostics, completed migration logs, update/database logger
+envelopes, startup/performance marks, editor SDK output (including ANSI colors),
+sandbox text logs and empty flushed `.mmap3` buffers, and framed WeixinPay Xlog
+diagnostics with dated counters. SDK rows are checked throughout the file with
+bounded metadata keys, including encoded JSON and prompt-block type summaries;
+message/image/tool payloads and unknown events do not qualify. A conversation
+UUID in a diagnostic filename does not make it the native conversation store.
+No traversal enters `projects`, `sessions`, `storage`, database sidecars, migration
+markers, backups, security state or pending installer directories.
+
+Crash reports qualify only when their native `.processed-crashes.json` cursor
+has consumed all entries. Freeze that cursor as a retained dependency. Keep
+pending entries and the cursor; do not infer completion from file age alone.
+The installed producer prunes obsolete cursor names itself. Empty performance
+PID snapshots qualify only with the known schema, no PIDs and a stale capture.
+WorkBuddy apply probes desktop, vendor/SDK helpers, runtimes and its native PID
+registry both before and after obtaining all file leases. Tests inject host facts.
+Unknown diagnostic formats remain unqualified until producer/content review
+establishes their role; that is a follow-up investigation, not permanent retention.
+
+Xlog framing follows Tencent Mars's
+[header and trailer](https://github.com/Tencent/mars/blob/master/mars/xlog/crypt/log_crypt.cc)
+and [magic values](https://github.com/Tencent/mars/blob/master/mars/xlog/crypt/log_magic_num.h).
+Only the registered dated WorkBuddy diagnostic path is eligible, not arbitrary
+binary files with a matching prefix.
+
+Browser-skill `daemon.log.YYYY-MM-DD` requires its dated
 Rust tracing envelope and `bsk::` target, or a verified empty file. Date and mtime
 must both pass retention. Root locks, current/recent files and unknown bodies
 do not qualify. These producers still require normal closure/file exclusion;

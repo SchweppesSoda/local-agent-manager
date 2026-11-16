@@ -29,6 +29,10 @@ class ArtifactMaintenanceTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.old = time.time_ns() - 60 * 86400 * 1000000000
+        self.workbuddy_probe = patch('local_agent_manager.workbuddy_runtime.probe',
+                                    return_value={'clients_closed': True})
+        self.workbuddy_probe.start()
+        self.addCleanup(self.workbuddy_probe.stop)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows exact exclusions')
     def test_exact_exclusion_preserves_busy_log_and_is_bound_into_plan(self):

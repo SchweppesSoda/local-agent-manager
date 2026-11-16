@@ -18,6 +18,7 @@ import zlib
 
 from local_agent_manager import frozen_files as ff
 from local_agent_manager import runtime_artifacts
+from local_agent_manager import workbuddy_diagnostics
 from local_agent_manager.discovery import CINDY_PROFILE_NAMES, default_appdata, default_codex_home, default_local_appdata
 
 CLIENTS = ('cindy', 'codex', 'codex-desktop', 'claude', 'pi', 't3code', 'paseo',
@@ -483,6 +484,9 @@ def _past_log_date(name, cutoff_ns):
 
 
 def _log_entries(root, directory, client):
+    if client == 'workbuddy' and directory == 'logs':
+        yield from workbuddy_diagnostics.entries(root, _names)
+        return
     if client == 'codex-desktop':
         yield from _dated_codex_logs(root, directory)
         return
@@ -637,6 +641,17 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         for directory in directories:
             for relative, info, dated_layout in _log_entries(root, directory, client):
                 name = Path(relative).name
+                if client == 'workbuddy' and not stat.S_ISDIR(info.st_mode) and workbuddy_diagnostics.nested(relative):
+                    try:
+                        proof, preserved, reason = workbuddy_diagnostics.qualify(root, relative, cutoff_ns)
+                        if reason == 'qualified_workbuddy_nested_diagnostic':
+                            candidate(relative, 'logs', reason, proofs=preserved, expected_files=[proof])
+                        else:
+                            observations.append(_row(root, relative, 'logs',
+                                'unqualified' if reason.endswith('_unverified') else 'retain', reason))
+                    except (OSError, ValueError, RuntimeError) as error:
+                        observations.append(_row(root, relative, 'logs', 'unqualified', _qualification_reason(error, 'diagnostic')))
+                    continue
                 date_name = (relative.split('/')[1] if client == 'workbuddy' else
                              '-'.join(relative.split('/')[-4:-1])) if dated_layout else name
                 if stat.S_ISDIR(info.st_mode):
