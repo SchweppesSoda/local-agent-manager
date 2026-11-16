@@ -256,7 +256,11 @@ class CindyControllerTests(unittest.TestCase):
             def restart(_, **kwargs):
                 gates.append('fixture fresh restart consent'); self.generation += 1
         def start(entry_path, manifest, run_name):
-            process = subprocess.Popen([sys.executable, '-m', 'tests.cindy_isolation_supervisor_fixture', str(bundle), run_name],
+            # Windows venv python.exe is a launcher with a different PID from
+            # its interpreter. Start the real image and retain test dependencies
+            # so the production peer check still binds the actual child PID.
+            process = subprocess.Popen([sys._base_executable, '-m', 'tests.cindy_isolation_supervisor_fixture', str(bundle), run_name],
+                env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
             child.append(process); return process.pid
         def launch(spec, *args):
