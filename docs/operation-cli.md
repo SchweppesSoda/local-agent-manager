@@ -819,6 +819,18 @@ python -m local_agent_manager.t3code_desktop_cleanup status --plan residual.json
 python -m local_agent_manager.t3code_desktop_cleanup verify --plan residual.json --clients-closed
 ```
 
+仅清理桌面缓存时，用 `plan-cache` 指定本机 `--service-root`、实际桌面
+`--profile`、缓存内的 `--environment-id` 与 `--environment-label`，以及
+重复的 `--record-id`。会话 ID 必须覆盖该环境当前的正文缓存、侧栏和会话查询
+条目。计划确认同一环境的服务器标签，持有本机 T3 生命周期锁，并在副本上
+预演与冷核验。应用、状态和验证沿用上面的命令。远程环境只移除本机副本，
+重连时客户端仍可能从远端同步会话。
+
+若选中的正文缓存引用了缺失的外部数据文件，只在临时副本中按该会话键移除
+正文、存在标记和外部引用。未选会话、其他对象存储或未知键结构出错时继续
+阻挡。核验会检查同环境的会话缓存已清空，并对比保留的原始记录及 Chromium
+冷重开结果。项目、连接配置、登录存储和其他环境的记录属于保留范围。
+
 当前运行时资格为已安装的 T3 Electron 44.10.1 / Chromium 152.0.7977.169。
 可用 `plan --runtime-root` 显式指定安装目录。原安装保持原样，只复制纯 Electron
 分发文件到临时目录，替换临时 app 入口并隔离 HOME/APPDATA/userData/session，

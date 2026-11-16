@@ -126,6 +126,45 @@ class DesktopWriterTests(unittest.TestCase):
         after = d.observe(self.runtime, self.profile, ENV, IDS, native=True)
         self.assertEqual(after['beforeSha256'], before['beforeSha256'])
 
+    def test_cache_plan_drops_selected_missing_blob_and_preserves_other_records(self):
+        with d.prepared(self.evidence, self.runtime) as (_, _, proof):
+            before = {entry['relative'] for entry in self.evidence['physical']['owners']}
+            after = {entry['relative'] for entry in proof['owners']}
+        self.assertEqual(len(before - after), 1)
+        (self.profile / d.BLOB / (before - after).pop()).unlink()
+        with self.assertRaises(T3CodeError):
+            d.freeze(self.profile, self.runtime, ENV, IDS)
+        evidence = d.freeze(self.profile, self.runtime, ENV, IDS, cache_only=True)
+        self.assertEqual([row['key'] for row in evidence['physical']['missing']], [f'{ENV}:{IDS[1]}'])
+        with self.assertRaises(T3CodeError):
+            d.freeze(self.profile, self.runtime, ENV, [IDS[0]], cache_only=True)
+        with d.prepared(evidence, self.runtime) as (_, _, proof):
+            self.assertEqual(proof['counts'], {'thread': 0, 'shell': 0, 'query': 0})
+            self.assertEqual(proof['environmentThreadIds'], ['keep'])
+            self.assertEqual({entry['relative'] for entry in proof['owners']}, after)
+
+    def test_cache_plan_binds_foreign_environment_and_preserves_local_cache(self):
+        seed = fixture()
+        config = next(s for s in seed[0]['stores'] if s['name'] == 'server-config')
+        config['records'].append({'key': OTHER, 'value': json.dumps({
+            'environmentId': OTHER, 'config': {'environment': {'environmentId': OTHER, 'label': 'Other host'}}
+        })})
+        profile = self.root / 'other'
+        profile.mkdir()
+        d.observe(self.runtime, profile, OTHER, [], native=True, mode='seed', seed=seed)
+        (self.root / 'userdata').mkdir()
+        (self.root / 'userdata/environment-id').write_text(ENV, encoding='utf-8')
+        with self.patches(), patch.object(d.lifecycle, 'freeze', return_value={}), patch.object(d, 'runtime_files', return_value=[]):
+            with self.assertRaisesRegex(T3CodeError, 'desktop_cache_origin_or_selection_changed'):
+                d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, 'Wrong host', [IDS[0]])
+            plan = d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, 'Other host', [IDS[0]])
+            self.assertEqual(plan['lifecycle']['binding_manifest']['environment_id'], ENV)
+            self.assertEqual(plan['evidence']['environment'], OTHER)
+            self.assertTrue(d.apply_plan(plan, plan['plan_sha256'], clients_closed=True)['goal_satisfied'])
+            self.assertTrue(d.verify_plan(plan, clients_closed=True)['goal_satisfied'])
+        local = d.freeze(profile, self.runtime, ENV, IDS)
+        self.assertEqual(local['native']['counts'], self.evidence['native']['counts'])
+
     def test_changed_source_rejected_before_install(self):
         plan = self.plan()
         target = self.profile / d.LEVEL / 'LOG'

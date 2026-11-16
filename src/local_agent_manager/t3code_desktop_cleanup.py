@@ -24,6 +24,7 @@ from .mutation_guard import mutation_roots
 from .t3code_store import ID, fail
 
 SCHEMA = 'lam.t3-desktop-residual.v1'
+CACHE_SCHEMA = 'lam.t3-desktop-cache.v1'
 LEVEL = 'IndexedDB/t3code_app_0.indexeddb.leveldb'
 BLOB = 'IndexedDB/t3code_app_0.indexeddb.blob'
 FAMILIES = (LEVEL, BLOB)
@@ -185,7 +186,18 @@ def observe(runtime, session, environment, ids, *, native=False, **options):
     return run_helper(runtime, request, native=native)
 
 
-def freeze(profile, runtime, environment, ids):
+def _without_missing(runtime, stage, target, environment, ids, physical):
+    if not physical['missing']:
+        return stage
+    (target / 'IndexedDB').mkdir(parents=True)
+    stripped = observe(runtime, stage, environment, ids, inspectMissing=True, dropMissing=True,
+                       output=str(target / LEVEL), outputBlob=str(target / BLOB))
+    if stripped['counts'] != physical['counts'] or stripped['environmentLabel'] != physical['environmentLabel']:
+        fail('desktop_missing_thread_scope_changed')
+    return target
+
+
+def freeze(profile, runtime, environment, ids, *, cache_only=False):
     if (not ID.fullmatch(environment) or not ids or any(not ID.fullmatch(i) for i in ids)
             or len(ids) != len(set(ids))):
         fail('desktop_scope_invalid')
@@ -195,7 +207,8 @@ def freeze(profile, runtime, environment, ids):
     with tempfile.TemporaryDirectory(prefix='lam-t3-freeze-') as raw:
         stage = Path(raw) / 'session'
         copy_source(profile, stage, before)
-        physical = observe(runtime, stage, environment, ids)
+        physical = observe(runtime, stage, environment, ids, inspectMissing=cache_only)
+        stage = _without_missing(runtime, stage, Path(raw) / 'qualified', environment, ids, physical)
         native = observe(runtime, stage, environment, ids, native=True)
         if physical['counts'] != native['counts']:
             fail('desktop_native_projection_mismatch')
@@ -209,6 +222,12 @@ def prepared(evidence, runtime):
         root = Path(raw)
         stage = root / 'transaction'
         copy_source(Path(evidence['root']), stage, evidence['files'])
+        physical = evidence['physical']
+        if physical['missing']:
+            fresh = observe(runtime, stage, evidence['environment'], evidence['ids'], inspectMissing=True)
+            if fresh != physical:
+                fail('desktop_missing_thread_scope_changed')
+            stage = _without_missing(runtime, stage, root / 'qualified', evidence['environment'], evidence['ids'], physical)
         before = observe(runtime, stage, evidence['environment'], evidence['ids'], native=True)
         if before != evidence['native']:
             fail('desktop_frozen_state_changed')
@@ -225,6 +244,7 @@ def prepared(evidence, runtime):
         cache = next(db['db'] for db in proof['databaseNames'] if db['name'] == 't3code:connection-runtime')
         store_ids = {s['name']: s['id'] for s in proof['stores'] if s['db'] == cache}
         changed = {(cache, store_ids[a['store']], a['key']) for a in before['actions']}
+        changed.update((row['db'], row['store'], row['key']) for row in physical['missing'])
         def retained(rows):
             return [r for r in rows if (r['db'], r['store'], r['key']) not in changed]
         if retained(proof['dataRows']) != retained(evidence['physical']['dataRows']):
@@ -378,6 +398,34 @@ def new_plan(source_path, profile, installed):
     return value
 
 
+def new_cache_plan(service, profile, installed, environment, label, ids):
+    """Admit only the locally cached messages of one named environment."""
+    service, profile, installed = (Path(path).resolve(strict=True) for path in (service, profile, installed))
+    executable = installed / 'T3 Code (Nightly).exe'
+    if not label or not executable.is_file():
+        fail('desktop_cache_origin_unqualified')
+    local_id = ff.read_file(service, 'userdata/environment-id', content=True, limit=256)[1].decode('utf-8').strip()
+    manifest = {'profile_root': str(service), 'environment_id': local_id,
+                'runtime_binaries': [str(executable)], 'native_stores': [],
+                'desktop_profiles': [{'root': str(profile), 'runtime_binaries': [str(executable)]}]}
+    life = {'root': str(service), 'binding_manifest': manifest, 'lifecycle': lifecycle.freeze(manifest)}
+    with lifecycle.hold(life):
+        admission(profile)
+        with isolated_runtime(installed, service=service) as runtime:
+            evidence = freeze(profile, runtime, environment, ids, cache_only=True)
+            if (evidence['physical']['environmentLabel'] != label
+                    or evidence['physical']['environmentThreadIds'] != sorted(ids)):
+                fail('desktop_cache_origin_or_selection_changed')
+            with prepared(evidence, runtime):
+                pass
+        proof = runtime_files(installed, service)
+    value = {'schema_version': CACHE_SCHEMA, 'operation_id': 'desktop-' + uuid.uuid4().hex,
+             'lifecycle': life, 'evidence': evidence, 'environment_label': label,
+             'runtime_root': str(installed), 'runtime_files': proof, 'helpers': helpers_fingerprint()}
+    value['plan_sha256'] = plan_sha256(value)
+    return value
+
+
 def new_full_plan(manifest, database, profile):
     """Rehearse IDB on private copies, without acquiring a live writer lock.
 
@@ -417,6 +465,10 @@ def new_full_plan(manifest, database, profile):
 
 
 def service_gate(plan):
+    if plan['schema_version'] == CACHE_SCHEMA:
+        # The local owner lock still fences both desktop profiles. The chosen
+        # environment belongs to the replica, so no remote service is contacted.
+        return
     if plan['schema_version'] == 'lam.t3-desktop-full.v1':
         from .t3code_database import remaining
         database = plan['service_transaction']
@@ -463,16 +515,23 @@ def remaining_bound(plan):
 
 
 def validate_plan(plan, authorized=None):
-    if (plan.get('schema_version') not in {SCHEMA, 'lam.t3-desktop-full.v1'} or plan.get('plan_sha256') != plan_sha256(plan)
+    if (plan.get('schema_version') not in {SCHEMA, CACHE_SCHEMA, 'lam.t3-desktop-full.v1'} or plan.get('plan_sha256') != plan_sha256(plan)
             or authorized is not None and authorized != plan['plan_sha256']
             or helpers_fingerprint() != plan['helpers']):
         fail('desktop_plan_or_helpers_changed')
     from .operation_store import validate_operation_id
     validate_operation_id(plan['operation_id'])
     evidence = plan['evidence']
-    if (evidence['environment'] != plan['lifecycle']['binding_manifest']['environment_id']
-            or evidence['ids'] != sorted(set(evidence['ids']))
+    manifest = plan['lifecycle']['binding_manifest']
+    if (not ID.fullmatch(evidence['environment']) or evidence['ids'] != sorted(set(evidence['ids']))
             or any(not ID.fullmatch(i) for i in evidence['ids'])):
+        fail('desktop_plan_scope_invalid')
+    if plan['schema_version'] == CACHE_SCHEMA:
+        if (not evidence['ids'] or evidence['physical']['environmentLabel'] != plan['environment_label']
+                or evidence['physical']['environmentThreadIds'] != evidence['ids']
+                or [profile['root'] for profile in manifest['desktop_profiles']] != [evidence['root']]):
+            fail('desktop_plan_scope_invalid')
+    elif evidence['environment'] != manifest['environment_id']:
         fail('desktop_plan_scope_invalid')
     return Path(evidence['root'])
 
@@ -488,6 +547,9 @@ def check_after(plan, runtime, *, root=None):
         native = observe(runtime, stage, evidence['environment'], evidence['ids'], native=True)
     if any(physical['counts'].values()) or any(native['counts'].values()) or native['beforeSha256'] != evidence['native']['expectedAfterSha256']:
         fail('desktop_after_unverified')
+    if plan['schema_version'] == CACHE_SCHEMA and (
+            physical['environmentLabel'] != plan['environment_label'] or physical['environmentThreadIds']):
+        fail('desktop_cache_after_unverified')
     return {'logical_after_sha256': native['beforeSha256'], 'counts': physical['counts'],
             'owners': physical['owners'], 'files': contents(files)}
 
@@ -631,6 +693,15 @@ def main():
     p.add_argument('--runtime-root', default=str(default_runtime()))
     p.add_argument('--plan', required=True)
     p.add_argument('--clients-closed', action='store_true', required=True)
+    p = sub.add_parser('plan-cache')
+    p.add_argument('--service-root', required=True)
+    p.add_argument('--profile', required=True)
+    p.add_argument('--runtime-root', default=str(default_runtime()))
+    p.add_argument('--environment-id', required=True)
+    p.add_argument('--environment-label', required=True)
+    p.add_argument('--record-id', required=True, action='append')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--clients-closed', action='store_true', required=True)
     for command in ('apply', 'status', 'verify', 'recover'):
         p = sub.add_parser(command)
         p.add_argument('--plan', required=True)
@@ -640,8 +711,12 @@ def main():
             p.add_argument('--clients-closed', action='store_true', required=True)
     args = parser.parse_args()
     try:
-        if args.command == 'plan':
-            plan = new_plan(args.source_plan, args.profile, args.runtime_root)
+        if args.command in ('plan', 'plan-cache'):
+            if args.command == 'plan':
+                plan = new_plan(args.source_plan, args.profile, args.runtime_root)
+            else:
+                plan = new_cache_plan(args.service_root, args.profile, args.runtime_root,
+                                      args.environment_id, args.environment_label, args.record_id)
             write_new_json(Path(args.plan), plan)
             result = {'goal_status': 'ready', 'goal_satisfied': False, 'plan_sha256': plan['plan_sha256'],
                       'operation_id': plan['operation_id'], 'counts': plan['evidence']['native']['counts']}
@@ -659,7 +734,7 @@ def main():
         return 0
     except Exception as exc:
         code = getattr(exc, 'kind', 'desktop_operation_failed')
-        print(json.dumps({'goal_status': 'unknown' if args.command != 'plan' else 'blocked',
+        print(json.dumps({'goal_status': 'blocked' if args.command in ('plan', 'plan-cache') else 'unknown',
                           'goal_satisfied': False, 'blocker_code': code}))
         return 2
 

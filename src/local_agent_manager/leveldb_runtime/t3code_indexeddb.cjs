@@ -11,6 +11,22 @@ const {
 const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const text=bytes=>Buffer.from(bytes).swap16().toString('utf16le');
 const keyOf=row=>row.decoded.suffix[0]?.type===1?text(row.decoded.suffix[0].data):null;
+function cacheValue(bytes, offset) {
+  // Chromium's version 16 string encoding is newer than the Node deserializer
+  // shipped alongside it. Accept only a complete primitive string envelope.
+  if (bytes[offset + 1] === 16) {
+    const serialized = physical.cursor(bytes.subarray(offset + 2));
+    let tag = serialized.byte();
+    if (tag === 0) tag = serialized.byte(); // UTF-16 alignment padding
+    if ([0x22, 0x63, 0x53].includes(tag)) {
+      const value = serialized.str();
+      if (!serialized.end() || (tag === 0x63 && value.length % 2)) throw Error('cache_string_envelope_unqualified');
+      return tag === 0x53 ? new TextDecoder('utf-8', {fatal:true}).decode(value)
+        : value.toString(tag === 0x63 ? 'utf16le' : 'latin1');
+    }
+  }
+  return require('node:v8').deserialize(bytes.subarray(offset));
+}
 function inspect(request){
   const {
     logical
@@ -36,6 +52,9 @@ function inspect(request){
     id:String(row.decoded.suffix[1]),
     name:text(row.value)
   }));
+  const missing = [];
+  const thread = stores.find(store => store.db === cache?.db && store.name === 'thread');
+  const selected = new Set(request.ids.map(id => `${request.environment}:${id}`));
   function decode(row) {
     const version = physical.cursor(row.value);
     version.vi();
@@ -55,7 +74,16 @@ function inspect(request){
       if (!cursor.end()) throw Error('multiple_external_objects_unqualified');
       const directory = Math.floor(number / 256).toString(16).padStart(2, '0');
       const relative = `${row.decoded.prefix[0]}/${directory}/${number.toString(16)}`;
-      bytes = fs.readFileSync(path.join(request.blob, relative));
+      try {
+        bytes = fs.readFileSync(path.join(request.blob, relative));
+      } catch (error) {
+        const key = keyOf(row);
+        if (error.code !== 'ENOENT' || request.inspectMissing !== true || !thread
+            || String(row.decoded.prefix[0]) !== thread.db || String(row.decoded.prefix[1]) !== thread.id
+            || !selected.has(key)) throw error;
+        missing.push({db:thread.db, store:thread.id, key, relative, size});
+        return null;
+      }
       if (bytes.length !== size) throw Error('external_size_mismatch');
       blobs.push({ownerKeySha256: digest(external.key), threadKey: keyOf(row),
         relative, bytes: size, sha256: digest(bytes)});
@@ -72,7 +100,7 @@ function inspect(request){
     if (bytes[offset] !== 255 || ![15, 16].includes(bytes[offset + 1])) {
       throw Error('serialized_v8_version_unqualified');
     }
-    const value = require('node:v8').deserialize(bytes.subarray(offset));
+    const value = cacheValue(bytes, offset);
     if (value === undefined || typeof value === 'bigint' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
       throw Error('value_codec_unqualified');
     }
@@ -93,13 +121,17 @@ function inspect(request){
     }
   });
   for(const row of rows.filter(row=>row.decoded.prefix[2]===3n&&row.decoded.prefix[1]!==0n)){
-    if(!blobs.some(owner=>owner.ownerKeySha256===digest(row.key)))throw Error('external_owner_missing');
+    const [db, store] = row.decoded.prefix.map(String);
+    if(!blobs.some(owner=>owner.ownerKeySha256===digest(row.key))
+        && !missing.some(unit => unit.db===db && unit.store===store && unit.key===keyOf(row)))throw Error('external_owner_missing');
   }
   let counts={
     thread:0,
     shell:0,
     query:0
   };
+  let environmentLabel = null;
+  const environmentThreadIds = new Set();
   if(cache){
     const definition={
       name:cache.name,
@@ -116,7 +148,8 @@ function inspect(request){
         }]:[],
         records:values.filter(({
           row
-        })=>String(row.decoded.prefix[0])===cache.db&&String(row.decoded.prefix[1])===s.id).map(({
+        })=>String(row.decoded.prefix[0])===cache.db&&String(row.decoded.prefix[1])===s.id
+            && !missing.some(unit=>unit.store===s.id&&unit.key===keyOf(row))).map(({
           row,
           value
         })=>({
@@ -126,6 +159,28 @@ function inspect(request){
       }))
     };
     counts=transform([definition], request.environment, request.ids).counts;
+    const config = definition.stores.find(s=>s.name==='server-config')?.records.find(r=>r.key===request.environment);
+    if (typeof config?.value === 'string') {
+      const record = JSON.parse(config.value);
+      const environment = record.config?.environment;
+      if (record.environmentId === request.environment && environment?.environmentId === request.environment
+          && typeof environment.label === 'string') environmentLabel = environment.label;
+    }
+    const prefix = request.environment + ':';
+    for (const row of definition.stores.find(s=>s.name==='thread')?.records || []) {
+      if (row.key?.startsWith(prefix)) environmentThreadIds.add(row.key.slice(prefix.length));
+    }
+    for (const row of missing) environmentThreadIds.add(row.key.slice(prefix.length));
+    const shell = definition.stores.find(s=>s.name==='shell')?.records.find(r=>r.key===request.environment);
+    if (typeof shell?.value === 'string') {
+      const { snapshot } = JSON.parse(shell.value);
+      for (const row of [...(snapshot?.threads || []), ...(snapshot?.archivedThreads || [])]) environmentThreadIds.add(row.id);
+    }
+    for (const row of definition.stores.find(s=>s.name==='query')?.records || []) {
+      if (!row.key?.startsWith(prefix+'v1:')) continue;
+      const [, input] = JSON.parse(row.key.slice(prefix.length + 3));
+      if (typeof input?.threadId === 'string') environmentThreadIds.add(input.threadId);
+    }
   }
   const owners=blobs.map(b=>({
     relative:b.relative,
@@ -141,6 +196,9 @@ function inspect(request){
   }
   return {
     counts,
+    environmentLabel,
+    environmentThreadIds:[...environmentThreadIds].sort(),
+    missing,
     databaseNames,
     stores,
     owners,
@@ -203,17 +261,33 @@ function logRecords(records){
 function rewrite(request){
   const state=inspect(request),
   out=request.output;
+  let logical=state.logical;
+  if (request.dropMissing === true) {
+    if (!state.missing.length) throw Error('missing_selection_empty');
+    const removed = new Set();
+    for (const member of state.missing) {
+      const matches = state.rows.filter(row => {
+        const [db, store] = row.decoded.prefix.map(String);
+        return db === member.db && store === member.store && keyOf(row) === member.key;
+      });
+      if (matches.map(row=>String(row.decoded.prefix[2])).sort().join(',') !== '1,2,3') {
+        throw Error('missing_thread_key_set_unqualified');
+      }
+      for (const row of matches) removed.add(row.key.toString('hex'));
+    }
+    logical = logical.filter(row => !removed.has(row.key.toString('hex')));
+  }
   fs.mkdirSync(out, {
     recursive:false
   });
   const batches=[];
   let sequence=1n;
-  for(let at=0;at<state.logical.length;){
+  for(let at=0;at<logical.length;){
     const parts=[];
     let bytes=0,
     count=0;
-    while(at<state.logical.length&&(bytes<4*1024*1024||!count)){
-      const row=state.logical[at++],
+    while(at<logical.length&&(bytes<4*1024*1024||!count)){
+      const row=logical[at++],
       part=Buffer.concat([Buffer.from([1]), str(row.key), str(row.value)]);
       parts.push(part);
       bytes+=part.length;
@@ -242,7 +316,14 @@ function rewrite(request){
     leveldb:out,
     blob:request.outputBlob
   });
-  if(cold.logicalSha256!==state.logicalSha256)throw Error('cold_rewrite_changed');
+  const expected = crypto.createHash('sha256');
+  for (const {key,value} of logical) {
+    const size = Buffer.alloc(8);
+    size.writeUInt32LE(key.length);
+    size.writeUInt32LE(value.length,4);
+    expected.update(size).update(key).update(value);
+  }
+  if(cold.logicalSha256!==expected.digest('hex') || cold.missing.length)throw Error('cold_rewrite_changed');
   return cold;
 }
 module.exports={
