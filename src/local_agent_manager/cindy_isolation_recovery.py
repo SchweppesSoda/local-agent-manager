@@ -22,8 +22,12 @@ from .cindy_isolation_plan import (
 
 
 def digest(path):
+    # Keep bounded reads on Python 3.10, which has no hashlib.file_digest.
+    result = hashlib.sha256()
     with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(block)
+    return result.hexdigest()
 
 
 def q(name):

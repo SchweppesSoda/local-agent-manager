@@ -98,7 +98,8 @@ class HerdrTransportTests(unittest.TestCase):
             from local_agent_manager.herdr_transport import _retiring
             gc.collect()
             self.assertEqual(_retiring, [])
-            self.assertEqual(count(), handles)
+            # Unrelated handles may finish retiring during the probe loop.
+            self.assertLessEqual(count(), handles)
 
     def test_profile_deadline_and_byte_budget_stop_unqueried_endpoints(self):
         with Endpoint(self.locator) as endpoint:

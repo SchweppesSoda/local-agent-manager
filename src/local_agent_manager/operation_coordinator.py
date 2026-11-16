@@ -3018,7 +3018,9 @@ class OperationCoordinator:
                     )
                 )
                 storage_ids.add(storage_id)
-            if not bool(getattr(manual, "available", False)):
+            # A frontend-only or Desktop-only residual has its own cleanup
+            # action, not an unavailable native thread/delete candidate.
+            if not manual.available and not (manual.root.indexed or manual.root.rollouts):
                 continue
             root_key = (storage_id, str(manual.thread_id))
             action_key = (
@@ -3032,6 +3034,10 @@ class OperationCoordinator:
                 continue
             candidate = self._manual_candidate(manual, storage_id)
             manual_candidates.append(candidate)
+            # Preserve blocked records and their reason in selection. They
+            # carry no executable manual binding or frontend cleanup closure.
+            if not bool(getattr(manual, "available", False)):
+                continue
             manual_actions[str(candidate.action_id)] = manual
             closure = build_manual_delete_closure(manual)
             for frontend_action in closure.frontend_actions:

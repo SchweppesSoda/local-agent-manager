@@ -366,8 +366,16 @@ class T3CodeFullflowTests(unittest.TestCase):
         self.adapter=T3CodeBoundAdapter(self.manifest)
         plan=self.coordinator().plan_operation(client='t3code',record_ids=(THREAD,),adapters=(self.adapter,),plan_path=self.plan_path)
         self.assertEqual(plan['goal_status'],'blocked',plan)
-        self.assertFalse(plan['mutation_started'])
-        self.assertIn('native_writer_missing',str(plan['blockers']))
+        self.assertEqual(plan['document_type'], 'operation_plan')
+        self.assertEqual(plan['counts']['action_count'], 0)
+        self.assertEqual(plan['counts']['batch_count'], 0)
+        self.assertIn('action_unavailable', str(plan['blockers']))
+        self.assertIn(broken, str(plan['blockers']))
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'blocked', result)
+        self.assertFalse(result['mutation_started'])
+        self.assertFalse(result['modified'])
+        self.assertEqual(result['batches'], [])
 
     def test_absent_and_partial_child_journals_have_distinct_cold_status(self):
         from local_agent_manager.operation_store import OperationStore

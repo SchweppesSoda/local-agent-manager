@@ -381,8 +381,10 @@ class CindyAdapterTests(unittest.TestCase):
 
         report = scan_adapters([self.adapter()])
         self.assertEqual(report.findings, [])
-        self.assertEqual(len(report.errors), 1)
-        self.assertEqual(report.errors[0].error_type, "AdapterScanError")
+        self.assertEqual([error.platform for error in report.errors],
+                         ["cindy", "live-reference-guard"])
+        self.assertTrue(all(error.error_type == "AdapterScanError" for error in report.errors))
+        self.assertFalse(report.ok)
 
     def test_incompatible_schema_is_an_error(self) -> None:
         with closing(sqlite3.connect(self.database)) as connection:
