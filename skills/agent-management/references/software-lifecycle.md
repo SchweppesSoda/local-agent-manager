@@ -28,6 +28,26 @@ handle long paths and files disappearing during an active scan explicitly.
 Equal bytes, old timestamps, a `.bak` suffix or a `cache` directory do not prove
 that an object is disposable.
 
+For a space audit, measure every requested directory and its largest direct
+children before choosing cleanup categories. Include hidden directories. Use
+bounded, metadata-only traversal without following reparse points; count a
+physical file once and report inaccessible or unmeasured portions explicitly.
+Reconcile these measurements with maintenance inventory. Inventory covers
+registered layouts, not every byte under a profile. A broad cleanup includes
+`runtimes` as well as caches, logs, backups and downloads; a narrower user scope
+still governs deletion.
+
+For Codex, inspect the actual home's `packages` and `.sandbox-bin` explicitly.
+Review standalone and app-server/app-server-daemon release units separately,
+including their own `current`, update selection and selection-history metadata.
+Review versioned command runners and account for unversioned executables too.
+An unrecognized unit remains a measured residual, not an invisible or zero-byte
+result. CLI PATH selection does not establish the desktop, daemon or sandbox
+helper's selection. Do not infer their ownership from a shared version number.
+An installed `current` pointer is selection metadata, not proof of a running
+consumer. Check daemon PID identity and native status independently; a stale
+daemon install and another frontend's same-version runtime are separate objects.
+
 Keep current fallback slots, migration/cloud-memory backups, unresolved
 rollback evidence and permanent coordination locks distinct from historical
 orphaned copies. Use `state inventory/cleanup` only for manager-owned evidence.
@@ -42,6 +62,15 @@ qualification. Prepare exact targets and evidence under the user's audit scope.
 Production disposal, updater policy changes and stopping clients follow the
 existing authorization for those objects and actions.
 
+After execution, remeasure the same physical scope and report removed logical
+bytes, retained bytes and any unmeasured residuals separately. For each large
+residual give its path, size, disposition, evidence and next action. Pursue
+resolvable consumer or selector evidence within the authorized task; do not
+stop at a generic `review required` label. If closure, an unsupported format or
+unresolved ownership blocks disposal, report the cleanup as partial and prepare
+the concrete remaining work. A successful eligible batch is not a full space
+audit. Never claim physical capacity reclaimed from logical file sizes alone.
+
 ## AI-reviewed runtime retirement
 
 Use `maintenance inventory --client <owner> --root <physical install/profile root>
@@ -55,6 +84,8 @@ Generate the `lam.runtime-review.v1` document described in the matching
 its exact path and `snapshot_sha256`, and cite relevant configuration files,
 direct installer pointers and absent override slots. The operating AI authors
 the assessment and JSON. The tool binds it to the current local evidence.
+For a chained installer alias, cite every intermediate pointer explicitly so
+each receives its own frozen identity and exclusive lease.
 For absent override slots, identify every actual writer and cite its native
 Windows executable as a reference with `"writer": true`. The tool leases these
 images and checks that their processes are closed. Preserve affected versions

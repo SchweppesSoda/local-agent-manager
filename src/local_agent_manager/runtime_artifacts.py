@@ -23,21 +23,45 @@ from .orca_target_safety import _windows_process_snapshot
 MAX_RUNTIME_BYTES = 4 * 1024 * 1024 * 1024
 
 
-def _pointer(path):
+def _pointer_link(path):
     info = path.lstat()
     if getattr(info, 'st_reparse_tag', None) not in {0xA0000003, 0xA000000C} and not stat.S_ISLNK(info.st_mode):
         raise ValueError('runtime_reference_pointer_unknown')
-    target_text = os.readlink(path)
-    direct = target_text
+    return {'identity': ff._identity(info), 'mtime_ns': info.st_mtime_ns,
+            'target': os.readlink(path), 'directory': bool(getattr(info, 'st_file_attributes', 0) & 0x10)
+            or stat.S_ISDIR(info.st_mode)}
+
+
+def _link_target(path, text):
+    direct = text
     if os.name == 'nt' and direct.startswith('\\\\?\\'):
         direct = direct[4:]
-    target = Path(os.path.abspath(path.parent / direct))
-    # Only a direct ordinary target is qualified. Chained selectors would
-    # require a separate lease on every intermediate reparse point.
-    ff._plain(ff.checked_path(target.parent, target.name).lstat(), directory=target.is_dir())
-    return {'identity': ff._identity(info), 'mtime_ns': info.st_mtime_ns,
-            'target': target_text, 'directory': bool(getattr(info, 'st_file_attributes', 0) & 0x10)
-            or stat.S_ISDIR(info.st_mode)}
+    return Path(os.path.abspath(path.parent / direct))
+
+
+def _pointer(path, declared=()):
+    pointer = _pointer_link(path)
+    target = _link_target(path, pointer['target'])
+    seen = {os.path.normcase(str(path))}
+    allowed = {os.path.normcase(str(p)) for p in declared}
+    for _ in range(16):
+        for part in (*reversed(target.parents), target):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                key = os.path.normcase(str(part))
+                if key in seen or key not in allowed:
+                    raise ValueError('runtime_reference_chain_unbound_or_cyclic')
+                seen.add(key)
+                # Each intermediate pointer must have its own reference and
+                # exclusive handle. Never silently follow an unbound alias.
+                link = _pointer_link(part)
+                target = _link_target(part, link['target']) / target.relative_to(part)
+                break
+            ff._plain(info, directory=part != target or stat.S_ISDIR(info.st_mode))
+        else:
+            ff.checked_path(target.parent, target.name)
+            return {**pointer, 'resolved_target': str(target)}
+    raise ValueError('runtime_reference_chain_budget')
 
 
 def _names(root, relative):
@@ -87,6 +111,19 @@ def _freeze_unit(root, relative):
     return {'kind': 'remove', 'path': relative, 'files': files, 'directories': snapshot['directories']}
 
 
+def _unqualified(root, relative, reason):
+    """Keep residual size visible without granting retirement eligibility."""
+    row = {'path': relative, 'reason': reason, 'file_count': None,
+           'logical_bytes': None, 'allocated_bytes': None}
+    try:
+        snapshot = _snapshot(root, relative)
+        row.update(file_count=len(snapshot['files']),
+                   logical_bytes=sum(item['size'] for item in snapshot['files']))
+    except (OSError, ValueError, RuntimeError):
+        row['measurement_reason'] = 'unreadable_linked_or_budgeted'
+    return row
+
+
 def _bases(client):
     # These are install layouts, never native conversation or recovery roots.
     if client == 'cindy':
@@ -122,7 +159,7 @@ def inventory(client, root):
                 identity = None
             containers.append({'path': base, 'identity': identity, 'entries': names})
         except (OSError, ValueError, RuntimeError):
-            unqualified.append({'path': base, 'reason': 'runtime_container_unreadable_or_linked'})
+            unqualified.append(_unqualified(root, base, 'runtime_container_unreadable_or_linked'))
             continue
         for name in names:
             # Installer release units append a target triple, not a SemVer
@@ -137,7 +174,7 @@ def inventory(client, root):
                     or helper and release_version(helper[1])
                     or engine == 'pi' and re.fullmatch(r'\d+\.\d+\.\d+-[0-9a-f-]{36}', name)):
                 if client == 'codex':
-                    unqualified.append({'path': base + '/' + name, 'reason': 'runtime_unit_name_unrecognized'})
+                    unqualified.append(_unqualified(root, base + '/' + name, 'runtime_unit_name_unrecognized'))
                 continue
             relative = base + '/' + name
             try:
@@ -168,7 +205,7 @@ def inventory(client, root):
                                    'file_count': len(snapshot['files']),
                                    'logical_bytes': sum(item['size'] for item in snapshot['files'])})
             except (OSError, ValueError, RuntimeError):
-                unqualified.append({'path': relative, 'reason': 'runtime_unit_unreadable_linked_or_unknown'})
+                unqualified.append(_unqualified(root, relative, 'runtime_unit_unreadable_linked_or_unknown'))
     check_containers(root, containers)
     return {'candidates': candidates, 'unqualified': unqualified, 'containers': containers,
             'coverage': 'recognized_versioned_install_units',
@@ -237,6 +274,11 @@ def prepare(client, root, observed, review, *, freeze):
         raise ValueError('runtime_review_reference_evidence_required')
     sources = []
     source_keys = set()
+    # Validate reference paths before using them as the explicit chain bound.
+    declared = []
+    for reference in references:
+        if isinstance(reference, dict) and isinstance(reference.get('root'), str) and isinstance(reference.get('path'), str):
+            declared.append(ff.checked_path(Path(reference['root']), reference['path']))
     for reference in references:
         if (not isinstance(reference, dict) or set(reference) - {'root', 'path', 'reason', 'writer'}
                 or not {'root', 'path', 'reason'} <= set(reference)
@@ -261,8 +303,8 @@ def prepare(client, root, observed, review, *, freeze):
         proof, pointer = None, None
         if info is not None:
             if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
-                pointer = _pointer(path)
-                target = Path(canonical_existing_path_key(path))
+                pointer = _pointer(path, declared)
+                target = Path(canonical_existing_path_key(pointer['resolved_target']))
                 for item in selected:
                     selected_path = Path(canonical_existing_path_key(root / item['path']))
                     if target == selected_path or selected_path in target.parents:
@@ -301,13 +343,14 @@ def dependencies(root, evidence):
 
 
 def check_absences(evidence):
+    declared = [Path(source['root']) / source['path'] for source in evidence['references'] if source['pointer'] is not None]
     for source in evidence['references']:
         root = Path(source['root'])
         if ff._identity(root.lstat()) != source['root_identity']:
             raise ValueError('runtime_reference_root_changed')
         path = ff.checked_path(root, source['path'])
         if source['pointer'] is not None:
-            if _pointer(path) != source['pointer']:
+            if _pointer(path, declared) != source['pointer']:
                 raise ValueError('runtime_reference_pointer_changed')
         elif source['file'] is None:
             try:
@@ -319,6 +362,7 @@ def check_absences(evidence):
 
 @contextmanager
 def hold_pointers(evidence):
+    declared = [Path(source['root']) / source['path'] for source in evidence['references'] if source['pointer'] is not None]
     with ExitStack() as stack:
         for source in evidence['references']:
             if source['pointer'] is None:
@@ -327,7 +371,7 @@ def hold_pointers(evidence):
             fd = exclusive_fd(path, directory=source['pointer']['directory'])
             stack.callback(os.close, fd)
             if (ff._identity(os.fstat(fd)) != source['pointer']['identity']
-                    or _pointer(path) != source['pointer']):
+                    or _pointer(path, declared) != source['pointer']):
                 raise ValueError('runtime_reference_pointer_changed')
         yield
 

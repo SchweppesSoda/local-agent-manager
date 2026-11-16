@@ -83,6 +83,42 @@ class RuntimeArtifactTests(unittest.TestCase):
         result = maintenance.plan('cindy', self.root, categories=['runtimes'])
         self.assertEqual(result['counts']['approved_file_count'], 0)
 
+    def test_unqualified_runtime_bytes_remain_visible_without_content_reads_or_approval(self):
+        root = Path(self.temporary.name) / 'codex'
+        sandbox = root / '.sandbox-bin'
+        sandbox.mkdir(parents=True)
+        (sandbox / 'codex.exe').write_bytes(b'unversioned executable')
+        unknown = root / 'packages/standalone/releases/unrecognized-build'
+        unknown.mkdir(parents=True)
+        (unknown / 'payload').write_bytes(b'unknown package contents')
+        with patch.object(ff, 'read_file', side_effect=AssertionError('metadata only')):
+            report = maintenance.rules.inspect_profile('codex', root, categories=['runtimes'])
+        self.assertEqual(report['changes'], [])
+        self.assertEqual(report['runtime_inventory']['candidates'], [])
+        rows = {item['path']: item for item in report['observations']}
+        for relative, size in (('.sandbox-bin/codex.exe', 22),
+                               ('packages/standalone/releases/unrecognized-build', 24)):
+            self.assertEqual(rows[relative]['logical_bytes'], size)
+            self.assertEqual(rows[relative]['file_count'], 1)
+            self.assertIsNone(rows[relative]['allocated_bytes'])
+            self.assertEqual(rows[relative]['decision'], 'unqualified')
+            self.assertEqual(rows[relative]['reason'], 'runtime_unit_name_unrecognized')
+
+    def test_unmeasurable_runtime_is_unknown_size_not_zero(self):
+        root = Path(self.temporary.name) / 'codex'
+        sandbox = root / '.sandbox-bin'
+        sandbox.mkdir(parents=True)
+        executable = sandbox / 'codex.exe'
+        executable.write_bytes(b'shared executable')
+        os.link(executable, root / 'shared.exe')
+        report = runtimes.inventory('codex', root)
+        row = report['unqualified'][0]
+        self.assertIsNone(row['logical_bytes'])
+        self.assertIsNone(row['file_count'])
+        self.assertEqual(row['reason'], 'runtime_unit_name_unrecognized')
+        self.assertEqual(row['measurement_reason'], 'unreadable_linked_or_budgeted')
+        self.assertEqual(report['candidates'], [])
+
     def test_cli_accepts_review_file_and_freezes_assessment_and_external_evidence(self):
         review = self.review()
         review_path = Path(self.temporary.name) / 'review.json'
@@ -203,6 +239,73 @@ class RuntimeArtifactTests(unittest.TestCase):
         review['references'].append({'root': str(self.frontend), 'path': 'current',
                                      'reason': 'Conflicting current selector must block'})
         with self.assertRaisesRegex(ValueError, 'selected_pointer_target'):
+            self.plan(review)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction selector')
+    def test_installer_alias_chain_requires_and_leases_every_pointer(self):
+        retained = self.root / 'claude-code/2.1.20'
+        (retained / 'bin').mkdir()
+        (retained / 'bin/runner.exe').write_bytes(b'retained runner')
+        current = self.junction('current', retained)
+        alias = self.junction('bin', current / 'bin')
+        review = self.review()
+        review['references'].append({'root': str(self.frontend), 'path': 'bin',
+                                     'reason': 'Launcher alias to the installer current bin'})
+        with self.assertRaisesRegex(ValueError, 'chain_unbound_or_cyclic'):
+            self.plan(review)
+        review['references'].append({'root': str(self.frontend), 'path': 'current',
+                                     'reason': 'Explicit intermediate installer selector'})
+        plan = self.plan(review)
+        dispose = HeldFiles.dispose
+        def check_chain_leases(held, *args, **kwargs):
+            for pointer in (current, alias):
+                with self.assertRaises(OSError):
+                    pointer.rmdir()
+            dispose(held, *args, **kwargs)
+        with patch.object(HeldFiles, 'dispose', check_chain_leases):
+            result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertTrue((alias / 'runner.exe').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction selector')
+    def test_chained_selector_cannot_target_removed_version(self):
+        current = self.junction('current', self.root / 'claude-code/2.1.10')
+        self.junction('alias', current)
+        review = self.review()
+        for name in ('alias', 'current'):
+            review['references'].append({'root': str(self.frontend), 'path': name,
+                                         'reason': 'Explicit selector chain'})
+        with self.assertRaisesRegex(ValueError, 'selected_pointer_target'):
+            self.plan(review)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction selector')
+    def test_intermediate_selector_drift_blocks_before_any_deletion(self):
+        current = self.junction('current', self.root / 'claude-code/2.1.20')
+        self.junction('alias', current)
+        review = self.review()
+        for name in ('alias', 'current'):
+            review['references'].append({'root': str(self.frontend), 'path': name,
+                                         'reason': 'Explicit selector chain'})
+        plan = self.plan(review)
+        current.rmdir()
+        self.junction('current', self.root / 'claude-code/2.1.10')
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'blocked', result)
+        self.assertFalse(result['mutation_started'])
+        self.assertTrue((self.root / 'claude-code/2.1.10/claude.exe').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction selector')
+    def test_selector_cycle_is_rejected(self):
+        first = self.junction('first', self.root / 'claude-code/2.1.20')
+        second = self.junction('second', first)
+        first.rmdir()
+        self.junction('first', second)
+        self.addCleanup(first.rmdir)
+        review = self.review()
+        for name in ('first', 'second'):
+            review['references'].append({'root': str(self.frontend), 'path': name,
+                                         'reason': 'Cyclic selector must remain blocked'})
+        with self.assertRaisesRegex(ValueError, 'chain_unbound_or_cyclic'):
             self.plan(review)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows junction selector')

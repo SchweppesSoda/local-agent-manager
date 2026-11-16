@@ -202,6 +202,11 @@ retained and unqualified observations. A complete result covers the approved
 eligible files. Unmeasured residual counts and reclaimed physical capacity are
 null. Logical bytes describe observed file sizes. Hard links, redirects, unknown
 layouts, access errors and traversal budgets prevent affected qualification.
+Unqualified runtime units include metadata-only logical size and file count
+when measurable, including unversioned sandbox executables. Unknown sizes are
+null with a measurement reason, never zero. This accounting does not qualify
+the unit for deletion. Reconcile inventory with the requested directories'
+measured usage; registered artifact coverage is not a complete profile size audit.
 Inventory, ready plans and completed eligible actions return 0. Blocked, unknown
 and verified residual outcomes return 3. Argument errors return 2.
 
@@ -291,7 +296,11 @@ excludes direct-pointer replacement through Windows handles. A pointer naming
 a selected removal target blocks planning. Changed files, selectors, new
 versions and newly present overrides require a fresh plan. A changed candidate
 snapshot requires renewed AI assessment. Linked/hard-linked runtime units,
-chained pointers and traversal/hash budgets prevent affected qualification.
+unbound or cyclic pointer chains and traversal/hash budgets prevent affected
+qualification. Installer aliases such as `bin -> current/bin` are supported
+only when every intermediate link is explicitly cited in the review. The tool
+freezes each link and the final physical target, then holds every link until
+disposal finishes; an unlisted link or changed intermediate selector blocks it.
 Version-container membership is frozen and rechecked after leases and during
 final verification. New members in a retired unit keep recovery unresolved.
 The 14-day cache/log retention setting grants no runtime disposal authority.
