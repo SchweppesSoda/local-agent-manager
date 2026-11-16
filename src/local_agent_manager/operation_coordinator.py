@@ -3018,6 +3018,10 @@ class OperationCoordinator:
                     )
                 )
                 storage_ids.add(storage_id)
+            # A frontend-only or Desktop-only residual has its own cleanup
+            # action, not an unavailable native thread/delete candidate.
+            if not manual.available and not (manual.root.indexed or manual.root.rollouts):
+                continue
             root_key = (storage_id, str(manual.thread_id))
             action_key = (
                 storage_id,
