@@ -58,7 +58,7 @@ def private_run_directory(path):
         kernel.LocalFree.argtypes = (ctypes.c_void_p,); kernel.LocalFree(descriptor)
 
 
-def _launch_elevated(entry, manifest_hash, run_name):
+def _launch_elevated(entry, manifest_hash, run_name, *, role='internal-supervisor'):
     """One reviewed Python entry, one fixed role, exact hash/run name only."""
     from ctypes import wintypes
     class SHELLEXECUTEINFO(ctypes.Structure):
@@ -71,7 +71,8 @@ def _launch_elevated(entry, manifest_hash, run_name):
     shell.ShellExecuteExW.argtypes = (ctypes.POINTER(SHELLEXECUTEINFO),); shell.ShellExecuteExW.restype = wintypes.BOOL
     info = SHELLEXECUTEINFO(); info.cbSize = ctypes.sizeof(info); info.fMask = 0x40 | 0x400
     info.lpVerb, info.lpFile = "runas", sys.executable
-    info.lpParameters = subprocess.list2cmdline(["-I", str(entry), "internal-supervisor", "--manifest-sha256", manifest_hash, "--run", run_name])
+    if role not in {'internal-supervisor', 'internal-direct'}: fail('fixed_elevated_role_required')
+    info.lpParameters = subprocess.list2cmdline(["-I", str(entry), role, "--manifest-sha256", manifest_hash, "--run", run_name])
     info.lpDirectory, info.nShow = str(Path(entry).parent), 0
     if not shell.ShellExecuteExW(ctypes.byref(info)): raise ctypes.WinError(ctypes.get_last_error())
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -424,7 +425,7 @@ def ui_request(bundle, spec, run_name, request):
 
 def main(bundle, expected_manifest_hash, argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["execute", "internal-supervisor", "ui", "status", "verify"])
+    parser.add_argument("mode", choices=["execute", "internal-supervisor", "direct-execute", "internal-direct", "ui", "status", "verify"])
     parser.add_argument("--manifest-sha256", default=expected_manifest_hash)
     parser.add_argument("--run")
     parser.add_argument("--uac-authorized", action="store_true")
@@ -432,6 +433,11 @@ def main(bundle, expected_manifest_hash, argv=None):
     args = parser.parse_args(argv)
     if args.manifest_sha256 != expected_manifest_hash: fail("entry_manifest_argument_changed")
     spec, draft = verify_bundle(bundle, expected_manifest_hash,readonly_runtime=args.mode in {'ui','status','verify'})
+    if args.mode in {'direct-execute', 'internal-direct'}:
+        from .cindy_isolation_direct import ordinary_direct, elevated_direct
+        if spec['controller'].get('acceptance_mode') != 'direct-native-data': fail('direct_mode_requires_new_frozen_spec')
+        if args.mode == 'direct-execute': return ordinary_direct(bundle,spec,draft,expected_manifest_hash,uac_authorized=args.uac_authorized)
+        return elevated_direct(bundle,spec,draft,expected_manifest_hash,args.run)
     if args.mode == "execute": return ordinary_execute(bundle, spec, draft, expected_manifest_hash, uac_authorized=args.uac_authorized)
     if args.mode == "internal-supervisor": return elevated(bundle, spec, draft, expected_manifest_hash, args.run)
     if args.mode == "ui": return ui_request(bundle, spec, args.run, json.loads(args.request))

@@ -98,7 +98,7 @@ def main():
             if sys.argv[1:2] and sys.argv[1] in {'ui','status','verify'}:continue
             _plain(path)
         if _digest(path) != entry['sha256']: raise SystemExit('Reviewed execution file changed')
-    if sys.argv[1:2] == ['internal-supervisor']:
+    if sys.argv[1:2] and sys.argv[1] in {'internal-supervisor', 'internal-direct'}:
         try: run_name = sys.argv[sys.argv.index('--run') + 1]
         except (ValueError, IndexError): raise SystemExit('Bound run required')
         if not re.fullmatch('run-[0-9a-f]{24}', run_name): raise SystemExit('Invalid run')

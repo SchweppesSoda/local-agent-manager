@@ -55,6 +55,7 @@ def installed_source(package):
 
 
 def prepare():
+    direct = '--direct' in sys.argv[1:]
     old = ROOT / ".agent-manager-state/manual/cindy-isolation-20261115-continuation"
     old_spec = json.loads((old / "legacy-execution-spec.json").read_text(encoding="utf8"))
     old_draft = json.loads((old / "legacy-bound-draft.json").read_text(encoding="utf8"))
@@ -239,6 +240,7 @@ def prepare():
     spec['controller']['allowed_test_accounts']={'default':spec['controller']['account_identity_sha256'],
         spec['protected_second_account']:supported_account(spec,home=second['path'])['identity_sha256']}
     spec['controller']['window_behavior_before']=window_behavior(spec)
+    if direct: spec['controller']['acceptance_mode']='direct-native-data'
     from local_agent_manager.cindy_isolation_windows import auth_protocol_census
     binaries = {native_binary.resolve(strict=True)}
     binary_aliases = {str(native_binary): str(native_binary.resolve(strict=True))}
@@ -284,7 +286,7 @@ def prepare():
                 "files": [{"path": str(p), "sha256": digest(p), "size": p.stat().st_size} for p in sorted(files, key=str)]}
     write_new_json(bundle / "execution-manifest.json", manifest)
     manifest_hash = digest(bundle / "execution-manifest.json")
-    command = [sys.executable, "-I", str(bundle / "entry.py"), "execute", "--manifest-sha256", manifest_hash, "--uac-authorized"]
+    command = [sys.executable, "-I", str(bundle / "entry.py"), 'direct-execute' if direct else 'execute', "--manifest-sha256", manifest_hash, "--uac-authorized"]
     write_new_json(bundle / "launch-command.json", {"argv": command, "manifest_sha256": manifest_hash,
         "spec_sha256": spec["plan_sha256"], "roots": len(roots), "native": len(ids), "new_native_descendants": changed,
         "bindings": len(spec["binding_changes"]), "locations": len(spec["location_changes"]),
