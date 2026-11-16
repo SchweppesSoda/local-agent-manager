@@ -26,6 +26,9 @@ class ArtifactCoverageTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.old = time.time_ns() - 60 * 86400 * 10**9
         self.cutoff = time.time_ns() - 14 * 86400 * 10**9
+        census = patch('local_agent_manager.office_runtime.processes', return_value=[])
+        census.start()
+        self.addCleanup(census.stop)
 
     def file(self, name, body=b'', old=True):
         p = self.root / name
@@ -159,7 +162,7 @@ class ArtifactCoverageTests(unittest.TestCase):
         (self.root / path).write_bytes(b'user transcript\n')
         self.assertEqual(self.selected(self.inspect('workbuddy', ['logs'])), ['logs/2020-01-01/edge-sync.log'])
 
-    def test_rotated_t3_spans_qualify_current_and_transcripts_do_not(self):
+    def test_closed_t3_trace_sinks_qualify_but_transcripts_do_not(self):
         obj = {'type': 'effect-span', 'kind': 'internal', 'name': 'test', 'traceId': 'a' * 32,
                'spanId': 'b' * 16, 'startTimeUnixNano': '100', 'endTimeUnixNano': '200',
                'sampled': True, 'attributes': {}, 'events': [], 'links': [], 'exit': {}}
@@ -173,8 +176,62 @@ class ArtifactCoverageTests(unittest.TestCase):
         self.file('userdata/logs/server.trace.ndjson.2', b'{"type":"message"}\n')
         self.file('userdata/logs/terminals/session.log', body)
         self.assertEqual(self.selected(self.inspect('t3code', ['logs'])),
-                         ['userdata/logs/desktop.trace.ndjson.1', 'userdata/logs/server.trace.ndjson.1',
+                         ['userdata/logs/desktop.trace.ndjson.1', 'userdata/logs/server.trace.ndjson', 'userdata/logs/server.trace.ndjson.1',
                           'userdata/logs/server.trace.ndjson.3'])
+
+    def test_t3_diagnostics_validate_every_row_and_preserve_native_payloads(self):
+        path = 'userdata/logs/event-loop-stalls.ndjson'
+        obj = dict(time='2020-01-01T00:00:00Z', delayMaxMs=12, utilization=0.5,
+                   cpuUserMs=2, cpuSystemMs=1, majorPageFaults=0, minorPageFaults=0,
+                   involuntaryContextSwitches=1, rssMb=20)
+        body = json.dumps(obj).encode() + b'\n'
+        self.file(path, body)
+        self.file('userdata/logs/provider/events.example.log', body)
+        self.assertEqual(self.selected(self.inspect('t3code', ['logs'])), [path])
+        self.file(path, body + b'{"role":"user","content":"keep"}\n')
+        self.assertEqual(self.selected(self.inspect('t3code', ['logs'])), [])
+        self.file(path, json.dumps({**obj, 'message': 'user content'}).encode())
+        self.assertEqual(self.selected(self.inspect('t3code', ['logs'])), [])
+
+    def test_t3_runtime_census_blocks_live_or_unreadable_server(self):
+        from local_agent_manager.t3code_diagnostics import require_closed
+        from local_agent_manager.t3code_store import T3CodeError
+        require_closed(self.root, census=lambda: [])
+        for row in [dict(pid=999999, parent=1, name='t3code.exe', executable='C:/T3/t3code.exe', command=''),
+                    dict(pid=999999, parent=1, name='node.exe', executable='C:/node.exe', command='node C:/t3code/server.mjs'),
+                    dict(pid=999999, parent=1, name='node.exe', executable=None, command=None)]:
+            with self.assertRaises(T3CodeError):
+                require_closed(self.root, census=lambda: [row])
+
+    def test_t3_renderer_and_service_sinks_reject_unexpected_values(self):
+        renderer = dict(version=1, mainPid=1, mainSessionStartedAtUnixMs=1, timestampUnixMs=2,
+                        event='sample', webContentsId=1, surface='main', rendererPid=2,
+                        rendererPidSource='current', rendererCreationTimeMs=1,
+                        memory=dict(kind='sample', sampledAtUnixMs=2, workingSetBytes=4, peakWorkingSetBytes=8))
+        service = dict(message='diagnostic', level='INFO', timestamp='2020-01-01T00:00:00Z',
+                       annotations={}, spans={}, fiberId='1')
+        paths = ['userdata/logs/renderer-history.ndjson', 'userdata/logs/server-child.log']
+        for path, row in zip(paths, (renderer, service)):
+            self.file(path, json.dumps(row).encode())
+        self.assertCountEqual(self.selected(self.inspect('t3code', ['logs'])), paths)
+        for key, bad in [('event', []), ('mainPid', 10**400), ('version', 99), ('content', 'session')]:
+            self.file(paths[0], json.dumps({**renderer, key: bad}).encode())
+            self.assertEqual(self.selected(self.inspect('t3code', ['logs'])), [paths[1]])
+        self.file(paths[1], json.dumps({**service, 'level': {}}).encode())
+        self.assertEqual(self.selected(self.inspect('t3code', ['logs'])), [])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows exact exclusions')
+    def test_t3_apply_rechecks_writers_after_leases_before_deletion(self):
+        from local_agent_manager.t3code_store import T3CodeError
+        self.simple()
+        plan = maintenance.plan('t3code', self.root, categories=['caches'])
+        with patch('local_agent_manager.t3code_diagnostics.require_closed',
+                   side_effect=[None, T3CodeError('t3code_writer_running')]) as check:
+            result = maintenance.apply(plan['plan_path'], approved_hash=plan['plan_sha256'], clients_closed=True)
+        self.assertEqual(check.call_count, 2)
+        self.assertFalse(result['mutation_started'])
+        self.assertEqual(result['goal_status'], 'blocked')
+        self.assertTrue((self.root / 'Code Cache/js/0123456789abcdef_0').exists())
 
     def test_atomic_temps_need_valid_current_fallback_and_keep_stable_slots(self):
         self.file('.codex-global-state.json', b'{}')

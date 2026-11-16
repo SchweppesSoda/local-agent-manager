@@ -37,6 +37,8 @@ Locate the authentication Skill with `local-agent-manager resources --json`.
 
 Carry actions the user already authorized through scoped verification. Ask only when a materially different target or scope needs a decision, or a required fact cannot be resolved. Follow the current host's tool permissions and the product's operation contract.
 
+When rechecking retained cleanup candidates, refresh actual writer, consumer and recovery evidence. A latest or unrotated log is not automatically active; a complete runtime needs its real launcher/worker selection checked. Follow the residual review in [software lifecycle](references/software-lifecycle.md#user-home-residue-coverage).
+
 ## Locate the manager
 
 Use the installed `local-agent-manager` command if it supports the requested operation. In PowerShell, use `Get-Command local-agent-manager` to identify the selected entry point. If only the Python package is installed, use `python -m local_agent_manager` with the interpreter that owns it. Run `--help` to verify the entry point and commands.

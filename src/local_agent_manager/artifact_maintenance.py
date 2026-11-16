@@ -35,9 +35,9 @@ def _error_code(error):
 
 
 def _implementation():
-    from local_agent_manager import windows_held_files, workbuddy_diagnostics, workbuddy_runtime
+    from local_agent_manager import windows_held_files, workbuddy_diagnostics, workbuddy_runtime, t3code_diagnostics, t3code_lifecycle, office_runtime
     modules = (sys.modules[__name__], rules, runtime_artifacts, ff, windows_held_files,
-               workbuddy_diagnostics, workbuddy_runtime)
+               workbuddy_diagnostics, workbuddy_runtime, t3code_diagnostics, t3code_lifecycle, office_runtime)
     return {Path(module.__file__).name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
             for module in modules}
 
@@ -240,6 +240,9 @@ def apply(path, *, approved_hash, clients_closed=False):
             if document['scope']['client'] == 'workbuddy':
                 from local_agent_manager.workbuddy_runtime import require_closed
                 require_closed(root)
+            elif document['scope']['client'] == 't3code':
+                from local_agent_manager.t3code_diagnostics import require_closed
+                require_closed(root)
             fresh = rules.inspect_profile(document['scope']['client'], root,
                 categories=document['scope']['categories'], cutoff_ns=document['scope']['cutoff_ns'], freeze=True,
                 runtime_review=(document['artifact_evidence'].get('runtime_evidence') or {}).get('review'),
@@ -264,7 +267,7 @@ def apply(path, *, approved_hash, clients_closed=False):
                                 or rules._names(root, directory['path']) != directory['entries']):
                             raise ff.FrozenFilesError('maintenance_directory_changed')
                 _check_absences(document)
-                if document['scope']['client'] == 'workbuddy':
+                if document['scope']['client'] in {'workbuddy', 't3code'}:
                     require_closed(root)
                 if runtime_evidence:
                     runtime_artifacts.check_directories(root, runtime_evidence['preserved'])

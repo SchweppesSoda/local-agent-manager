@@ -197,7 +197,7 @@ reading that audit does not authorize deleting its remaining candidates.
 | `.cache/codex-runtimes` previous or temporary installations | Read manifests and resolve the workspace dependency loader's current runtime plus other consumers. A full environment can be retained intentionally; neither completeness nor another active MSIX root proves a dependency or disuse. Previous/partial trees need lifecycle inspection; arbitrary trees have no deletion adapter. |
 | Claude `.local/share/claude/versions`, `.local/bin/claude.exe.old.*`, `.cache/claude` | Review native selected executable, completed updater transaction, other frontend bindings and rollback. Runtime review at the physical `.local` root supports version-store units, current `bin/claude.exe` and exact timestamp/PID updater copies. Unknown staging remains a separate lifecycle review. |
 | `.cache/magpie/bun/<version>` | Frontend-managed executable versions, not generic Bun download cache. Resolve actual Magpie launch/update selection and its state file's `current` and `previous` roles. An explicit previous slot is rollback evidence; it differs from an arbitrary decision to keep one numerically older version. No automatic retirement adapter is implied. |
-| `.t3/userdata/logs`, WorkBuddy logs, `.sheetagent`, `.bsk` logs | Separate current writer, rotated diagnostics, provider/terminal/session content and user reports. Adapters cover T3 Effect/OTLP rotations, WorkBuddy root and qualified nested diagnostic families described above, and browser-skill dated logs. Investigate remaining unknown formats; recent writes and actual pending native roles establish retention. Never delete an entire profile as logs. |
+| `.t3/userdata/logs`, WorkBuddy logs, `.sheetagent`, `.bsk` logs | Separate current writer, rotated diagnostics, provider/terminal/session content and user reports. Adapters cover T3 Effect/OTLP sinks and rotations, renderer incident history, stall metrics, relay/server-child diagnostics, WorkBuddy root and qualified nested diagnostic families, and browser-skill dated logs. T3 checks every row and verifies desktop/server/runtime closure before and after file leases. Never delete an entire profile as logs. |
 | `.claude/backups` | Distinguish current/fallback config recovery, native recent backup slots and separately archived temporary generations. Resolve the actual current config, validate it and retained newer backups, compare old project/config coverage and inspect unresolved migration roles before retiring exact old temporary files. This contextual review is not an automatic Claude backup adapter. |
 | `.claude/skills/.trash` | Native Skill sync recovery, routed to Skill management. Verify current synced manifest, a completed round later than the retired copies, current bodies/resources and no unresolved restoration need. Preserve active staging and manager-owned recovery bundles separately. Exact approved native trash files can then be retired; this is not generic cache or global Skill deletion. |
 | Tool-specific `.venv-*` | Inspect installed packages, project/Skill/launcher references and current consumers. An empty environment can still be selected; a directory name alone grants no disposal authority. |
@@ -210,6 +210,17 @@ Do not sum overlapping parent/child measurements. Report audit scope omissions
 (for example AppData was not traversed) and distinguish historical removals from
 current candidates. Record portable judgment rules here, while dated host facts,
 frozen approvals and execution receipts remain in the operation state.
+
+Re-audit earlier retention decisions against fresh evidence. Labels such as
+"latest log", "complete runtime", "recent" and "previous" are not interchangeable
+with active use. A closed diagnostic sink can be disposable without a rotation
+suffix; use an explicit retention period (including zero days when authorized)
+after proving its role and closure. A selected fallback version or the producer's
+actual bounded configuration-recovery slots remain recovery data. Check installed
+launcher/worker fallback paths as well as the workspace dependency loader: a
+framework-selected primary runtime can coexist with helper search paths rooted
+in a complete cached runtime. Unknown registry/config/identity ownership remains
+an explicitly unresolved scope, not a claim that the files are required dependencies.
 
 ## AI-reviewed runtime retirement
 

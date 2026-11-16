@@ -19,6 +19,7 @@ import zlib
 from local_agent_manager import frozen_files as ff
 from local_agent_manager import runtime_artifacts
 from local_agent_manager import workbuddy_diagnostics
+from local_agent_manager import t3code_diagnostics
 from local_agent_manager.discovery import CINDY_PROFILE_NAMES, default_appdata, default_codex_home, default_local_appdata
 
 CLIENTS = ('cindy', 'codex', 'codex-desktop', 'claude', 'pi', 't3code', 'paseo',
@@ -209,19 +210,6 @@ def _diagnostic(root, relative, client):
     if not raw:
         return bool(client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative))
     first = raw.splitlines()[0]
-    if client == 't3code' and re.fullmatch(r'userdata/logs/(?:server|desktop)\.trace\.ndjson\.[1-9][0-9]*', relative):
-        value = _json(first)
-        return (isinstance(value, dict) and value.get('type') in {'effect-span', 'otlp-span'}
-                and value.get('kind') in {'internal', 'server', 'client', 'producer', 'consumer'}
-                and all(isinstance(value.get(k), str) for k in ('name', 'traceId', 'spanId', 'startTimeUnixNano', 'endTimeUnixNano'))
-                and re.fullmatch(r'[0-9a-f]{32}', value['traceId']) is not None
-                and re.fullmatch(r'[0-9a-f]{16}', value['spanId']) is not None
-                and all(re.fullmatch(r'[0-9]{1,24}', value[k]) for k in ('startTimeUnixNano', 'endTimeUnixNano'))
-                and type(value.get('sampled')) is bool and isinstance(value.get('attributes'), dict)
-                and isinstance(value.get('events'), list) and isinstance(value.get('links'), list)
-                and ((value['type'] == 'effect-span' and isinstance(value.get('exit'), dict))
-                     or (value['type'] == 'otlp-span' and all(isinstance(value.get(k), dict)
-                         for k in ('scope', 'resourceAttributes', 'status')))))
     if client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative):
         value = _json(first)
         return (isinstance(value, dict) and isinstance(value.get('fields'), dict)
@@ -661,6 +649,16 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                 if discard_crash_group and relative.startswith('logs/Crash-Log/'):
                     continue
                 name = Path(relative).name
+                if client == 't3code' and t3code_diagnostics.recognized(relative):
+                    try:
+                        proof = t3code_diagnostics.qualify(root, relative, cutoff_ns, _json)
+                        if proof:
+                            candidate(relative, 'logs', 'closed_t3_diagnostic_sink_past_explicit_retention', expected_files=[proof])
+                        else:
+                            observations.append(_row(root, relative, 'logs', 'retain', 'recent_or_unverified_t3_diagnostic'))
+                    except (OSError, ValueError, RuntimeError) as error:
+                        observations.append(_row(root, relative, 'logs', 'unqualified', _qualification_reason(error, 'diagnostic')))
+                    continue
                 if client == 'workbuddy' and not stat.S_ISDIR(info.st_mode) and workbuddy_diagnostics.nested(relative):
                     try:
                         proof, preserved, reason = workbuddy_diagnostics.qualify(root, relative, cutoff_ns,
@@ -679,7 +677,6 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                     # Session/terminal transcripts retain their owning record authority.
                     observations.append(_row(root, relative, 'logs', 'retain', 'nested_or_session_diagnostics'))
                 elif ((_LOG.fullmatch(name) and relative == directory + '/' + name)
-                      or client == 't3code' and re.fullmatch(r'userdata/logs/(?:server|desktop)\.trace\.ndjson\.[1-9][0-9]*', relative)
                       or client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative)
                       or client == 'workbuddy' and relative in {'logs/' + n for n in _WORKBUDDY_ROOT_LOGS}
                       or dated_layout) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):

@@ -137,9 +137,14 @@ manifest, client closure, file leases and verification rules still apply.
 
 Native Codex `.sandbox/sandbox.YYYY-MM-DD.log` requires a matching dated
 Codex diagnostic header and retention; `.sandbox` itself is never a removal
-target. T3 rotated `server.trace.ndjson.N` and `desktop.trace.ndjson.N` require
-a recognized Effect or OTLP span envelope;
-the current trace and terminal transcripts remain retained.
+target. T3 `server.trace.ndjson` and `desktop.trace.ndjson`, including numbered
+rotations, require recognized Effect or OTLP span envelopes throughout the file.
+Known renderer incident history, event-loop stall metrics, relay client output
+and server-child output have separate bounded format checks. A filename without
+a rotation suffix is not evidence of an active writer. Every selected file must
+pass the requested retention period, and apply checks T3 desktop/server/runtime
+closure both before and after acquiring exclusive leases. Provider events,
+terminal transcripts and native databases remain outside this diagnostic route.
 
 WorkBuddy diagnostics support named root log envelopes and direct files inside
 `logs/YYYY-MM-DD`: workspace logger headers, edge-sync, memory and extension
