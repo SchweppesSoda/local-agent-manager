@@ -249,6 +249,9 @@ class RuntimeArtifactTests(unittest.TestCase):
                  ('codex', 'packages/standalone/releases/0.999.0/bin/codex.exe', 'packages/standalone/releases/0.999.0'),
                  ('codex', 'packages/app-server/releases/0.999.0/codex.exe', 'packages/app-server/releases/0.999.0'),
                  ('claude', 'versions/9.8.7', 'versions/9.8.7'),
+                 ('claude', 'share/claude/versions/9.8.7', 'share/claude/versions/9.8.7'),
+                 ('claude', 'bin/claude.exe.old.1794789050948.42676', 'bin/claude.exe.old.1794789050948.42676'),
+                 ('claude', 'bin/claude.exe', 'bin/claude.exe'),
                  ('codex', '.sandbox-bin/codex.exe', '.sandbox-bin/codex.exe'),
                  ('codex', '.sandbox-bin/codex-command-runner.exe', '.sandbox-bin/codex-command-runner.exe'),
                  ('codex-desktop', 'bin/' + 'a' * 16 + '/codex.exe', 'bin/' + 'a' * 16),
@@ -263,6 +266,13 @@ class RuntimeArtifactTests(unittest.TestCase):
                 report = runtimes.inventory(client, root)
                 self.assertEqual(report['candidates'][0]['path'], unit, report)
                 self.assertEqual(report['unqualified'], [])
+
+    def test_claude_launcher_discovery_excludes_other_programs_and_unknown_backup_names(self):
+        directory = self.root / 'bin'
+        directory.mkdir()
+        for name in ('uv.exe', '1.2.3', 'claude.exe.old.notes', 'claude.exe.old.123.42'):
+            (directory / name).write_bytes(b'not an approved Claude updater layout')
+        self.assertEqual(runtimes.inventory('claude', self.root)['candidates'], [])
 
     def daemon_review(self):
         role = self.root / runtimes.DAEMON

@@ -98,6 +98,13 @@ unresolved ownership blocks disposal, report the cleanup as partial and prepare
 the concrete remaining work. A successful eligible batch is not a full space
 audit. Never claim physical capacity reclaimed from logical file sizes alone.
 
+If a non-runtime batch is blocked by specific busy or protected artifacts,
+identify them without changing permissions or forcing handles closed. Use exact
+profile-relative `--exclude-path` values in a fresh plan to preserve those
+artifacts and complete the rest. Exclusions only narrow the eligible set and
+are frozen in the plan; they are not directory-prefix rules or permission to
+discard unknown formats. Runtime keep/remove decisions stay in runtime review.
+
 ## User-home residue coverage
 
 Use this map after measuring the requested scope. Paths below are layout hints
@@ -111,11 +118,11 @@ reading that audit does not authorize deleting its remaining candidates.
 |---|---|
 | Codex `packages/*/releases`, `.sandbox-bin` | Current standalone, rollback, independent daemon and versioned/unversioned helper copies require separate review. Runtime review supports known units; explicit daemon retirement also removes its obsolete selection metadata. Preserve other frontends by physical path/home, not version. |
 | `.cache/codex-runtimes` previous or temporary installations | Read manifests and resolve the workspace dependency loader's current runtime plus other consumers. A full environment can be retained intentionally; neither completeness nor another active MSIX root proves a dependency or disuse. Previous/partial trees need lifecycle inspection; arbitrary trees have no deletion adapter. |
-| Claude `.local/share/claude/versions`, `.local/bin/claude.exe.old.*`, `.cache/claude` | Review native selected executable, completed updater transaction, other frontend bindings and rollback. Runtime review supports recognized version-store units. Updater `.old.*` copies and staging directories require separate lifecycle qualification; do not overlook them because they sit outside the version store. |
-| `.cache/magpie/bun/<version>` | Frontend-managed executable versions, not generic Bun download cache. Resolve actual Magpie launch/update selection and shared consumers. No automatic retirement adapter is implied. |
-| `.t3/userdata/logs`, WorkBuddy logs, `.sheetagent`, `.bsk` logs | Separate current writer, rotated diagnostics, provider/terminal/session content and generated user reports. Existing diagnostic adapters qualify only their documented names/envelopes. SheetAgent and browser-skill logs need producer verification and exact-file review; recent writes are evidence of activity. Never delete a whole frontend profile as a log directory. |
-| `.claude/backups` | Distinguish current/fallback config recovery and old generations; verify healthy current config and explicit retention. Claude backup formats are not covered merely because another client's backup adapter exists. |
-| `.claude/skills/.trash` | Skill deployment or manual recovery, routed to Skill management. Check source/deployment health and pending recovery before discarding selected history. It is not a generic cache. |
+| Claude `.local/share/claude/versions`, `.local/bin/claude.exe.old.*`, `.cache/claude` | Review native selected executable, completed updater transaction, other frontend bindings and rollback. Runtime review at the physical `.local` root supports version-store units, current `bin/claude.exe` and exact timestamp/PID updater copies. Unknown staging remains a separate lifecycle review. |
+| `.cache/magpie/bun/<version>` | Frontend-managed executable versions, not generic Bun download cache. Resolve actual Magpie launch/update selection and its state file's `current` and `previous` roles. An explicit previous slot is rollback evidence; it differs from an arbitrary decision to keep one numerically older version. No automatic retirement adapter is implied. |
+| `.t3/userdata/logs`, WorkBuddy logs, `.sheetagent`, `.bsk` logs | Separate current writer, rotated diagnostics, provider/terminal/session content and user reports. Adapters cover T3 server/desktop Effect or OTLP rotations, known WorkBuddy root/dated logger envelopes, and browser-skill dated daemon diagnostics. SheetAgent and unknown nested formats need separate review. Recent writes are evidence of activity. Never delete an entire profile as logs. |
+| `.claude/backups` | Distinguish current/fallback config recovery, native recent backup slots and separately archived temporary generations. Resolve the actual current config, validate it and retained newer backups, compare old project/config coverage and inspect unresolved migration roles before retiring exact old temporary files. This contextual review is not an automatic Claude backup adapter. |
+| `.claude/skills/.trash` | Native Skill sync recovery, routed to Skill management. Verify current synced manifest, a completed round later than the retired copies, current bodies/resources and no unresolved restoration need. Preserve active staging and manager-owned recovery bundles separately. Exact approved native trash files can then be retired; this is not generic cache or global Skill deletion. |
 | Tool-specific `.venv-*` | Inspect installed packages, project/Skill/launcher references and current consumers. An empty environment can still be selected; a directory name alone grants no disposal authority. |
 | `.workbuddy`, `.ego-browser`, `.codex-t3` and other Agent homes | Mixed live environments, configured homes, credentials and user records. Resolve each consumer; never treat an entire hidden root as rebuildable. |
 | `go/pkg/mod`, `.bun/install/cache`, `.cache/selenium` | Generic dependency/download/driver caches use `windows-maintenance`. Verify effective cache roots, active consumers and offline/reinstallation needs. A managed executable elsewhere under `.cache` belongs to its owning Agent lifecycle. |

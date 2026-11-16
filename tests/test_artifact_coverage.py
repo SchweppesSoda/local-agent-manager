@@ -124,16 +124,57 @@ class ArtifactCoverageTests(unittest.TestCase):
         self.file('.sandbox/session.jsonl', b'conversation')
         self.assertEqual(self.selected(self.inspect('codex', ['logs'])), [path])
 
+    def test_browser_skill_dated_diagnostics_preserve_lock_recent_and_unknown_files(self):
+        body = json.dumps({'timestamp': '2020-01-01T12:00:00Z', 'level': 'INFO',
+                           'fields': {'message': 'diagnostic'}, 'target': 'bsk::daemon::start'}).encode()
+        self.file('daemon.log.2020-01-01', body)
+        self.file('daemon.log.2020-01-02', body)
+        self.file('daemon.log', body)
+        self.file('daemon.log.2020-01-03', b'')
+        self.file('daemon.lock', b'')
+        self.file('session.json', body)
+        self.assertEqual(self.selected(self.inspect('browser-skill', ['logs'])), ['daemon.log.2020-01-01', 'daemon.log.2020-01-03'])
+        os.utime(self.root / 'daemon.log.2020-01-01', ns=(self.cutoff + 1, self.cutoff + 1))
+        self.assertEqual(self.selected(self.inspect('browser-skill', ['logs'])), ['daemon.log.2020-01-03'])
+
+    def test_workbuddy_stale_root_diagnostics_require_the_known_envelope(self):
+        self.file('logs/main.log', b'{"timestamp":"2020-01-01T00:00:00Z","level":"info","scope":"window","message":[]}\n')
+        self.file('logs/daemon.log', b'{"role":"user","content":"keep"}\n')
+        self.file('logs/perf-metrics-cli-pids.json', b'{"pids":[]}')
+        self.file('logs/2020-01-01/daemon-memory-diag.log', b'[2020-01-01T00:00:00Z] rss=3.1MB heap=1/2MB\n')
+        self.assertCountEqual(self.selected(self.inspect('workbuddy', ['logs'])),
+            ['logs/main.log', 'logs/2020-01-01/daemon-memory-diag.log'])
+
+    def test_workbuddy_only_known_dated_logger_envelopes_qualify(self):
+        self.file('logs/2020-01-03', b'a date-named file is not a directory')
+        path = 'logs/2020-01-01/workbuddyMainThread__' + 'a' * 32 + '.log'
+        body = b'Workspace Path: example\n[2020/1/1 08:00:00.000] [Info] [LoggerUploadService] diagnostic\n'
+        self.file(path, body)
+        self.file('logs/2020-01-01/edge-sync.log', b'[2020-01-01T08:00:00Z] [pid=123] [BOOTSTRAP_ENTER] diagnostic\n')
+        self.file('logs/2020-01-01/session.log', body)
+        self.file('logs/2020-01-01/nested/transcript.log', body)
+        self.file('logs/main.log', body)
+        self.assertCountEqual(self.selected(self.inspect('workbuddy', ['logs'])),
+                              [path, 'logs/2020-01-01/edge-sync.log'])
+        (self.root / path).write_bytes(b'user transcript\n')
+        self.assertEqual(self.selected(self.inspect('workbuddy', ['logs'])), ['logs/2020-01-01/edge-sync.log'])
+
     def test_rotated_t3_spans_qualify_current_and_transcripts_do_not(self):
         obj = {'type': 'effect-span', 'kind': 'internal', 'name': 'test', 'traceId': 'a' * 32,
                'spanId': 'b' * 16, 'startTimeUnixNano': '100', 'endTimeUnixNano': '200',
                'sampled': True, 'attributes': {}, 'events': [], 'links': [], 'exit': {}}
         body = json.dumps(obj).encode() + b'\n'
         self.file('userdata/logs/server.trace.ndjson.1', body)
+        self.file('userdata/logs/desktop.trace.ndjson.1', body)
+        otlp = {k: v for k, v in obj.items() if k != 'exit'}
+        otlp.update(type='otlp-span', resourceAttributes={}, scope={}, status={})
+        self.file('userdata/logs/server.trace.ndjson.3', json.dumps(otlp).encode())
         self.file('userdata/logs/server.trace.ndjson', body)
         self.file('userdata/logs/server.trace.ndjson.2', b'{"type":"message"}\n')
         self.file('userdata/logs/terminals/session.log', body)
-        self.assertEqual(self.selected(self.inspect('t3code', ['logs'])), ['userdata/logs/server.trace.ndjson.1'])
+        self.assertEqual(self.selected(self.inspect('t3code', ['logs'])),
+                         ['userdata/logs/desktop.trace.ndjson.1', 'userdata/logs/server.trace.ndjson.1',
+                          'userdata/logs/server.trace.ndjson.3'])
 
     def test_atomic_temps_need_valid_current_fallback_and_keep_stable_slots(self):
         self.file('.codex-global-state.json', b'{}')

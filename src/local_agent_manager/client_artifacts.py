@@ -21,13 +21,16 @@ from local_agent_manager import runtime_artifacts
 from local_agent_manager.discovery import CINDY_PROFILE_NAMES, default_appdata, default_codex_home, default_local_appdata
 
 CLIENTS = ('cindy', 'codex', 'codex-desktop', 'claude', 'pi', 't3code', 'paseo',
-           'antigravity-cli', 'antigravity-desktop', 'workbuddy', 'orca', 'herdr', 'qwenwork')
+           'antigravity-cli', 'antigravity-desktop', 'workbuddy', 'orca', 'herdr', 'qwenwork', 'browser-skill')
 CATEGORIES = ('caches', 'logs', 'backups', 'downloads', 'runtimes')
-DESKTOP = frozenset(CLIENTS) - {'codex', 'claude', 'pi', 'antigravity-cli'}
+DESKTOP = frozenset(CLIENTS) - {'codex', 'claude', 'pi', 'antigravity-cli', 'browser-skill'}
 _LOG = re.compile(r'(?:agent-\d{4}-\d{2}-\d{2}\.ndjson|[A-Za-z][A-Za-z0-9_-]*\.log\.\d+|[A-Za-z][A-Za-z0-9_-]*[.-]\d{4}-\d{2}-\d{2}\.log|\d{4}-\d{2}-\d{2}\.log)\Z')
 _CINDY_BACKUP = re.compile(r'(cindy-[A-Za-z0-9_-]+\.db)\.bak\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\Z')
 _CODEX_TEMP = re.compile(r'\.\.codex-global-state\.json(?:\.bak)?\.tmp-(\d{13})-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
 _CODEX_LOG = re.compile(r'codex-desktop-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-\d+-t\d+-i\d+-\d{6}-\d+\.log\Z')
+_WORKBUDDY_ROOT_LOGS = {'AppStartup.log', 'automation.log', 'daemon.log', 'file-service.log',
+    'installer.log', 'main.log', 'mcp-apps-diag.log', 'register.log', 'renderer.log',
+    'vendor-extract.log', 'win-share-target-registrar.log', 'network-failover.jsonl'}
 
 
 def root_path(value):
@@ -57,9 +60,10 @@ def default_profiles(clients, *, include_runtime_roots=False):
         'orca': [Path(os.environ.get('ORCA_USER_DATA_PATH', roaming / 'orca'))],
         'herdr': [roaming / 'herdr', roaming / 'herdr-dev'],
         'qwenwork': [roaming / name for name in ('QwenWorkCN', 'QwenWorkCNDev', 'QwenWorkCNCanary')],
+        'browser-skill': [home / '.bsk'],
     }
     if include_runtime_roots:
-        roots['claude'].append(home / '.local/share/claude')
+        roots['claude'].append(home / '.local')
         roots['codex-desktop'].extend((local / 'OpenAI/Codex', local / 'Programs/OpenAI/Codex'))
     if 'orca' in clients:
         from local_agent_manager.orca_discovery import default_orca_root
@@ -202,11 +206,11 @@ def _json(raw):
 def _diagnostic(root, relative, client):
     raw = _prefix(root, relative, 64 * 1024)
     if not raw:
-        return False
+        return bool(client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative))
     first = raw.splitlines()[0]
-    if client == 't3code' and re.fullmatch(r'userdata/logs/server\.trace\.ndjson\.[1-9][0-9]*', relative):
+    if client == 't3code' and re.fullmatch(r'userdata/logs/(?:server|desktop)\.trace\.ndjson\.[1-9][0-9]*', relative):
         value = _json(first)
-        return (isinstance(value, dict) and value.get('type') == 'effect-span'
+        return (isinstance(value, dict) and value.get('type') in {'effect-span', 'otlp-span'}
                 and value.get('kind') in {'internal', 'server', 'client', 'producer', 'consumer'}
                 and all(isinstance(value.get(k), str) for k in ('name', 'traceId', 'spanId', 'startTimeUnixNano', 'endTimeUnixNano'))
                 and re.fullmatch(r'[0-9a-f]{32}', value['traceId']) is not None
@@ -214,7 +218,50 @@ def _diagnostic(root, relative, client):
                 and all(re.fullmatch(r'[0-9]{1,24}', value[k]) for k in ('startTimeUnixNano', 'endTimeUnixNano'))
                 and type(value.get('sampled')) is bool and isinstance(value.get('attributes'), dict)
                 and isinstance(value.get('events'), list) and isinstance(value.get('links'), list)
-                and isinstance(value.get('exit'), dict))
+                and ((value['type'] == 'effect-span' and isinstance(value.get('exit'), dict))
+                     or (value['type'] == 'otlp-span' and all(isinstance(value.get(k), dict)
+                         for k in ('scope', 'resourceAttributes', 'status')))))
+    if client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative):
+        value = _json(first)
+        return (isinstance(value, dict) and isinstance(value.get('fields'), dict)
+                and value.get('level') in {'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR'}
+                and isinstance(value.get('timestamp'), str) and value['timestamp'].startswith(relative[-10:] + 'T')
+                and isinstance(value.get('target'), str) and value['target'].startswith('bsk::'))
+    if client == 'workbuddy' and re.fullmatch(r'logs/\d{4}-\d{2}-\d{2}/[^/]+\.log', relative):
+        name = Path(relative).name
+        day = relative.split('/')[1]
+        if name == 'edge-sync.log':
+            return bool(re.match(rb'\[' + day.encode() + rb'T[0-9:.]+Z\] \[pid=\d+\] ', first))
+        if name in {'daemon-memory-diag.log', 'extension-scheduler-diag.log'}:
+            marker = rb'rss=[0-9.]+MB heap=' if name == 'daemon-memory-diag.log' else rb'\[ext=[A-Za-z0-9_-]+\] '
+            return bool(re.match(rb'\[' + day.encode() + rb'T[0-9:.]+Z\] ' + marker, first))
+        if re.fullmatch(r'[A-Za-z0-9_-]+__[0-9a-f]{32}\.log', name):
+            lines = raw.splitlines()
+            return (first.startswith(b'Workspace Path: ') and len(lines) > 1
+                    and bool(re.match(rb'\[\d{4}/\d{1,2}/\d{1,2} [0-9:.]+\] \[(?:Info|Warn|Warning|Error|Debug)\] \[', lines[1])))
+        return False
+    if client == 'workbuddy' and relative in {'logs/' + name for name in _WORKBUDDY_ROOT_LOGS}:
+        name = Path(relative).name
+        if name in {'daemon.log', 'main.log', 'renderer.log', 'file-service.log', 'network-failover.jsonl'}:
+            value = _json(first)
+            if not isinstance(value, dict):
+                return False
+            if name == 'file-service.log':
+                return all(isinstance(value.get(k), str) for k in ('time', 'event', 'filePath'))
+            if name == 'network-failover.jsonl':
+                return (value.get('kind') == 'audit' and type(value.get('pid')) is int
+                        and all(isinstance(value.get(k), str) for k in ('ts', 'operation', 'operationId')))
+            return (all(isinstance(value.get(k), str) for k in ('timestamp', 'level', 'scope'))
+                    and value['level'] in {'debug', 'info', 'warn', 'error'} and isinstance(value.get('message'), list))
+        stamp = rb'\d{4}-\d{2}-\d{2}T[0-9:.+Z-]+'
+        patterns = {'AppStartup.log': stamp + rb' \[AppStartup\] appName=WorkBuddy ',
+                    'automation.log': stamp + rb' \[(?:INFO|WARN|ERROR)\] \[LocalAutomationScheduler\] ',
+                    'installer.log': rb'\[install-\d+\] (?:INFO|WARN|ERROR) ',
+                    'mcp-apps-diag.log': rb'\[' + stamp + rb'\] \[pid=\d+\] ',
+                    'register.log': stamp + rb' === register start ===',
+                    'vendor-extract.log': stamp + rb' \[(?:INFO|WARN|ERROR)\] ensureAll ',
+                    'win-share-target-registrar.log': stamp + rb' self-heal start msix='}
+        return bool(re.match(patterns[name], first))
     if client == 'codex' and relative.startswith('.sandbox/'):
         day = re.fullmatch(r'\.sandbox/sandbox\.(\d{4}-\d{2}-\d{2})\.log', relative)
         return bool(day and re.match(rb'\[' + day[1].encode() + rb' [0-9:.]+ codex\.exe\] (?:START|END|ERROR|WARN|INFO):', first))
@@ -432,17 +479,53 @@ def _past_log_date(name, cutoff_ns):
         return False
 
 
-def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze=False, runtime_review=None):
+def _log_entries(root, directory, client):
+    if client == 'codex-desktop':
+        yield from _dated_codex_logs(root, directory)
+        return
+    if client == 'browser-skill':
+        ff._plain(root.lstat(), directory=True)
+        names = sorted(p.name for p in islice(root.iterdir(), ff.MAX_ENTRIES + 1))
+        if len(names) > ff.MAX_ENTRIES:
+            raise ff.FrozenFilesError('maintenance_entry_budget')
+    else:
+        names = _names(root, directory)
+    visited = len(names)
+    for name in names:
+        relative = directory + '/' + name if directory else name
+        info = ff.checked_path(root, relative).lstat()
+        if (client == 'workbuddy' and directory == 'logs' and stat.S_ISDIR(info.st_mode)
+                and not getattr(info, 'st_file_attributes', 0) & 0x400
+                and re.fullmatch(r'\d{4}-\d{2}-\d{2}', name)):
+            for child in _names(root, relative):
+                visited += 1
+                if visited > ff.MAX_ENTRIES:
+                    raise ff.FrozenFilesError('maintenance_entry_budget')
+                path = relative + '/' + child
+                yield path, ff.checked_path(root, path).lstat(), True
+        else:
+            yield relative, info, False
+
+
+def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze=False, runtime_review=None, excluded_paths=()):
     """Classify only named product artifacts. Bodies never enter public reports."""
     if client not in CLIENTS or not categories or set(categories) - set(CATEGORIES):
         raise ValueError('maintenance_scope_invalid')
     root = root_path(value)
+    excluded_paths = sorted(set(excluded_paths))
+    if excluded_paths and 'runtimes' in categories:
+        raise ValueError('runtime_exclusions_use_review_preserve_decisions')
+    for relative in excluded_paths:
+        ff.checked_path(root, relative)
     observations, changes, dependencies, absent_paths = [], [], {}, set()
     if runtime_review is not None and 'runtimes' not in categories:
         raise ValueError('runtime_review_requires_runtime_category')
     runtimes, runtime_evidence = None, None
 
     def candidate(relative, category, reason, *, proofs=(), expected_files=(), absent=()):
+        if relative in excluded_paths:
+            observations.append(_row(root, relative, category, 'retain', 'explicitly_excluded_from_cleanup'))
+            return
         row = _row(root, relative, category, 'eligible_for_plan', reason)
         if row['decision'] == 'eligible_for_plan' and freeze:
             change = ff.freeze_remove(root, relative)
@@ -543,24 +626,24 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                 observations.append(_row(root, relative, 'backups', 'retain', 'paseo_record_and_recovery_state_use_record_workflow'))
 
     if 'logs' in categories:
-        directories = ['logs', 'log', 'userdata/logs']
+        directories = [''] if client == 'browser-skill' else ['logs', 'log', 'userdata/logs']
         if client == 'codex':
             directories.append('.sandbox')
         if client == 'codex-desktop':
             directories.append('Local/Codex/Logs')
         for directory in directories:
-            entries = (_dated_codex_logs(root, directory) if client == 'codex-desktop' else
-                       ((directory + '/' + name, ff.checked_path(root, directory + '/' + name).lstat(), False)
-                        for name in _names(root, directory)))
-            for relative, info, dated_codex in entries:
+            for relative, info, dated_layout in _log_entries(root, directory, client):
                 name = Path(relative).name
-                date_name = '-'.join(relative.split('/')[-4:-1]) if dated_codex else name
+                date_name = (relative.split('/')[1] if client == 'workbuddy' else
+                             '-'.join(relative.split('/')[-4:-1])) if dated_layout else name
                 if stat.S_ISDIR(info.st_mode):
                     # Session/terminal transcripts retain their owning record authority.
                     observations.append(_row(root, relative, 'logs', 'retain', 'nested_or_session_diagnostics'))
                 elif ((_LOG.fullmatch(name) and relative == directory + '/' + name)
-                      or client == 't3code' and re.fullmatch(r'userdata/logs/server\.trace\.ndjson\.[1-9][0-9]*', relative)
-                      or dated_codex) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):
+                      or client == 't3code' and re.fullmatch(r'userdata/logs/(?:server|desktop)\.trace\.ndjson\.[1-9][0-9]*', relative)
+                      or client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative)
+                      or client == 'workbuddy' and relative in {'logs/' + n for n in _WORKBUDDY_ROOT_LOGS}
+                      or dated_layout) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):
                     try:
                         if _diagnostic(root, relative, client):
                             candidate(relative, 'logs', 'closed_rotated_diagnostics_past_explicit_retention')
@@ -665,6 +748,7 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
     return {'schema_version': 'lam.client-artifacts.v1', 'client': client, 'root': str(root),
             'root_identity': ff._identity(root.lstat()), 'categories': sorted(categories),
             'cutoff_ns': cutoff_ns, 'observations': observations, 'changes': changes,
+            'excluded_paths': excluded_paths,
             'dependencies': sorted(dependencies.values(), key=lambda item: item['path']),
             'absent_paths': sorted(absent_paths),
             'runtime_inventory': runtimes, 'runtime_evidence': runtime_evidence,

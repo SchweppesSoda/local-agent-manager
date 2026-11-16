@@ -14,3 +14,13 @@ The source owns its manifest and transaction journal. Shared target roots and di
 Global deletion requires named `--delete-skill` values and `--confirm-global-delete` on plan and apply. The recovery bundle and journal preserve original paths and link primitives. Skill deletion does not unregister an entire source.
 
 Discovery file replacement records its byte before-image and expected after-image before writing. Recovery checks current content before restoring. External edits require review of retained recovery material. Journals support exception rollback and manual interrupted-process recovery.
+
+Native client sync trash is distinct from this manager's recovery bundle. For
+an explicitly authorized cleanup of `.claude/skills/.trash`, inspect the actual
+sync producer's current manifest, completed-round marker, deployed bodies and
+resources. Confirm that each selected old copy has a healthy current replacement
+and no pending restoration role. Keep current source/deployment paths, active
+staging, coordination files and manager recovery journals out of that scope.
+Use exact frozen file identities and membership, writer exclusion and a receipt
+for the approved native copies; do not invoke global Skill deletion or remove
+an entire discovery root. Names or age alone do not prove a completed sync.

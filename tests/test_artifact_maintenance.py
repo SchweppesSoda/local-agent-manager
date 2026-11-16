@@ -30,6 +30,32 @@ class ArtifactMaintenanceTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.old = time.time_ns() - 60 * 86400 * 1000000000
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows exact exclusions')
+    def test_exact_exclusion_preserves_busy_log_and_is_bound_into_plan(self):
+        logs = self.root / 'logs'
+        logs.mkdir()
+        for name in ('worker.log.1', 'worker.log.2'):
+            p = logs / name
+            p.write_bytes(b'[2020-01-01 00:00:00] INFO diagnostic\n')
+            os.utime(p, ns=(self.old, self.old))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = maintenance.main(['plan', '--client', 'workbuddy', '--root', str(self.root),
+                '--category', 'logs', '--exclude-path', 'logs/worker.log.2', '--json'])
+        self.assertEqual(code, 0, output.getvalue())
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan['counts']['approved_file_count'], 1)
+        self.assertEqual(plan['scope']['excluded_paths'], ['logs/worker.log.2'])
+        with (logs / 'worker.log.2').open('rb'):
+            result = maintenance.apply(plan['plan_path'], approved_hash=plan['plan_sha256'], clients_closed=True)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertFalse((logs / 'worker.log.1').exists())
+        self.assertTrue((logs / 'worker.log.2').exists())
+        with self.assertRaises((ValueError, RuntimeError)):
+            maintenance.plan('workbuddy', self.root, categories=['logs'], excluded_paths=['../outside'])
+        with self.assertRaisesRegex(ValueError, 'runtime_exclusions_use_review'):
+            maintenance.plan('claude', self.root, categories=['runtimes'], excluded_paths=['versions/1.0.0'])
+
     def cache(self):
         cache = self.root / 'Cache/Cache_Data'
         cache.mkdir(parents=True)

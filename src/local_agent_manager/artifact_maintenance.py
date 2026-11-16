@@ -108,12 +108,12 @@ def _selected_root(client, root, *, categories):
     return next(iter(observed.values()))
 
 
-def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, operation_id=None, runtime_review=None):
+def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, operation_id=None, runtime_review=None, excluded_paths=()):
     if not 0 <= older_than_days <= 36500:
         raise ValueError('maintenance_retention_invalid')
     cutoff = time.time_ns() - older_than_days * 86400 * 1000000000
     evidence = rules.inspect_profile(client, _selected_root(client, root, categories=categories), categories=categories,
-                                    cutoff_ns=cutoff, freeze=True, runtime_review=runtime_review)
+                                    cutoff_ns=cutoff, freeze=True, runtime_review=runtime_review, excluded_paths=excluded_paths)
     paths = [proof['path'] for change in evidence['changes'] for proof in change['evidence']['files']]
     if len(paths) != len(set(paths)) or set(paths) & {p['path'] for p in evidence['dependencies']}:
         raise ValueError('maintenance_overlapping_scope')
@@ -125,7 +125,7 @@ def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, o
                 'writer': WRITER, 'mutation_family': KIND, 'operation_id': operation_id,
                 'target': {'codex_home': evidence['root']},
                 'scope': {'client': client, 'root': evidence['root'], 'categories': sorted(categories),
-                          'older_than_days': older_than_days, 'cutoff_ns': cutoff},
+                          'older_than_days': older_than_days, 'cutoff_ns': cutoff, 'excluded_paths': evidence['excluded_paths']},
                 'actions': [{'kind': KIND, 'action_id': KIND + ':' + operation_id}],
                 'authorization': {'blockers': []}, 'artifact_evidence': evidence,
                 'retained': retained, 'implementation': _implementation(), 'plan_path': str(destination)}
@@ -159,7 +159,8 @@ def _load(path):
     root = rules.root_path(scope['root'])
     if (evidence['root'] != str(root) or document['target']['codex_home'] != str(root)
             or evidence['client'] != scope['client'] or evidence['categories'] != scope['categories']
-            or evidence['cutoff_ns'] != scope['cutoff_ns']):
+            or evidence['cutoff_ns'] != scope['cutoff_ns']
+            or evidence.get('excluded_paths', []) != scope.get('excluded_paths', [])):
         raise ValueError('maintenance_scope_changed')
     store = OperationStore(root, document['operation_id'])
     if store.read_plan() != document:
@@ -230,7 +231,8 @@ def apply(path, *, approved_hash, clients_closed=False):
             root = _check_dependencies(document)
             fresh = rules.inspect_profile(document['scope']['client'], root,
                 categories=document['scope']['categories'], cutoff_ns=document['scope']['cutoff_ns'], freeze=True,
-                runtime_review=(document['artifact_evidence'].get('runtime_evidence') or {}).get('review'))
+                runtime_review=(document['artifact_evidence'].get('runtime_evidence') or {}).get('review'),
+                excluded_paths=document['scope'].get('excluded_paths', []))
             if fresh != document['artifact_evidence']:
                 raise ff.FrozenFilesError('maintenance_plan_drift')
             with HeldFiles() as held:
@@ -367,6 +369,8 @@ def main(argv=None):
             child.add_argument('--root', type=Path)
             child.add_argument('--category', choices=rules.CATEGORIES, action='append', required=verb != 'inventory')
             child.add_argument('--older-than-days', type=int, default=14)
+            child.add_argument('--exclude-path', action='append', default=[],
+                               help='Retain this exact profile-relative artifact; repeat for other reviewed exclusions')
         if verb in {'plan', 'run'}:
             child.add_argument('--runtime-review', type=Path,
                                help='AI-reviewed exact runtime decisions and dependency files')
@@ -399,7 +403,7 @@ def main(argv=None):
                         reports.append({**profile, 'status': 'unqualified', 'reason': profile['discovery_error']})
                         continue
                     report = rules.inspect_profile(profile['client'], profile['root'],
-                        categories=args.category or rules.CATEGORIES, cutoff_ns=cutoff)
+                        categories=args.category or rules.CATEGORIES, cutoff_ns=cutoff, excluded_paths=args.exclude_path)
                     report.pop('changes')
                     report.pop('dependencies')
                     reports.append(report)
@@ -413,7 +417,8 @@ def main(argv=None):
                 raise ValueError('maintenance_clients_closed_ack_required')
             result = plan(args.client, args.root, categories=sorted(set(args.category)),
                           older_than_days=args.older_than_days, plan_path=args.plan,
-                          runtime_review=strict_json_load(args.runtime_review) if args.runtime_review else None)
+                          runtime_review=strict_json_load(args.runtime_review) if args.runtime_review else None,
+                          excluded_paths=args.exclude_path)
             if args.command == 'run':
                 dispatching = True
                 result = apply(result['plan_path'], approved_hash=result['plan_sha256'], clients_closed=True)

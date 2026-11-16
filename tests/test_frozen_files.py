@@ -27,6 +27,21 @@ class FrozenFilesTests(unittest.TestCase):
         path.write_bytes(data)
         return path
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows read-only cache disposal')
+    def test_explicit_readonly_disposal_uses_the_held_file_and_preserves_neighbor(self):
+        from local_agent_manager.windows_held_files import HeldFiles
+        target = self.write('cache/module.txt')
+        neighbor = self.write('keep.txt')
+        target.chmod(0o444)
+        proof, _ = files.read_file(self.root, 'cache/module.txt')
+        with HeldFiles() as held:
+            held.acquire(self.root, proof, delete=True)
+            with self.assertRaises(OSError):
+                target.write_bytes(b'changed')
+            held.dispose(self.root, proof['path'], before=proof, ignore_readonly=True)
+        self.assertFalse(target.exists())
+        self.assertTrue(neighbor.exists())
+
     def test_tree_includes_empty_directories_preserves_neighbors_and_has_no_bodies(self):
         self.write("selected/subagent/one.jsonl")
         (self.root / "selected/empty").mkdir()

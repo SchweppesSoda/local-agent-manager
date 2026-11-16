@@ -103,8 +103,10 @@ coordination domain for current commands.
 artifacts through the shared operation store and mutation admission. Inventory
 supports explicit profiles and known default or environment roots for Cindy,
 Codex, Codex desktop, Claude, Pi, T3, Paseo, Antigravity CLI and desktop,
-WorkBuddy, Orca, Herdr and QwenWork. A missing candidate reports its observation
-scope. Cindy discovery includes its SDK `codex-home`, qualified
+WorkBuddy, Orca, Herdr and QwenWork. Browser-skill diagnostics are discovered
+separately at the actual user's `.bsk` root; daemon locks and control directories
+remain retained. A missing candidate reports its observation scope.
+Cindy discovery includes its SDK `codex-home`, qualified
 `codex-accounts/<owner>/<account>` homes (reported as client `codex`), and the
 Windows updater WebView profile. Custom and other portable profiles require
 an explicit root. Native account homes remain separate from frontend stores;
@@ -131,8 +133,18 @@ manifest, client closure, file leases and verification rules still apply.
 
 Native Codex `.sandbox/sandbox.YYYY-MM-DD.log` requires a matching dated
 Codex diagnostic header and retention; `.sandbox` itself is never a removal
-target. T3 rotated `server.trace.ndjson.N` requires an Effect span envelope;
+target. T3 rotated `server.trace.ndjson.N` and `desktop.trace.ndjson.N` require
+a recognized Effect or OTLP span envelope;
 the current trace and terminal transcripts remain retained.
+
+WorkBuddy diagnostics support named root log envelopes and direct files inside
+`logs/YYYY-MM-DD`: workspace logger headers, edge-sync, memory and extension
+scheduler diagnostics. Unknown nested SDK/session, migration, update and crash
+data stays retained. Browser-skill `daemon.log.YYYY-MM-DD` requires its dated
+Rust tracing envelope and `bsk::` target, or a verified empty file. Date and mtime
+must both pass retention. Root locks, current/recent files and unknown bodies
+do not qualify. These producers still require normal closure/file exclusion;
+an inactive app's old diagnostic log can qualify even without a rotation suffix.
 
 Native discovery catalogs under the four known `cache/` namespaces require
 recognized JSON schemas, hashed filenames and retention. Plugin exclusion
@@ -160,6 +172,14 @@ observed profile. Multiple profiles produce a scope blocker. `run` freezes,
 accepts and executes its own plan in one invocation for an already authorized
 scope. `apply` binds the reviewed plan hash. Client closure acknowledgement
 accompanies actual OS leases on every selected file and recovery dependency.
+
+For reviewed busy/protected non-runtime artifacts, repeat `--exclude-path
+'logs/exact-file.log'` on inventory, plan or run. Each argument is one exact
+profile-relative artifact, not a glob or directory prefix. The exclusions are
+recorded in both scope and evidence, rechecked during apply, and only remove
+otherwise eligible actions. They never widen qualification. Use a fresh plan
+after identifying an unavailable file; do not modify its ACL to make a batch
+pass. Runtime exclusions instead use the review's `preserve` decisions.
 
 | Category | Executable qualification |
 |---|---|
@@ -283,7 +303,11 @@ Codex installer units recognize supported Rust target triples (including
 `.sandbox-bin/codex.exe` and `.sandbox-bin/codex-command-runner.exe` copies. Unknown names are reported,
 not silently skipped. Active pointers, separate daemon selection and helper
 consumers still require review; discovery is not retirement approval.
-Use the physical install root for Claude (`~/.local/share/claude`) or Codex
+Use the combined native Claude root `~/.local` to cover both
+`share/claude/versions/<version>` and `bin/claude.exe.old.<13-digit timestamp>.<pid>`.
+The current `bin/claude.exe` is a separately reviewed retained candidate;
+unrelated bin tools and unknown backup names are excluded. Direct version-store
+roots (`~/.local/share/claude`) remain supported. Use the physical root for Codex
 desktop (`<local appdata>/OpenAI/Codex` or `Programs/OpenAI/Codex`). Runtime
 inventory includes these known install-root candidates. Other layouts retain
 their existing observation/qualification limits. Native sessions, plugins and

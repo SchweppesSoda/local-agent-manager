@@ -138,7 +138,9 @@ def _bases(client):
                 for role in ('standalone', 'app-server', 'app-server-daemon')] + [
                     ('.sandbox-bin', 'codex-command-runner', ())]
     if client == 'claude':
-        return [('versions', 'claude', ('claude.exe', 'claude'))]
+        return [('versions', 'claude', ('claude.exe', 'claude')),
+                ('share/claude/versions', 'claude', ('claude.exe', 'claude')),
+                ('bin', 'claude', ())]
     if client == 'codex-desktop':
         return [('bin', 'codex', ('codex.exe', 'codex'))]
     if client == 't3code':
@@ -173,9 +175,13 @@ def inventory(client, root):
                 r'codex-command-runner-(.+)\.exe', name)
             sandbox_copy = client == 'codex' and base == '.sandbox-bin' and name in {
                 'codex.exe', 'codex-command-runner.exe'}
+            claude_launcher = client == 'claude' and base == 'bin' and (
+                name == 'claude.exe' or re.fullmatch(r'claude\.exe\.old\.\d{13}\.\d+', name))
+            if client == 'claude' and base == 'bin' and not claude_launcher:
+                continue
             if not (release_version(name) or re.fullmatch(r'[0-9a-f]{16,64}', name)
                     or target_release and release_version(target_release[1])
-                    or helper and release_version(helper[1]) or sandbox_copy
+                    or helper and release_version(helper[1]) or sandbox_copy or claude_launcher
                     or engine == 'pi' and re.fullmatch(r'\d+\.\d+\.\d+-[0-9a-f-]{36}', name)):
                 if client == 'codex':
                     unqualified.append(_unqualified(root, base + '/' + name, 'runtime_unit_name_unrecognized'))

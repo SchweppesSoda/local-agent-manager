@@ -48,7 +48,7 @@ def exclusive_fd(path, *, writable=False, delete=False, directory=False):
     return fd
 
 
-def dispose_fd(fd):
+def dispose_fd(fd, *, ignore_readonly=False):
     """Mark an exclusively held DELETE handle; never reopen/follow its path."""
     import ctypes
     from ctypes import wintypes
@@ -56,8 +56,11 @@ def dispose_fd(fd):
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
     kernel.SetFileInformationByHandle.restype = wintypes.BOOL
-    disposition = wintypes.BOOL(True)
-    if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 4,
+    # Cache owners such as Go mark downloaded files read-only. Opt-in extended
+    # disposition removes that exact held file without a pathname chmod window;
+    # it does not bypass DELETE ACLs or sharing-mode exclusion.
+    disposition = wintypes.DWORD(0x1 | 0x10) if ignore_readonly else wintypes.BOOL(True)
+    if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 21 if ignore_readonly else 4,
                                              ctypes.byref(disposition), ctypes.sizeof(disposition)):
         raise ctypes.WinError(ctypes.get_last_error())
 
@@ -125,7 +128,7 @@ class HeldFiles:
         if current != evidence:
             raise frozen_files.FrozenFilesError("held_file_evidence_changed")
 
-    def dispose(self, root, relative, *, before):
+    def dispose(self, root, relative, *, before, ignore_readonly=False):
         """Delete an already leased file, retaining its pending-delete handle.
 
         The caller must acquire DELETE access and hold the lease until every
@@ -136,7 +139,7 @@ class HeldFiles:
         if current != before:
             raise frozen_files.FrozenFilesError("held_file_evidence_changed")
         fd, _ = self.handles[(str(root), relative)]
-        dispose_fd(fd)
+        dispose_fd(fd, ignore_readonly=ignore_readonly)
 
     def read(self, root, relative, *, content=False, limit=frozen_files.MAX_BYTES):
         fd, _ = self.handles[(str(root), relative)]
