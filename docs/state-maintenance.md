@@ -154,9 +154,23 @@ UUID in a diagnostic filename does not make it the native conversation store.
 No traversal enters `projects`, `sessions`, `storage`, database sidecars, migration
 markers, backups, security state or pending installer directories.
 
-Crash reports qualify only when their native `.processed-crashes.json` cursor
-has consumed all entries. Freeze that cursor as a retained dependency. Keep
-pending entries and the cursor; do not infer completion from file age alone.
+By default, crash reports qualify when their native `.processed-crashes.json`
+cursor has consumed all entries. Freeze that cursor as a retained dependency;
+do not infer completion from file age alone. An explicit user decision to discard
+diagnostics overrides pending-report retention. Represent it with repeated
+`--discard-diagnostic '<exact profile-relative path>'` on inventory, plan or run.
+The current implementation supports only recognized WorkBuddy crash reports and
+their cursor, with `--client workbuddy --category logs`. The exact decisions are
+frozen in scope/evidence and revalidated on apply; this is not a global force flag.
+
+Discarding the cursor requires every remaining report in that directory to be
+explicitly selected too. Freeze the complete directory membership and reject
+unknown members, exclusions or new reports, so a reset cannot re-upload retained
+reports. Only files are disposed; directory containers remain. Retention age,
+format/identity validation, active-writer checks and exclusive file leases still
+apply. Session stores, active files and pending installer/recovery data receive
+no permission from a diagnostic-discard choice. This action neither uploads
+reports first nor changes future telemetry settings.
 The installed producer prunes obsolete cursor names itself. Empty performance
 PID snapshots qualify only with the known schema, no PIDs and a stale capture.
 WorkBuddy apply probes desktop, vendor/SDK helpers, runtimes and its native PID

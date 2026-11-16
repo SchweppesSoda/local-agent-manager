@@ -15,6 +15,8 @@ from . import frozen_files as ff
 DAY = r'\d{4}-\d{2}-\d{2}'
 STAMP = r'\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2})'
 UUID = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+CRASH_REPORT = re.compile(r'logs/Crash-Log/crash-report-[a-z-]+-\d+-\d{8}T\d{6}\.json\Z')
+CRASH_CURSOR = 'logs/Crash-Log/.processed-crashes.json'
 DIRECTORY = re.compile(r'logs/(?:' + DAY + r'(?:/sdk(?:/conversations)?)?'
     r'|(?:migration|update|database|editor_sdk|perf|Crash-Log|weixinpay)'
     r'|startup(?:/' + DAY + r')?|sandbox(?:/\d{8})?)\Z')
@@ -173,15 +175,15 @@ def _xlog(raw):
     return bool(raw)
 
 
-def qualify(root, relative, cutoff):
+def qualify(root, relative, cutoff, *, discard_pending=False):
     """Return exact content proof, retained dependencies and a semantic reason."""
     proof, raw = ff.read_file(root, relative, content=True, limit=ff.MAX_REWRITE_BYTES)
     if proof['mtime_ns'] >= cutoff or not _dates(relative, cutoff):
         return proof, [], 'recent_workbuddy_diagnostic'
     dependencies = []
-    if relative == 'logs/Crash-Log/.processed-crashes.json':
+    if relative == CRASH_CURSOR:
         return proof, [], 'crash_processing_cursor'
-    if re.fullmatch(r'logs/Crash-Log/crash-report-[a-z-]+-\d+-\d{8}T\d{6}\.json', relative):
+    if CRASH_REPORT.fullmatch(relative):
         obj = _json(raw)
         required = {'launchedAt', 'pid', 'processName', 'versions', 'platform', 'arch', 'appVersion', 'entries', 'droppedCount'}
         if not isinstance(obj, dict) or set(obj) != required or not isinstance(obj['entries'], list):
@@ -198,7 +200,7 @@ def qualify(root, relative, cutoff):
                 or any(type(count) is not int or count < 0 for count in state['files'].values())):
             return proof, [], 'workbuddy_diagnostic_format_unverified'
         done = state['files'].get(Path(relative).name)
-        if type(done) is not int or done < len(obj['entries']):
+        if not discard_pending and (type(done) is not int or done < len(obj['entries'])):
             return proof, [], 'crash_entries_pending_native_processing'
         dependencies = [cursor]
         valid = True
@@ -243,3 +245,29 @@ def qualify(root, relative, cutoff):
         elif re.fullmatch(r'logs/sandbox/\d{8}/sandbox_(?:center|gc)_\d+_\d{3}\.log', relative):
             valid = bool(lines) and all(re.match(r'\[\d{4}/\d{2}/\d{2} [0-9:.]+\]\[\d+\]\[sandbox-(?:center|gc|core)\]\[[IWEFD]\] ', line) for line in lines if line)
     return proof, dependencies, 'qualified_workbuddy_nested_diagnostic' if valid else 'workbuddy_diagnostic_format_unverified'
+
+
+def discarded_crash_group(root, paths, cutoff, names):
+    """Discard a cursor only with every remaining report, freezing membership.
+
+    Resetting a cursor while retaining reports would permit their re-upload.
+    Unknown members, age, links and actual file use receive no exception.
+    """
+    current = {'logs/Crash-Log/' + name for name in names(root, 'logs/Crash-Log')}
+    if current != set(paths) or CRASH_CURSOR not in current:
+        raise ValueError('diagnostic_cursor_requires_all_reports_explicitly_discarded')
+    cursor, body = ff.read_file(root, CRASH_CURSOR, content=True)
+    state = _json(body)
+    if (cursor['mtime_ns'] >= cutoff or not isinstance(state, dict) or set(state) != {'files'}
+            or not isinstance(state['files'], dict)
+            or any(type(count) is not int or count < 0 for count in state['files'].values())):
+        raise ValueError('diagnostic_cursor_unqualified')
+    proofs = [cursor]
+    for relative in sorted(current - {CRASH_CURSOR}):
+        if not CRASH_REPORT.fullmatch(relative):
+            raise ValueError('diagnostic_discard_scope_unqualified')
+        proof, _, reason = qualify(root, relative, cutoff, discard_pending=True)
+        if reason != 'qualified_workbuddy_nested_diagnostic':
+            raise ValueError('diagnostic_discard_scope_unqualified')
+        proofs.append(proof)
+    return proofs

@@ -514,12 +514,24 @@ def _log_entries(root, directory, client):
             yield relative, info, False
 
 
-def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze=False, runtime_review=None, excluded_paths=()):
+def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze=False, runtime_review=None, excluded_paths=(), discard_diagnostics=()):
     """Classify only named product artifacts. Bodies never enter public reports."""
     if client not in CLIENTS or not categories or set(categories) - set(CATEGORIES):
         raise ValueError('maintenance_scope_invalid')
     root = root_path(value)
     excluded_paths = sorted(set(excluded_paths))
+    discard_diagnostics = sorted(set(discard_diagnostics))
+    if discard_diagnostics:
+        if client != 'workbuddy' or set(categories) != {'logs'}:
+            raise ValueError('diagnostic_discard_requires_workbuddy_logs')
+        if set(discard_diagnostics) & set(excluded_paths) or 'logs/Crash-Log' in excluded_paths:
+            raise ValueError('diagnostic_discard_conflicts_with_retention')
+        for relative in discard_diagnostics:
+            ff.checked_path(root, relative)
+            if relative != workbuddy_diagnostics.CRASH_CURSOR and not workbuddy_diagnostics.CRASH_REPORT.fullmatch(relative):
+                raise ValueError('diagnostic_discard_scope_unqualified')
+            if not (root / relative).is_file():
+                raise ValueError('diagnostic_discard_target_missing')
     if excluded_paths and 'runtimes' in categories:
         raise ValueError('runtime_exclusions_use_review_preserve_decisions')
     for relative in excluded_paths:
@@ -529,7 +541,7 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         raise ValueError('runtime_review_requires_runtime_category')
     runtimes, runtime_evidence = None, None
 
-    def candidate(relative, category, reason, *, proofs=(), expected_files=(), absent=()):
+    def candidate(relative, category, reason, *, proofs=(), expected_files=(), absent=(), exact_files=False):
         if relative in excluded_paths:
             observations.append(_row(root, relative, category, 'retain', 'explicitly_excluded_from_cleanup'))
             return
@@ -537,6 +549,8 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         if row['decision'] == 'eligible_for_plan' and freeze:
             change = ff.freeze_remove(root, relative)
             frozen = {proof['path']: proof for proof in change['files']}
+            if exact_files and set(frozen) != {proof['path'] for proof in expected_files}:
+                raise ff.FrozenFilesError('maintenance_qualification_membership_changed')
             if any(frozen.get(proof['path']) != proof for proof in expected_files):
                 raise ff.FrozenFilesError('maintenance_qualification_changed')
             for proof in proofs:
@@ -633,6 +647,10 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                 observations.append(_row(root, relative, 'backups', 'retain', 'paseo_record_and_recovery_state_use_record_workflow'))
 
     if 'logs' in categories:
+        discard_crash_group = workbuddy_diagnostics.CRASH_CURSOR in discard_diagnostics
+        if discard_crash_group:
+            proofs = workbuddy_diagnostics.discarded_crash_group(root, discard_diagnostics, cutoff_ns, _names)
+            candidate('logs/Crash-Log', 'logs', 'user_explicitly_discarded_crash_diagnostics', expected_files=proofs, exact_files=True)
         directories = [''] if client == 'browser-skill' else ['logs', 'log', 'userdata/logs']
         if client == 'codex':
             directories.append('.sandbox')
@@ -640,10 +658,13 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
             directories.append('Local/Codex/Logs')
         for directory in directories:
             for relative, info, dated_layout in _log_entries(root, directory, client):
+                if discard_crash_group and relative.startswith('logs/Crash-Log/'):
+                    continue
                 name = Path(relative).name
                 if client == 'workbuddy' and not stat.S_ISDIR(info.st_mode) and workbuddy_diagnostics.nested(relative):
                     try:
-                        proof, preserved, reason = workbuddy_diagnostics.qualify(root, relative, cutoff_ns)
+                        proof, preserved, reason = workbuddy_diagnostics.qualify(root, relative, cutoff_ns,
+                            discard_pending=relative in discard_diagnostics)
                         if reason == 'qualified_workbuddy_nested_diagnostic':
                             candidate(relative, 'logs', reason, proofs=preserved, expected_files=[proof])
                         else:
@@ -767,6 +788,7 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
             'root_identity': ff._identity(root.lstat()), 'categories': sorted(categories),
             'cutoff_ns': cutoff_ns, 'observations': observations, 'changes': changes,
             'excluded_paths': excluded_paths,
+            'discard_diagnostics': discard_diagnostics,
             'dependencies': sorted(dependencies.values(), key=lambda item: item['path']),
             'absent_paths': sorted(absent_paths),
             'runtime_inventory': runtimes, 'runtime_evidence': runtime_evidence,

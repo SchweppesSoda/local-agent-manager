@@ -156,9 +156,11 @@ native `projects`, `sessions`, `storage`, database/sidecar and recovery files.
 Separate completed migration diagnostics from migration journals/markers, update
 logs from selected installers, and crash diagnostics from native processing state.
 Compare each crash report's entry count with `.processed-crashes.json`; unconsumed
-entries are a concrete pending role. Keep that report and cursor, while processed
-reports can qualify with a frozen cursor dependency. File age alone proves none
-of these relationships. Current adapters also recognize startup/performance,
+entries establish pending reporting, not an unconditional retention requirement.
+Keep that report/cursor by default, but carry an explicit user decision to discard
+those diagnostics through cleanup without waiting for upload or asking again.
+Processed reports can qualify with a frozen cursor dependency. File age alone
+proves none of these relationships. Current adapters also recognize startup/performance,
 ANSI-colored editor SDK logs, zero-filled flushed sandbox log buffers, dated
 WeixinPay Xlog frames/counters and empty stale performance-PID snapshots.
 
@@ -168,6 +170,17 @@ desktop process alone is insufficient. Do not launch the app merely to flush
 pending diagnostics, since that may alter sessions or consume an update. Report
 each retained candidate's actual role and size, and compare retained native
 data before/after the authorized cleanup.
+
+For an explicitly unwanted WorkBuddy crash report, pass its exact relative path
+with `--discard-diagnostic` to `maintenance inventory/plan/run --client workbuddy
+--category logs`. Repeat the option for the processing cursor only when all
+remaining reports in that directory are explicitly discarded; the tool freezes
+that complete membership and rejects new, unknown or excluded files. A discarded
+diagnostic's auxiliary upload cursor is not native conversation state. Preserve
+actual sessions, checkpoints, active files and unrelated pending work. Do not
+upload the unwanted reports first or disable future telemetry unless requested.
+The user's latest retention choice overrides an earlier conservative default;
+record that choice in the new plan rather than rewriting previous receipts.
 
 ## User-home residue coverage
 

@@ -4,6 +4,8 @@ _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.pare
 from tests import bootstrap as _test_bootstrap
 
 import json
+import io
+from contextlib import redirect_stdout
 import os
 from pathlib import Path
 import struct
@@ -157,3 +159,77 @@ class WorkBuddyDiagnosticsTests(unittest.TestCase):
             result = maintenance.apply(plan['plan_path'], approved_hash=plan['plan_sha256'], clients_closed=True)
         self.assertFalse(result['mutation_started'])
         self.assertTrue(p.exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows artifact disposal')
+    def test_explicit_discard_removes_pending_report_and_cursor_without_native_data(self):
+        report = self.crash()
+        cursor = self.file('logs/Crash-Log/.processed-crashes.json', json.dumps({'files': {report.name: 0}}))
+        native = self.file('projects/example/session.jsonl', '{"role":"user","content":"preserve"}')
+        paths = [p.relative_to(self.root).as_posix() for p in (report, cursor)]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = maintenance.main(['plan', '--client', 'workbuddy', '--root', str(self.root), '--category', 'logs',
+                '--discard-diagnostic', paths[0], '--discard-diagnostic', paths[1], '--json'])
+        self.assertEqual(code, 0, output.getvalue())
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan['scope']['discard_diagnostics'], sorted(paths))
+        self.assertEqual(plan['counts']['approved_file_count'], 2)
+        with patch('local_agent_manager.workbuddy_runtime.require_closed'):
+            result = maintenance.apply(plan['plan_path'], approved_hash=plan['plan_sha256'], clients_closed=True)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertFalse(report.exists() or cursor.exists())
+        self.assertIn('preserve', native.read_text())
+        self.assertEqual(maintenance.query(plan['plan_path'], verify=True)['goal_status'], 'complete')
+
+    def test_cursor_discard_requires_explicit_complete_report_scope_and_no_exclusions(self):
+        report = self.crash()
+        cursor = 'logs/Crash-Log/.processed-crashes.json'
+        self.file(cursor, json.dumps({'files': {report.name: 0}}))
+        paths = [cursor, report.relative_to(self.root).as_posix()]
+        with self.assertRaisesRegex(ValueError, 'requires_all_reports'):
+            rules.inspect_profile('workbuddy', self.root, categories=['logs'], cutoff_ns=self.cutoff,
+                                  discard_diagnostics=[cursor])
+        with self.assertRaisesRegex(ValueError, 'conflicts_with_retention'):
+            rules.inspect_profile('workbuddy', self.root, categories=['logs'], cutoff_ns=self.cutoff,
+                                  discard_diagnostics=paths, excluded_paths=[paths[1]])
+        with self.assertRaisesRegex(ValueError, 'scope_unqualified'):
+            rules.inspect_profile('workbuddy', self.root, categories=['logs'], cutoff_ns=self.cutoff,
+                                  discard_diagnostics=['projects/example/session.jsonl'])
+        self.file('logs/Crash-Log/notes.txt', 'keep')
+        with self.assertRaisesRegex(ValueError, 'requires_all_reports'):
+            rules.inspect_profile('workbuddy', self.root, categories=['logs'], cutoff_ns=self.cutoff,
+                                  discard_diagnostics=paths)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows frozen namespace')
+    def test_new_report_after_discard_plan_blocks_cursor_deletion(self):
+        report = self.crash()
+        cursor = self.file('logs/Crash-Log/.processed-crashes.json', json.dumps({'files': {report.name: 0}}))
+        plan = maintenance.plan('workbuddy', self.root, categories=['logs'],
+            discard_diagnostics=[p.relative_to(self.root).as_posix() for p in (cursor, report)])
+        self.crash('crash-report-daemon-456-20200101T000001.json')
+        with patch('local_agent_manager.workbuddy_runtime.require_closed'):
+            result = maintenance.apply(plan['plan_path'], approved_hash=plan['plan_sha256'], clients_closed=True)
+        self.assertFalse(result['mutation_started'])
+        self.assertTrue(report.exists() and cursor.exists())
+
+    def test_discarding_only_pending_report_still_preserves_processing_cursor(self):
+        report = self.crash()
+        cursor = self.file('logs/Crash-Log/.processed-crashes.json', json.dumps({'files': {report.name: 0}}))
+        observed = rules.inspect_profile('workbuddy', self.root, categories=['logs'], cutoff_ns=self.cutoff,
+            freeze=True, discard_diagnostics=[report.relative_to(self.root).as_posix()])
+        self.assertEqual(len(observed['changes']), 1)
+        self.assertEqual(observed['dependencies'][0]['path'], cursor.relative_to(self.root).as_posix())
+
+    def test_file_appearing_between_qualification_and_freeze_is_not_swept_into_discard(self):
+        report = self.crash()
+        cursor = self.file('logs/Crash-Log/.processed-crashes.json', json.dumps({'files': {report.name: 0}}))
+        original = rules.ff.freeze_remove
+        def freeze(root, relative, **kwargs):
+            if relative == 'logs/Crash-Log':
+                self.file('logs/Crash-Log/notes.txt', 'unapproved')
+            return original(root, relative, **kwargs)
+        with patch.object(rules.ff, 'freeze_remove', side_effect=freeze), self.assertRaisesRegex(
+                RuntimeError, 'qualification_membership_changed'):
+            rules.inspect_profile('workbuddy', self.root, categories=['logs'], cutoff_ns=self.cutoff, freeze=True,
+                discard_diagnostics=[p.relative_to(self.root).as_posix() for p in (report, cursor)])
+        self.assertTrue(report.exists() and cursor.exists())
