@@ -275,6 +275,7 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
     """
 
     from .client_capability_guards import ClientCapabilityLimits, CLIENT_CAPABILITY_LIMIT
+    from .client_contracts import describe_adapter
 
     adapter_list = list(adapters)
     active = tuple({id(adapter): adapter for adapter in (*adapter_list, *guard_adapters)}.values())
@@ -290,10 +291,12 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
     candidate_ids = {id(adapter) for adapter in adapter_list}
     candidate_homes = {_normalized_path(_absolute_path(home)) for adapter in adapter_list
                        if isinstance(home := getattr(adapter, "codex_home", None), Path)}
-    # Legacy guard rows on an already selected home remain approval evidence;
-    # guard-only homes never become native catalog candidates.
+    # Guard rows can bind a selected store through a separate account home.
+    # Read only overlapping descriptors; other stores are not candidates.
     readers = (*adapter_list, *(adapter for adapter in active if id(adapter) not in candidate_ids
-        and isinstance(home := getattr(adapter, "codex_home", None), Path)))
+        and isinstance(home := getattr(adapter, "codex_home", None), Path)
+        and any(store.backend == "codex" and _normalized_path(_absolute_path(store.path)) in candidate_homes
+                for store in describe_adapter(adapter).native_stores)))
     for adapter in readers:
         raw_home = getattr(adapter, "codex_home", None)
         if not isinstance(raw_home, Path):

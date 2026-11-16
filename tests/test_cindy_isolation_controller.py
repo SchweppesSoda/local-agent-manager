@@ -317,7 +317,8 @@ class CindyControllerTests(unittest.TestCase):
                 import traceback
                 errors.append(traceback.format_exc())
         worker = threading.Thread(target=actor, daemon=True); worker.start()
-        with patch.object(entry, '_launch_elevated', start), patch.object(entry, '_lifecycle', lambda *_: Lifecycle()), \
+        with patch.object(entry, 'ctypes_is_admin', return_value=False), \
+             patch.object(entry, '_launch_elevated', start), patch.object(entry, '_lifecycle', lambda *_: Lifecycle()), \
              patch.object(entry, 'ProductAcceptance', driver), patch.object(entry, 'supported_account', return_value={'authenticated':True,'identity_sha256':'fixture-account'}), \
              patch.object(entry, 'verify_bundle', return_value=(self.spec, self.draft)), redirect_stdout(io.StringIO()):
             result = entry.main(bundle, 'fixture-manifest', ['execute', '--uac-authorized'])
@@ -333,6 +334,15 @@ class CindyControllerTests(unittest.TestCase):
         self.assertTrue(Path(self.spec['native_files'][0]['target_path']).exists())
         with patch.object(entry, 'verify_bundle', return_value=(self.spec, self.draft)), redirect_stdout(io.StringIO()):
             self.assertEqual(entry.main(bundle, 'fixture-manifest', ['verify', '--run', self.run.name]), 0)
+
+    def test_elevated_controller_is_rejected_before_creating_run(self):
+        from local_agent_manager import cindy_isolation_entry as entry
+        from local_agent_manager.cindy_isolation_plan import IsolationPlanError
+        with patch.object(entry, 'ctypes_is_admin', return_value=True), \
+             patch.object(entry, 'private_run_directory') as create_run:
+            with self.assertRaisesRegex(IsolationPlanError, 'execute_must_start_as_ordinary_user'):
+                entry.ordinary_execute(self.root, self.spec, self.draft, 'fixture-manifest', uac_authorized=True)
+        create_run.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

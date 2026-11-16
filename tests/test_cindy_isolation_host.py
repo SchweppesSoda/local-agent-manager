@@ -65,7 +65,11 @@ $f.add_Shown({[IO.File]::WriteAllText($env:LAM_TEMP_READY,'ready')})
         cycle = CindyLifecycle(run_id='isolated-wm-close', executable=image, profile=self.root, affected_tasks=['TEMP-only'],
             census=lambda: [] if process.poll() is not None else [{'name':'Cindy.exe','pid':process.pid}],
             gate_factory=lambda scope: LifecycleGate(scope, prompt=lambda message: prompts.append(message) or True))
-        result = cycle.close(); process.wait(timeout=5)
+        # Exercise real WM_CLOSE on our helper at the runner's token level;
+        # the separate lifecycle tests cover rejection of elevated callers.
+        with patch("ctypes.windll.shell32.IsUserAnAdmin", return_value=0):
+            result = cycle.close()
+        process.wait(timeout=5)
         self.assertEqual(result['closed_pids'], [process.pid]); self.assertTrue(result['exit_rechecked'])
         self.assertEqual(len(prompts), 1); self.assertEqual(result['targets'][0]['executable'], image)
 

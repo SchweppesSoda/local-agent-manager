@@ -5,6 +5,7 @@ _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.pare
 from tests import bootstrap as _test_bootstrap
 
 from contextlib import closing
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -57,6 +58,12 @@ class FixtureBoundary:
 
 
 class CindyIsolationExecutionTests(unittest.TestCase):
+    def test_digest_handles_empty_and_multiblock_files(self):
+        for body in (b"", b"\x00\xfffixture" * 300000):
+            with self.subTest(size=len(body)):
+                self.packet_source.write_bytes(body)
+                self.assertEqual(digest(self.packet_source), hashlib.sha256(body).hexdigest())
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
