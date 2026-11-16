@@ -109,7 +109,20 @@ class ArtifactMaintenanceTests(unittest.TestCase):
         with patch.object(rules, '_cache', side_effect=PermissionError('locked')):
             result = rules.inspect_profile('codex-desktop', self.root, categories=['caches'], freeze=True)
         self.assertEqual(result['changes'], [])
-        self.assertEqual(result['observations'][0]['reason'], 'file_in_use_or_access_denied')
+        self.assertEqual(result['observations'][0]['reason'], 'file_access_denied')
+
+    def test_windows_access_denial_is_distinct_from_sharing_and_byte_range_locks(self):
+        self.cache()
+        for code, reason in ((5, 'file_access_denied'), (32, 'file_sharing_violation'),
+                             (33, 'file_lock_violation')):
+            with self.subTest(winerror=code):
+                error = PermissionError('Windows file operation failed')
+                error.winerror = code
+                with patch.object(rules, '_cache', side_effect=error):
+                    result = rules.inspect_profile('codex-desktop', self.root, categories=['caches'], freeze=True)
+                self.assertEqual(result['changes'], [])
+                self.assertEqual(result['observations'][0]['reason'], reason)
+                self.assertEqual(maintenance._error_code(error), 'maintenance_' + reason)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows package layout')
     def test_codex_package_discovery_uses_common_localcache_root(self):

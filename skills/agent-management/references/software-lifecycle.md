@@ -98,12 +98,42 @@ unresolved ownership blocks disposal, report the cleanup as partial and prepare
 the concrete remaining work. A successful eligible batch is not a full space
 audit. Never claim physical capacity reclaimed from logical file sizes alone.
 
-If a non-runtime batch is blocked by specific busy or protected artifacts,
-identify them without changing permissions or forcing handles closed. Use exact
-profile-relative `--exclude-path` values in a fresh plan to preserve those
-artifacts and complete the rest. Exclusions only narrow the eligible set and
-are frozen in the plan; they are not directory-prefix rules or permission to
-discard unknown formats. Runtime keep/remove decisions stay in runtime review.
+If a non-runtime batch is blocked by specific files, exact profile-relative
+`--exclude-path` values in a fresh plan let independent cleanup finish. Exclusions
+are frozen, narrow the eligible set and are not directory-prefix rules. They
+are temporary scope decisions while a cause is unresolved, not evidence that
+the files are required. Runtime keep/remove decisions stay in runtime review.
+
+### Distinguish access denial from active use
+
+Do not stop at `access denied`, classify it as a live dependency, or indefinitely
+carry an earlier exclusion forward. Investigate the exact remaining files:
+
+1. Distinguish sandbox denial from the host account and its effective elevated
+   token. Recheck through the approved host route. Windows error 5 is access
+   denial; 32 is a sharing conflict and 33 a byte-range lock. A read-only file
+   attribute is another cause and must be inspected separately.
+2. Read owner, DACL, explicit/inherited deny ACEs and their parent source. An
+   administrator token alone does not override an explicit deny for that user.
+   A deny ACE is permission evidence, not a running-process observation.
+3. Inspect the owning app and background helpers, Restart Manager file users,
+   recent writes and current log selection. An empty process/owner list or old
+   mtime alone is insufficient. Prove all reviewed files can be held exclusively
+   and revalidate identities, hashes and membership immediately before deletion.
+4. If the user has authorized administrator cleanup and these are confirmed
+   unused disposable files, carry that authorization through a bounded elevated
+   operation. Prefer preserving existing ACLs: an already assigned Windows
+   [restore privilege](https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants)
+   with backup semantics can obtain DELETE access on the exact frozen files.
+   Use it only in a short-lived reviewed helper, retain sharing exclusion and
+   parent fences, and restore its prior token state. This is not a general
+   automatic retry provided by `maintenance apply`.
+5. Preserve the manager mutation gate and durable cumulative receipts. Never
+   reset ownership/ACLs recursively, weaken a parent directory, kill a file
+   owner or force-close handles to pass cleanup. If exact-file ACL repair is
+   actually needed, establish its authority and capture/restore its original
+   security descriptor for any surviving file. Verify exact absence, retained
+   files and unchanged parent security; report any unresolved cause precisely.
 
 ## User-home residue coverage
 

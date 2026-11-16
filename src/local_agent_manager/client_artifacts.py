@@ -314,8 +314,11 @@ def _dated_codex_logs(root, directory):
 
 
 def _qualification_reason(error, category):
-    if isinstance(error, PermissionError) or getattr(error, 'winerror', None) in {5, 32, 33}:
-        return 'file_in_use_or_access_denied'
+    code = getattr(error, 'winerror', None)
+    if code in {32, 33}:
+        return 'file_sharing_violation' if code == 32 else 'file_lock_violation'
+    if code == 5 or isinstance(error, PermissionError):
+        return 'file_access_denied'
     return category + '_format_or_access_unverified'
 
 

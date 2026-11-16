@@ -120,8 +120,12 @@ an explicit older `Roaming/Codex` root also supports `web/Codex`.
 Cindy/T3/Paseo share direct partition discovery; Cindy also includes `EBWebView`.
 Only registered cache directories and format-qualified members qualify,
 never cookies, browser local storage, artifact sessions or arbitrary descendants.
-Access-denied or sharing-violation observations report
-`file_in_use_or_access_denied`; they do not establish an unsupported format.
+Windows error 5 reports `file_access_denied`, error 32 reports
+`file_sharing_violation`, and error 33 reports `file_lock_violation`.
+Apply blockers use the same names with the `maintenance_` prefix. Access denial
+alone proves neither an active writer nor an unsupported format. Older receipts
+can contain the previous combined label; inspect their host evidence before
+assigning a cause.
 
 Codex diagnostics in `Local/Codex/Logs/YYYY/MM/DD` are inspected separately.
 Only ordinary files with the qualified `codex-desktop-<UUID>-<PID>-t<N>-i<N>-<HHMMSS>-<N>.log`
@@ -178,8 +182,18 @@ For reviewed busy/protected non-runtime artifacts, repeat `--exclude-path
 profile-relative artifact, not a glob or directory prefix. The exclusions are
 recorded in both scope and evidence, rechecked during apply, and only remove
 otherwise eligible actions. They never widen qualification. Use a fresh plan
-after identifying an unavailable file; do not modify its ACL to make a batch
-pass. Runtime exclusions instead use the review's `preserve` decisions.
+after identifying an unavailable file. Exclusion lets independent work finish;
+it is not a final retention decision for an unresolved access error. Inspect
+the effective host token, file attributes, exact ACL/inheritance and actual file
+users. When administrator cleanup is authorized and disuse is established,
+complete a bounded elevated operation. Ordinary elevation does not override an
+explicit deny ACE. An independently reviewed helper can use an existing
+`SeRestorePrivilege` with backup semantics for the exact frozen files, retaining
+share-zero handles, parent fences, the manager mutation gate and durable receipts.
+This is not an automatic privilege retry in `maintenance apply`; it must never
+broaden the approved scope or reset parent ACLs. Privilege cannot justify killing
+an active owner or skipping file identity and sharing checks. Runtime exclusions
+instead use the review's `preserve` decisions.
 
 | Category | Executable qualification |
 |---|---|

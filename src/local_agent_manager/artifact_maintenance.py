@@ -25,8 +25,12 @@ KIND = 'cleanup_client_artifacts'
 def _error_code(error):
     if isinstance(error, (ValueError, ff.FrozenFilesError)) and re.fullmatch('[a-zA-Z0-9_]{1,128}', str(error)):
         return str(error)
-    if isinstance(error, OSError) and getattr(error, 'winerror', None) in {5, 32, 33}:
-        return 'maintenance_file_in_use_or_access_denied'
+    if isinstance(error, OSError):
+        code = getattr(error, 'winerror', None)
+        if code in {32, 33}:
+            return 'maintenance_file_sharing_violation' if code == 32 else 'maintenance_file_lock_violation'
+        if code == 5 or isinstance(error, PermissionError):
+            return 'maintenance_file_access_denied'
     return getattr(error, 'kind', 'maintenance_' + type(error).__name__)
 
 
