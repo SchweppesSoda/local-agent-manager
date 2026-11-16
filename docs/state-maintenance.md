@@ -279,7 +279,8 @@ version directories, standalone Codex release directories, Claude native
 versions, Codex desktop versioned bins and T3 platform/version runtime units.
 Codex installer units recognize supported Rust target triples (including
 `x86_64`), both `app-server-daemon` and legacy `app-server` roles, and versioned
-`.sandbox-bin/codex-command-runner-*.exe` units. Unknown names are reported,
+`.sandbox-bin/codex-command-runner-*.exe` units, plus the exact unversioned
+`.sandbox-bin/codex.exe` and `.sandbox-bin/codex-command-runner.exe` copies. Unknown names are reported,
 not silently skipped. Active pointers, separate daemon selection and helper
 consumers still require review; discovery is not retirement approval.
 Use the physical install root for Claude (`~/.local/share/claude`) or Codex
@@ -293,7 +294,8 @@ for removed and preserved units, and freezes cited references, including
 absence and direct-link identities/targets. Apply checks the complete inventory
 again, leases all selected and preserved files and present references, and
 excludes direct-pointer replacement through Windows handles. A pointer naming
-a selected removal target blocks planning. Changed files, selectors, new
+a selected removal target blocks planning unless it is explicitly included in
+the narrowly scoped daemon retirement below. Changed files, selectors, new
 versions and newly present overrides require a fresh plan. A changed candidate
 snapshot requires renewed AI assessment. Linked/hard-linked runtime units,
 unbound or cyclic pointer chains and traversal/hash budgets prevent affected
@@ -310,6 +312,24 @@ rejects additions or unapproved missing members. Preflight requires the original
 membership; interrupted verification never replays deletion.
 Runtime trees have a separate 4 GiB hashing budget per unit and the shared
 512 MiB per-file and 20,000-member traversal budgets.
+
+For a stopped standalone daemon that the user explicitly retires, mark each
+present `packages/app-server-daemon/{current,auto-update-version,selection-history}`
+reference with `"retire": true`. All daemon release units must be selected for
+removal; `current` must resolve to one of them. Unknown role members, incomplete
+selector coverage, arbitrary retired reference paths and another retained
+pointer to a removed runtime block planning. Cite `install.lock` as a normal
+retained reference when present. Coordination locks and native daemon records
+are outside the retirement scope. The role's member list is frozen as well.
+
+This retires the stale installation selection, not just its payload. The writer
+leases the current link with reparse-point DELETE access and unlinks that link
+through its held handle, never traversing it for deletion. Selection metadata
+is included in the ordinary approved file count; `approved_pointer_count`
+reports retired links separately. Verification permits only those approved
+objects to be missing. An unchanged surviving pointer is an explicit residual;
+changed or newly introduced selectors keep recovery unresolved. The durable
+mutation flag and no-replay rule also cover interrupted selector retirement.
 
 Execution removes the exact approved runtime files and retains empty directory
 containers. Verification checks their absence and retained dependencies.

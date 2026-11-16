@@ -48,6 +48,33 @@ An installed `current` pointer is selection metadata, not proof of a running
 consumer. Check daemon PID identity and native status independently; a stale
 daemon install and another frontend's same-version runtime are separate objects.
 
+Resolve each running frontend's actual executable **and** effective Agent home.
+Where supported, use the manager's process-home probe with verified PID, image
+and creation identity; expose only the selected home, never the environment
+block or credentials. Separate paths are not enough if they resolve to the same
+physical object. Equal version strings or hashes do not establish shared use.
+For sandbox copies, also inspect the current bundle's helper/service path and
+its copy-generation behavior. Neither an old filename nor a closed executable
+alone proves that the next task will not select it.
+Check recent helper-resolution diagnostics too. A frontend's executable can
+live outside the reviewed root while historically using a helper inside it.
+If a changed home has not established that the helper is no longer selected,
+retain that exact helper with the observed reason; do not extend its retention
+to an unrelated same-version daemon or the whole sandbox directory.
+
+For standalone daemon retirement, check PID creation/image identity, native
+daemon status, updater processes, services, tasks and launch settings. Explain
+`current` as an installation selection, not a running process or autostart
+registration. A stopped installation can retain this pointer indefinitely.
+If the user discards that installation, retire its version and selection
+metadata together; do not turn the stale pointer into a permanent retention
+requirement. Preserve installation/coordination locks and unrelated native
+records. Desktop background/remote access and an independently installed
+headless daemon are separate capabilities. Check the installed platform/build's
+actual launch route before asserting that the desktop uses either one. Future
+use of a daemon is served by installing/updating an appropriate release, not
+by requiring an obsolete inactive copy to remain.
+
 Keep current fallback slots, migration/cloud-memory backups, unresolved
 rollback evidence and permanent coordination locks distinct from historical
 orphaned copies. Use `state inventory/cleanup` only for manager-owned evidence.
@@ -70,6 +97,35 @@ stop at a generic `review required` label. If closure, an unsupported format or
 unresolved ownership blocks disposal, report the cleanup as partial and prepare
 the concrete remaining work. A successful eligible batch is not a full space
 audit. Never claim physical capacity reclaimed from logical file sizes alone.
+
+## User-home residue coverage
+
+Use this map after measuring the requested scope. Paths below are layout hints
+under the actual account/profile, not fixed consumer relationships. Track each
+finding as eligible, retained with evidence, unresolved, or already removed with
+an observed receipt. A listed route does not mean the CLI can delete its format.
+For another chat's audit, reconcile all findings and its scope/retention choices;
+reading that audit does not authorize deleting its remaining candidates.
+
+| Finding | Required distinction and workflow |
+|---|---|
+| Codex `packages/*/releases`, `.sandbox-bin` | Current standalone, rollback, independent daemon and versioned/unversioned helper copies require separate review. Runtime review supports known units; explicit daemon retirement also removes its obsolete selection metadata. Preserve other frontends by physical path/home, not version. |
+| `.cache/codex-runtimes` previous or temporary installations | Read manifests and resolve the workspace dependency loader's current runtime plus other consumers. A full environment can be retained intentionally; neither completeness nor another active MSIX root proves a dependency or disuse. Previous/partial trees need lifecycle inspection; arbitrary trees have no deletion adapter. |
+| Claude `.local/share/claude/versions`, `.local/bin/claude.exe.old.*`, `.cache/claude` | Review native selected executable, completed updater transaction, other frontend bindings and rollback. Runtime review supports recognized version-store units. Updater `.old.*` copies and staging directories require separate lifecycle qualification; do not overlook them because they sit outside the version store. |
+| `.cache/magpie/bun/<version>` | Frontend-managed executable versions, not generic Bun download cache. Resolve actual Magpie launch/update selection and shared consumers. No automatic retirement adapter is implied. |
+| `.t3/userdata/logs`, WorkBuddy logs, `.sheetagent`, `.bsk` logs | Separate current writer, rotated diagnostics, provider/terminal/session content and generated user reports. Existing diagnostic adapters qualify only their documented names/envelopes. SheetAgent and browser-skill logs need producer verification and exact-file review; recent writes are evidence of activity. Never delete a whole frontend profile as a log directory. |
+| `.claude/backups` | Distinguish current/fallback config recovery and old generations; verify healthy current config and explicit retention. Claude backup formats are not covered merely because another client's backup adapter exists. |
+| `.claude/skills/.trash` | Skill deployment or manual recovery, routed to Skill management. Check source/deployment health and pending recovery before discarding selected history. It is not a generic cache. |
+| Tool-specific `.venv-*` | Inspect installed packages, project/Skill/launcher references and current consumers. An empty environment can still be selected; a directory name alone grants no disposal authority. |
+| `.workbuddy`, `.ego-browser`, `.codex-t3` and other Agent homes | Mixed live environments, configured homes, credentials and user records. Resolve each consumer; never treat an entire hidden root as rebuildable. |
+| `go/pkg/mod`, `.bun/install/cache`, `.cache/selenium` | Generic dependency/download/driver caches use `windows-maintenance`. Verify effective cache roots, active consumers and offline/reinstallation needs. A managed executable elsewhere under `.cache` belongs to its owning Agent lifecycle. |
+| `mcp`, `.config/mihomo`, `.expo`, `.cache/huggingface`, `.cache/claude`, `.ms-ad` or other unknown roots | Report actual contents, size and ownership uncertainty. Registry/config/identity files and empty skeletons are not necessarily backups; do not label them required dependencies without evidence either. |
+| `.sbx-denybin`, `.gnupg` and similar control/security state | Preserve explicit user retention and inspect security/tool ownership. Small blocker scripts or apparently empty key homes may intentionally enforce behavior; they are outside generic cache disposal. |
+
+Do not sum overlapping parent/child measurements. Report audit scope omissions
+(for example AppData was not traversed) and distinguish historical removals from
+current candidates. Record portable judgment rules here, while dated host facts,
+frozen approvals and execution receipts remain in the operation state.
 
 ## AI-reviewed runtime retirement
 

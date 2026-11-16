@@ -137,7 +137,7 @@ class RuntimeArtifactTests(unittest.TestCase):
         root = Path(self.temporary.name) / 'codex'
         sandbox = root / '.sandbox-bin'
         sandbox.mkdir(parents=True)
-        (sandbox / 'codex.exe').write_bytes(b'unversioned executable')
+        (sandbox / 'unknown.exe').write_bytes(b'unversioned executable')
         unknown = root / 'packages/standalone/releases/unrecognized-build'
         unknown.mkdir(parents=True)
         (unknown / 'payload').write_bytes(b'unknown package contents')
@@ -146,7 +146,7 @@ class RuntimeArtifactTests(unittest.TestCase):
         self.assertEqual(report['changes'], [])
         self.assertEqual(report['runtime_inventory']['candidates'], [])
         rows = {item['path']: item for item in report['observations']}
-        for relative, size in (('.sandbox-bin/codex.exe', 22),
+        for relative, size in (('.sandbox-bin/unknown.exe', 22),
                                ('packages/standalone/releases/unrecognized-build', 24)):
             self.assertEqual(rows[relative]['logical_bytes'], size)
             self.assertEqual(rows[relative]['file_count'], 1)
@@ -165,7 +165,7 @@ class RuntimeArtifactTests(unittest.TestCase):
         row = report['unqualified'][0]
         self.assertIsNone(row['logical_bytes'])
         self.assertIsNone(row['file_count'])
-        self.assertEqual(row['reason'], 'runtime_unit_name_unrecognized')
+        self.assertEqual(row['reason'], 'runtime_unit_unreadable_linked_or_unknown')
         self.assertEqual(row['measurement_reason'], 'unreadable_linked_or_budgeted')
         self.assertEqual(report['candidates'], [])
 
@@ -249,6 +249,8 @@ class RuntimeArtifactTests(unittest.TestCase):
                  ('codex', 'packages/standalone/releases/0.999.0/bin/codex.exe', 'packages/standalone/releases/0.999.0'),
                  ('codex', 'packages/app-server/releases/0.999.0/codex.exe', 'packages/app-server/releases/0.999.0'),
                  ('claude', 'versions/9.8.7', 'versions/9.8.7'),
+                 ('codex', '.sandbox-bin/codex.exe', '.sandbox-bin/codex.exe'),
+                 ('codex', '.sandbox-bin/codex-command-runner.exe', '.sandbox-bin/codex-command-runner.exe'),
                  ('codex-desktop', 'bin/' + 'a' * 16 + '/codex.exe', 'bin/' + 'a' * 16),
                  ('t3code', 'tools/antigravity/win32-x64/versions/' + 'b' * 64 + '/agy_acp_server.exe',
                   'tools/antigravity/win32-x64/versions/' + 'b' * 64)]
@@ -261,6 +263,100 @@ class RuntimeArtifactTests(unittest.TestCase):
                 report = runtimes.inventory(client, root)
                 self.assertEqual(report['candidates'][0]['path'], unit, report)
                 self.assertEqual(report['unqualified'], [])
+
+    def daemon_review(self):
+        role = self.root / runtimes.DAEMON
+        old = role / 'releases/0.998.0/bin/codex.exe'
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b'old standalone daemon')
+        replacement = self.root / 'packages/standalone/releases/0.999.0/bin/codex.exe'
+        replacement.parent.mkdir(parents=True)
+        replacement.write_bytes(b'current standalone')
+        for name in ('auto-update-version', 'selection-history', 'install.lock'):
+            (role / name).write_text('0.998.0' if name != 'install.lock' else '')
+        pointer = role / 'current'
+        result = subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(pointer), str(old.parent.parent)],
+                                capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        review = self.review()
+        review['client'] = 'codex'
+        rows = runtimes.inventory('codex', self.root)['candidates']
+        for key, condition in (('remove', True), ('preserve', False)):
+            review[key] = [{'path': row['path'], 'snapshot_sha256': row['snapshot_sha256'],
+                            'reason': 'Retire stopped daemon; separate frontend installation remains outside scope'}
+                           for row in rows if row['path'].startswith(runtimes.DAEMON + '/') == condition]
+        for name in ('current', 'auto-update-version', 'selection-history', 'install.lock'):
+            review['references'].append({'root': str(self.root), 'path': runtimes.DAEMON + '/' + name,
+                'reason': 'Retire daemon selectors; retain and exclude the installer lock', 'retire': name != 'install.lock'})
+        return review
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction retirement')
+    def test_daemon_retirement_removes_selectors_and_preserves_separate_same_version(self):
+        review = self.daemon_review()
+        separate = self.frontend / '0.998.0/codex.exe'
+        separate.parent.mkdir()
+        separate.write_bytes(b'old standalone daemon')
+        plan = maintenance.plan('codex', self.root, categories=['runtimes'], runtime_review=review)
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        role = self.root / runtimes.DAEMON
+        self.assertFalse((role / 'current').exists())
+        self.assertFalse((role / 'auto-update-version').exists())
+        self.assertFalse((role / 'selection-history').exists())
+        self.assertTrue((role / 'install.lock').exists())
+        self.assertEqual(separate.read_bytes(), b'old standalone daemon')
+        self.assertEqual(maintenance.query(plan['plan_path'], verify=True)['goal_status'], 'complete')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction retirement')
+    def test_daemon_retirement_requires_complete_exact_selectors_and_release_scope(self):
+        original = self.daemon_review()
+        for case in ('no-retirement', 'missing-metadata', 'lock-retirement', 'extra-unit', 'unknown-member'):
+            with self.subTest(case=case):
+                review = copy.deepcopy(original)
+                extra = None
+                if case == 'no-retirement':
+                    for ref in review['references']: ref.pop('retire', None)
+                elif case == 'missing-metadata':
+                    review['references'] = [ref for ref in review['references'] if not ref['path'].endswith('selection-history')]
+                elif case == 'lock-retirement':
+                    review['references'][-1]['retire'] = True
+                else:
+                    extra = self.root / runtimes.DAEMON / ('releases/unknown-unit' if case == 'extra-unit' else 'unknown-selection')
+                    extra.write_text('unknown')
+                try:
+                    with self.assertRaises(ValueError):
+                        maintenance.plan('codex', self.root, categories=['runtimes'], runtime_review=review)
+                finally:
+                    if extra: extra.unlink()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction retirement')
+    def test_daemon_retirement_pointer_drift_blocks_before_mutation(self):
+        review = self.daemon_review()
+        plan = maintenance.plan('codex', self.root, categories=['runtimes'], runtime_review=review)
+        pointer = self.root / runtimes.DAEMON / 'current'
+        pointer.rmdir()
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'blocked', result)
+        self.assertFalse(result['mutation_started'])
+        self.assertTrue((self.root / runtimes.DAEMON / 'releases/0.998.0/bin/codex.exe').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction retirement')
+    def test_daemon_interruption_reports_remaining_pointer_and_never_replays(self):
+        review = self.daemon_review()
+        plan = maintenance.plan('codex', self.root, categories=['runtimes'], runtime_review=review)
+        with patch.object(runtimes, 'dispose_pointers', side_effect=RuntimeError('interrupted')):
+            result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'unknown', result)
+        self.assertTrue(result['modified'])
+        with patch.object(HeldFiles, 'dispose', side_effect=AssertionError('must not replay')):
+            self.assertEqual(self.apply(plan)['goal_status'], 'unknown')
+            result = maintenance.query(plan['plan_path'], verify=True)
+        self.assertEqual(result['goal_status'], 'completed_with_residuals', result)
+        self.assertEqual(result['residual_paths'], [runtimes.DAEMON + '/current'])
+        (self.root / runtimes.DAEMON / 'current').rmdir()
+        result = maintenance.query(plan['plan_path'], verify=True)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertTrue(result['mutation_started'])
 
     def junction(self, name, target):
         if os.name != 'nt':

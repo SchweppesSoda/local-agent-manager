@@ -48,6 +48,20 @@ def exclusive_fd(path, *, writable=False, delete=False, directory=False):
     return fd
 
 
+def dispose_fd(fd):
+    """Mark an exclusively held DELETE handle; never reopen/follow its path."""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
+    disposition = wintypes.BOOL(True)
+    if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 4,
+                                             ctypes.byref(disposition), ctypes.sizeof(disposition)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 @contextmanager
 def pipe_lease(name):
     if os.name != "nt" or not name.startswith("\\\\.\\pipe\\"):
@@ -118,20 +132,11 @@ class HeldFiles:
         other file in its transaction has been checked. No pathname reopen or
         release/reacquire window is used.
         """
-        import ctypes
-        from ctypes import wintypes
-        import msvcrt
         current, _ = self.read(root, relative)
         if current != before:
             raise frozen_files.FrozenFilesError("held_file_evidence_changed")
         fd, _ = self.handles[(str(root), relative)]
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
-        kernel.SetFileInformationByHandle.restype = wintypes.BOOL
-        disposition = wintypes.BOOL(True)
-        if not kernel.SetFileInformationByHandle(msvcrt.get_osfhandle(fd), 4,
-                                                 ctypes.byref(disposition), ctypes.sizeof(disposition)):
-            raise ctypes.WinError(ctypes.get_last_error())
+        dispose_fd(fd)
 
     def read(self, root, relative, *, content=False, limit=frozen_files.MAX_BYTES):
         fd, _ = self.handles[(str(root), relative)]

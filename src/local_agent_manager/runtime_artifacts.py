@@ -17,10 +17,12 @@ from . import frozen_files as ff
 from .discovery import release_version
 from .operation_store import plan_sha256
 from .path_identity import canonical_existing_path_key
-from .windows_held_files import exclusive_fd
+from .windows_held_files import exclusive_fd, dispose_fd
 from .orca_target_safety import _windows_process_snapshot
 
 MAX_RUNTIME_BYTES = 4 * 1024 * 1024 * 1024
+DAEMON = 'packages/app-server-daemon'
+DAEMON_SELECTORS = {'current', 'auto-update-version', 'selection-history'}
 
 
 def _pointer_link(path):
@@ -169,9 +171,11 @@ def inventory(client, root):
                 r'(.+)-(?:x86_64|aarch64)-(?:pc-windows-msvc|unknown-linux-(?:gnu|musl)|apple-darwin)', name)
             helper = client == 'codex' and base == '.sandbox-bin' and re.fullmatch(
                 r'codex-command-runner-(.+)\.exe', name)
+            sandbox_copy = client == 'codex' and base == '.sandbox-bin' and name in {
+                'codex.exe', 'codex-command-runner.exe'}
             if not (release_version(name) or re.fullmatch(r'[0-9a-f]{16,64}', name)
                     or target_release and release_version(target_release[1])
-                    or helper and release_version(helper[1])
+                    or helper and release_version(helper[1]) or sandbox_copy
                     or engine == 'pi' and re.fullmatch(r'\d+\.\d+\.\d+-[0-9a-f-]{36}', name)):
                 if client == 'codex':
                     unqualified.append(_unqualified(root, base + '/' + name, 'runtime_unit_name_unrecognized'))
@@ -180,7 +184,7 @@ def inventory(client, root):
             try:
                 path = ff.checked_path(root, relative)
                 info = path.lstat()
-                if (client == 'claude' or helper) and stat.S_ISREG(info.st_mode):
+                if (client == 'claude' or helper or sandbox_copy) and stat.S_ISREG(info.st_mode):
                     present = [relative]
                 else:
                     present = []
@@ -200,7 +204,7 @@ def inventory(client, root):
                 # Check the namespace again before publishing a review token.
                 if snapshot != _snapshot(root, relative):
                     raise ValueError('runtime_inventory_changed')
-                candidates.append({'path': relative, 'engine': engine, 'markers': present,
+                candidates.append({'path': relative, 'engine': 'codex' if sandbox_copy and name == 'codex.exe' else engine, 'markers': present,
                                    'snapshot_sha256': plan_sha256(snapshot),
                                    'file_count': len(snapshot['files']),
                                    'logical_bytes': sum(item['size'] for item in snapshot['files'])})
@@ -208,7 +212,7 @@ def inventory(client, root):
                 unqualified.append(_unqualified(root, relative, 'runtime_unit_unreadable_linked_or_unknown'))
     check_containers(root, containers)
     return {'candidates': candidates, 'unqualified': unqualified, 'containers': containers,
-            'coverage': 'recognized_versioned_install_units',
+            'coverage': 'recognized_install_units',
             'selection_and_consumers': 'requires_reviewer_assessment'}
 
 
@@ -267,8 +271,6 @@ def prepare(client, root, observed, review, *, freeze):
             destination.append(candidates[relative])
     if not selected or seen != set(candidates):
         raise ValueError('runtime_review_classify_all_candidates')
-    if {item['engine'] for item in selected} - {item['engine'] for item in retained}:
-        raise ValueError('runtime_review_retained_replacement_required')
     references = review['references']
     if not isinstance(references, list) or not 1 <= len(references) <= 128:
         raise ValueError('runtime_review_reference_evidence_required')
@@ -280,13 +282,19 @@ def prepare(client, root, observed, review, *, freeze):
         if isinstance(reference, dict) and isinstance(reference.get('root'), str) and isinstance(reference.get('path'), str):
             declared.append(ff.checked_path(Path(reference['root']), reference['path']))
     for reference in references:
-        if (not isinstance(reference, dict) or set(reference) - {'root', 'path', 'reason', 'writer'}
+        if (not isinstance(reference, dict) or set(reference) - {'root', 'path', 'reason', 'writer', 'retire'}
                 or not {'root', 'path', 'reason'} <= set(reference)
-                or type(reference.get('writer', False)) is not bool):
+                or type(reference.get('writer', False)) is not bool
+                or type(reference.get('retire', False)) is not bool):
             raise ValueError('runtime_review_reference_invalid')
         _text(reference['reason'])
         source_root = Path(reference['root'])
         path = ff.checked_path(source_root, reference['path'])
+        retire = reference.get('retire', False)
+        if retire and (client != 'codex' or source_root != root
+                or reference['path'] not in {DAEMON + '/' + name for name in DAEMON_SELECTORS}
+                or reference.get('writer')):
+            raise ValueError('runtime_retired_selector_scope_invalid')
         source_key = os.path.normcase(str(path))
         if source_key in source_keys:
             raise ValueError('runtime_review_duplicate_reference')
@@ -308,7 +316,8 @@ def prepare(client, root, observed, review, *, freeze):
                 for item in selected:
                     selected_path = Path(canonical_existing_path_key(root / item['path']))
                     if target == selected_path or selected_path in target.parents:
-                        raise ValueError('runtime_review_selected_pointer_target')
+                        if not retire:
+                            raise ValueError('runtime_review_selected_pointer_target')
             else:
                 proof, _ = ff.read_file(source_root, reference['path'])
         writer = reference.get('writer', False)
@@ -317,11 +326,33 @@ def prepare(client, root, observed, review, *, freeze):
                 raise ValueError('runtime_writer_requires_native_windows_executable')
             _writer_image(source_root, reference['path'], proof)
         sources.append({'root': str(source_root), 'root_identity': ff._identity(source_root.lstat()),
-                        'path': reference['path'], 'file': proof, 'pointer': pointer, 'writer': writer})
+                        'path': reference['path'], 'file': proof, 'pointer': pointer, 'writer': writer,
+                        'retire': retire})
+    if {item['engine'] for item in selected} - {item['engine'] for item in retained}:
+        raise ValueError('runtime_review_retained_replacement_required')
     if any(source['file'] is None and source['pointer'] is None for source in sources) and not any(
             source['writer'] for source in sources):
         raise ValueError('runtime_absent_reference_requires_writer_exclusion')
-    result = {'review': review, 'preserved': [], 'references': sources, 'containers': observed['containers']}
+    containers = list(observed['containers'])
+    retired = [source for source in sources if source['retire']]
+    if retired:
+        names = set(_names(root, DAEMON))
+        expected = {DAEMON + '/' + name for name in names & DAEMON_SELECTORS}
+        selected_paths = {item['path'] for item in selected}
+        release_names = _names(root, DAEMON + '/releases')
+        current = next((source for source in retired if source['path'] == DAEMON + '/current'), None)
+        if (names - (DAEMON_SELECTORS | {'releases', 'install.lock'})
+                or {source['path'] for source in retired} != expected
+                or not current or not current['pointer']
+                or not release_names
+                or any(DAEMON + '/releases/' + name not in selected_paths for name in release_names)
+                or Path(current['pointer']['resolved_target']) not in {root / DAEMON / 'releases' / name for name in release_names}
+                or any(source['path'] != DAEMON + '/current' and source['file'] is None for source in retired)
+                or 'install.lock' in names and not any(source['root'] == str(root)
+                    and source['path'] == DAEMON + '/install.lock' and source['file'] is not None for source in sources)):
+            raise ValueError('runtime_daemon_retirement_incomplete_or_unknown')
+        containers.append({'path': DAEMON, 'identity': ff._identity((root / DAEMON).lstat()), 'entries': sorted(names)})
+    result = {'review': review, 'preserved': [], 'references': sources, 'containers': containers}
     changes = []
     if freeze:
         for group, destination in ((selected, changes), (retained, result['preserved'])):
@@ -330,6 +361,9 @@ def prepare(client, root, observed, review, *, freeze):
                 if plan_sha256(_snapshot(root, item['path'])) != item['snapshot_sha256']:
                     raise ValueError('runtime_review_candidate_changed')
                 destination.append(evidence)
+        for source in retired:
+            if source['file'] is not None:
+                changes.append({'kind': 'remove', 'path': source['path'], 'files': [source['file']], 'directories': []})
     return result, changes
 
 
@@ -338,11 +372,11 @@ def dependencies(root, evidence):
         for proof in unit['files']:
             yield root, proof
     for source in evidence['references']:
-        if source['file'] is not None:
+        if source['file'] is not None and not source.get('retire'):
             yield Path(source['root']), source['file']
 
 
-def check_absences(evidence):
+def check_absences(evidence, *, retired_missing=False):
     declared = [Path(source['root']) / source['path'] for source in evidence['references'] if source['pointer'] is not None]
     for source in evidence['references']:
         root = Path(source['root'])
@@ -350,6 +384,11 @@ def check_absences(evidence):
             raise ValueError('runtime_reference_root_changed')
         path = ff.checked_path(root, source['path'])
         if source['pointer'] is not None:
+            if retired_missing and source.get('retire'):
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
             if _pointer(path, declared) != source['pointer']:
                 raise ValueError('runtime_reference_pointer_changed')
         elif source['file'] is None:
@@ -364,16 +403,31 @@ def check_absences(evidence):
 def hold_pointers(evidence):
     declared = [Path(source['root']) / source['path'] for source in evidence['references'] if source['pointer'] is not None]
     with ExitStack() as stack:
+        retired_handles = []
         for source in evidence['references']:
             if source['pointer'] is None:
                 continue
             path = stack.enter_context(ff._parent_fence(Path(source['root']), source['path']))
-            fd = exclusive_fd(path, directory=source['pointer']['directory'])
+            fd = exclusive_fd(path, directory=source['pointer']['directory'], delete=source.get('retire', False))
             stack.callback(os.close, fd)
             if (ff._identity(os.fstat(fd)) != source['pointer']['identity']
                     or _pointer(path, declared) != source['pointer']):
                 raise ValueError('runtime_reference_pointer_changed')
-        yield
+            if source.get('retire'):
+                retired_handles.append((fd, source['pointer']['identity']))
+        yield retired_handles
+
+
+def dispose_pointers(handles):
+    for fd, identity in handles:
+        if ff._identity(os.fstat(fd)) != identity:
+            raise ValueError('runtime_reference_pointer_changed')
+        dispose_fd(fd)
+
+
+def retired_pointer_paths(evidence):
+    return [source['path'] for source in evidence['references']
+            if source.get('retire') and source['pointer'] is not None]
 
 
 def check_directories(root, units):
@@ -424,9 +478,10 @@ def check_removed_directories(root, units):
                 raise ValueError('runtime_removed_unit_namespace_changed')
 
 
-def verify(root, evidence, *, removed_files=()):
-    check_absences(evidence)
-    check_containers(root, evidence['containers'], removed_files=removed_files)
+def verify(root, evidence, *, removed_files=(), retired_missing=False):
+    check_absences(evidence, retired_missing=retired_missing)
+    optional = list(removed_files) + (retired_pointer_paths(evidence) if retired_missing else [])
+    check_containers(root, evidence['containers'], removed_files=optional)
     for source_root, proof in dependencies(root, evidence):
         if ff.read_file(source_root, proof['path'])[0] != proof:
             raise ValueError('runtime_dependency_changed')

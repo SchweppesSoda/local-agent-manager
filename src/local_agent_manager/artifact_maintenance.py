@@ -54,6 +54,7 @@ def _result(document, state, goal, *, code=None, remaining=None):
             'mutation_started': state['mutation_started'], 'modified': state['modified'],
             'scope': document['scope'], 'blockers': [] if not code else [{'blocker_code': code}],
             'counts': {'approved_file_count': len(_files(document)), 'residual_file_count': len(remaining) if remaining is not None else None,
+                       'approved_pointer_count': len(_retired_pointers(document)),
                        'planned_logical_bytes': sum(item['size'] for item in _files(document)),
                        'observed_reclaimed_bytes': None},
             'residual_paths': list(remaining) if remaining is not None else None, 'retained': document['retained'],
@@ -68,6 +69,11 @@ def _public(result):
 
 def _files(document):
     return [proof for change in document['artifact_evidence']['changes'] for proof in change['evidence']['files']]
+
+
+def _retired_pointers(document):
+    evidence = document['artifact_evidence'].get('runtime_evidence')
+    return runtime_artifacts.retired_pointer_paths(evidence) if evidence else []
 
 
 def _dependencies(document):
@@ -139,6 +145,7 @@ def plan(client, root=None, *, categories, older_than_days=14, plan_path=None, o
             'operation_id': operation_id, 'plan_sha256': document['plan_sha256'], 'plan_path': str(destination),
             'scope': document['scope'], 'observations': evidence['observations'],
             'counts': {'approved_file_count': len(paths), 'planned_logical_bytes': sum(p['size'] for p in _files(document)),
+                       'approved_pointer_count': len(_retired_pointers(document)),
                        'observed_reclaimed_bytes': None}}
 
 
@@ -160,7 +167,7 @@ def _load(path):
     return document, store
 
 
-def _check_dependencies(document, *, removed_runtime_files=()):
+def _check_dependencies(document, *, removed_runtime_files=(), retired_missing=False):
     evidence = document['artifact_evidence']
     root = rules.root_path(evidence['root'])
     if ff._identity(root.lstat()) != evidence['root_identity']:
@@ -169,12 +176,12 @@ def _check_dependencies(document, *, removed_runtime_files=()):
         if ff.read_file(root, proof['path'])[0] != proof:
             raise ff.FrozenFilesError('maintenance_dependency_changed')
     if evidence.get('runtime_evidence'):
-        runtime_artifacts.verify(root, evidence['runtime_evidence'], removed_files=removed_runtime_files)
-    _check_absences(document)
+        runtime_artifacts.verify(root, evidence['runtime_evidence'], removed_files=removed_runtime_files, retired_missing=retired_missing)
+    _check_absences(document, retired_missing=retired_missing)
     return root
 
 
-def _check_absences(document):
+def _check_absences(document, *, retired_missing=False):
     evidence = document['artifact_evidence']
     for relative in evidence['absent_paths']:
         path = ff.checked_path(Path(evidence['root']), relative)
@@ -184,7 +191,7 @@ def _check_absences(document):
             continue
         raise ff.FrozenFilesError('maintenance_previously_absent_sidecar_appeared')
     if evidence.get('runtime_evidence'):
-        runtime_artifacts.check_absences(evidence['runtime_evidence'])
+        runtime_artifacts.check_absences(evidence['runtime_evidence'], retired_missing=retired_missing)
 
 
 def _publish(document, store, state, goal, *, code=None, remaining=None):
@@ -228,8 +235,9 @@ def apply(path, *, approved_hash, clients_closed=False):
                 raise ff.FrozenFilesError('maintenance_plan_drift')
             with HeldFiles() as held:
                 runtime_evidence = document['artifact_evidence'].get('runtime_evidence')
+                retired_handles = []
                 if runtime_evidence:
-                    held.stack.enter_context(runtime_artifacts.hold_pointers(runtime_evidence))
+                    retired_handles = held.stack.enter_context(runtime_artifacts.hold_pointers(runtime_evidence))
                 for source_root, proof in _dependencies(document):
                     held.acquire(source_root, proof)
                 for proof in _files(document):
@@ -251,6 +259,7 @@ def apply(path, *, approved_hash, clients_closed=False):
                     store.append_event({'event': 'mutation_started'}, state_updates=state)
                 for proof in _files(document):
                     held.dispose(root, proof['path'], before=proof)
+                runtime_artifacts.dispose_pointers(retired_handles)
             remaining = _remaining(document)
             if remaining:
                 raise ff.FrozenFilesError('maintenance_frozen_artifacts_reappeared')
@@ -266,11 +275,19 @@ def _remaining(document):
     # requires the original namespace, and residual contents are checked below.
     removed_runtime_files = [proof['path'] for change in document['artifact_evidence']['changes']
                              if change['category'] == 'runtimes' for proof in change['evidence']['files']]
-    root = _check_dependencies(document, removed_runtime_files=removed_runtime_files)
+    root = _check_dependencies(document, removed_runtime_files=removed_runtime_files, retired_missing=True)
     if document['artifact_evidence'].get('runtime_evidence'):
         runtime_artifacts.check_removed_directories(root,
             [change['evidence'] for change in document['artifact_evidence']['changes'] if change['category'] == 'runtimes'])
+    runtime_evidence = document['artifact_evidence'].get('runtime_evidence')
     remaining = []
+    if runtime_evidence:
+        for relative in runtime_artifacts.retired_pointer_paths(runtime_evidence):
+            try:
+                (root / relative).lstat()
+            except FileNotFoundError:
+                continue
+            remaining.append(relative)
     for proof in _files(document):
         try:
             current, _ = ff.read_file(root, proof['path'])
