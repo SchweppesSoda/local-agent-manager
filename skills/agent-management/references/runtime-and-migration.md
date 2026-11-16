@@ -78,6 +78,31 @@ Identify the executable and data root the user wants, then locate the setting th
 
 For Windows launch failures after an installation or PATH update, use the [inheritance diagnosis](#windows-path-inheritance) and [launch-chain refresh](#refresh-the-affected-launch-chain) above before deciding which setting needs changing.
 
+### Give T3 Code a dedicated Codex home
+
+1. Use `environment inventory --client t3code --json` to locate the T3 profile,
+   then check the selected Codex instance in its `userdata/settings.json`. The
+   instance's **Binary path** is `providerInstances.<id>.config.binaryPath`.
+   Its **CODEX_HOME path** is `providerInstances.<id>.config.homePath`. Resolve
+   the binary to the real installation, and check the setup mode, any Shadow
+   home path, and instance environment overrides before deciding the effective
+   home. Check each enabled Codex instance that the user intends to include.
+2. For an existing Codex installation, select the verified binary and set
+   **CODEX_HOME path** on the chosen T3 instance to its own absolute directory,
+   for example `C:\Users\<user>\.codex-t3` on Windows. Use the directory chosen
+   for that host and account. Multiple T3 instances may intentionally use that
+   one home. The home supplies native Codex configuration and session storage;
+   T3 stores its frontend records in the selected T3 profile. Use
+   `agent-auth-management` for sign-in or credential reuse, and migrate only
+   the state the user selected. Changing the setting directs new launches to
+   the new home. Existing native records still need their original store and
+   exact IDs resolved for history or cleanup.
+3. Read back the selected instance fields and compare the home by physical
+   identity with the other homes in scope. When the provider is running, verify
+   the executable and `CODEX_HOME` of the T3-launched Codex process, or check
+   that an authorized T3 run's exact native session appears in the new home.
+   Configuration, effective launch, and successful sign-in are separate results.
+
 ## Migrate the selected state
 
 Classify the source and destination per task as settings, sessions/history, attachments, cache, credentials, or shared databases. Confirm the actual source and destination roots, product versions, ownership, and whether an existing destination requires merge or replacement. Use the product's supported export/import or documented migration. Carry only the fields and data selected by the user. Prefer supported sign-in on the destination if credentials are device-bound or outside the migration scope.

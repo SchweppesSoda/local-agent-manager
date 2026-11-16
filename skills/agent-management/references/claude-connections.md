@@ -6,13 +6,11 @@ choices. A request to implement or test connection support does not ask to
 connect the current host. Use temporary profiles and synthetic records for
 development; do not import the user's real history as an acceptance test.
 
-T3 can also use an independently installed Codex executable with Cindy's
-Codex home. Its Binary path and CODEX_HOME path settings select those two
-resources separately. Verify the standalone executable and the exact Cindy
-`codex-home` before saving the binding. The selected home also supplies Codex
-configuration and authentication storage. Cindy's project memory uses its own
-`maker-memory` scope and needs the memory-loading step below.
-[T3 Codex configuration](https://github.com/pingdotgg/t3code/blob/v0.1.8-nightly.20261109.4399/docs/user/providers-codex.md)
+For an independently installed Codex executable in T3, follow the
+[dedicated Codex home workflow](runtime-and-migration.md#give-t3-code-a-dedicated-codex-home).
+Select a Cindy Codex home only when the user intends to share that specific
+home's configuration, sessions, and authentication storage. Cindy's project
+memory needs its own `maker-memory` scope and the memory-loading step below.
 
 ## Establish the requested scope
 
