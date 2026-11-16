@@ -304,6 +304,10 @@ disposal finishes; an unlisted link or changed intermediate selector blocks it.
 Version-container membership is frozen and rechecked after leases and during
 final verification. New members in a retired unit keep recovery unresolved.
 The 14-day cache/log retention setting grants no runtime disposal authority.
+Post-operation verification permits the absence of exact approved single-file
+runtime units from their container. It still checks every retained member and
+rejects additions or unapproved missing members. Preflight requires the original
+membership; interrupted verification never replays deletion.
 Runtime trees have a separate 4 GiB hashing budget per unit and the shared
 512 MiB per-file and 20,000-member traversal budgets.
 

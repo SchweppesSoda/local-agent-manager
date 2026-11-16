@@ -385,14 +385,18 @@ def check_directories(root, units):
                 raise ValueError('runtime_preserved_directory_changed')
 
 
-def check_containers(root, containers):
+def check_containers(root, containers, *, removed_files=()):
+    allowed_missing = set(removed_files)
     for container in containers:
         path = ff.checked_path(root, container['path'])
         try:
             identity = ff._identity(path.lstat())
         except FileNotFoundError:
             identity = None
-        if identity != container['identity'] or _names(root, container['path']) != container['entries']:
+        expected = set(container['entries'])
+        observed = set(_names(root, container['path']))
+        optional = {name for name in expected if container['path'] + '/' + name in allowed_missing}
+        if identity != container['identity'] or not expected - optional <= observed <= expected:
             raise ValueError('runtime_version_container_changed')
 
 
@@ -420,9 +424,9 @@ def check_removed_directories(root, units):
                 raise ValueError('runtime_removed_unit_namespace_changed')
 
 
-def verify(root, evidence):
+def verify(root, evidence, *, removed_files=()):
     check_absences(evidence)
-    check_containers(root, evidence['containers'])
+    check_containers(root, evidence['containers'], removed_files=removed_files)
     for source_root, proof in dependencies(root, evidence):
         if ff.read_file(source_root, proof['path'])[0] != proof:
             raise ValueError('runtime_dependency_changed')

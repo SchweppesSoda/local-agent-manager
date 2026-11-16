@@ -83,6 +83,56 @@ class RuntimeArtifactTests(unittest.TestCase):
         result = maintenance.plan('cindy', self.root, categories=['runtimes'])
         self.assertEqual(result['counts']['approved_file_count'], 0)
 
+    def helper_plan(self):
+        sandbox = self.root / '.sandbox-bin'
+        sandbox.mkdir()
+        for version in ('0.998.0', '0.999.0'):
+            (sandbox / ('codex-command-runner-' + version + '.exe')).write_bytes(version.encode())
+        candidates = runtimes.inventory('codex', self.root)['candidates']
+        review = self.review()
+        review['client'] = 'codex'
+        review['assessment'] = {key: 'Synthetic versioned helper retirement fixture'
+                                for key in ('ownership', 'selection', 'consumers', 'rollback')}
+        decisions = [{'path': row['path'], 'snapshot_sha256': row['snapshot_sha256'],
+                      'reason': 'Retire the old helper, preserve the current helper'} for row in candidates]
+        review.update(remove=decisions[:1], preserve=decisions[1:])
+        return maintenance.plan('codex', self.root, categories=['runtimes'], runtime_review=review)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file exclusion contract')
+    def test_single_file_runtime_retirement_and_repeat_verification_complete(self):
+        plan = self.helper_plan()
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertEqual(result['counts']['residual_file_count'], 0)
+        verified = maintenance.query(plan['plan_path'], verify=True)
+        self.assertEqual(verified['goal_status'], 'complete', verified)
+        self.assertTrue(verified['mutation_started'])
+        self.assertTrue((self.root / '.sandbox-bin/codex-command-runner-0.999.0.exe').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file exclusion contract')
+    def test_single_file_runtime_recovery_preserves_mutation_and_detects_new_members(self):
+        plan = self.helper_plan()
+        with patch.object(maintenance, '_remaining', side_effect=RuntimeError('interrupted after deletion')):
+            result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'unknown', result)
+        added = self.root / '.sandbox-bin/new-unapproved.exe'
+        added.write_bytes(b'new unreviewed member')
+        unknown = maintenance.query(plan['plan_path'], verify=True)
+        self.assertEqual(unknown['goal_status'], 'unknown', unknown)
+        self.assertTrue(unknown['mutation_started'])
+        added.unlink()
+        verified = maintenance.query(plan['plan_path'], verify=True)
+        self.assertEqual(verified['goal_status'], 'complete', verified)
+        self.assertTrue(verified['modified'])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file exclusion contract')
+    def test_single_file_runtime_missing_before_apply_is_not_approved_as_complete(self):
+        plan = self.helper_plan()
+        (self.root / '.sandbox-bin/codex-command-runner-0.998.0.exe').unlink()
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'blocked', result)
+        self.assertFalse(result['mutation_started'])
+
     def test_unqualified_runtime_bytes_remain_visible_without_content_reads_or_approval(self):
         root = Path(self.temporary.name) / 'codex'
         sandbox = root / '.sandbox-bin'

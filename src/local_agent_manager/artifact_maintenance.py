@@ -160,7 +160,7 @@ def _load(path):
     return document, store
 
 
-def _check_dependencies(document):
+def _check_dependencies(document, *, removed_runtime_files=()):
     evidence = document['artifact_evidence']
     root = rules.root_path(evidence['root'])
     if ff._identity(root.lstat()) != evidence['root_identity']:
@@ -169,7 +169,7 @@ def _check_dependencies(document):
         if ff.read_file(root, proof['path'])[0] != proof:
             raise ff.FrozenFilesError('maintenance_dependency_changed')
     if evidence.get('runtime_evidence'):
-        runtime_artifacts.verify(root, evidence['runtime_evidence'])
+        runtime_artifacts.verify(root, evidence['runtime_evidence'], removed_files=removed_runtime_files)
     _check_absences(document)
     return root
 
@@ -261,7 +261,12 @@ def apply(path, *, approved_hash, clients_closed=False):
 
 
 def _remaining(document):
-    root = _check_dependencies(document)
+    # Single-file runtime units disappear from their version container. During
+    # recovery only those exact approved files may be absent; preflight still
+    # requires the original namespace, and residual contents are checked below.
+    removed_runtime_files = [proof['path'] for change in document['artifact_evidence']['changes']
+                             if change['category'] == 'runtimes' for proof in change['evidence']['files']]
+    root = _check_dependencies(document, removed_runtime_files=removed_runtime_files)
     if document['artifact_evidence'].get('runtime_evidence'):
         runtime_artifacts.check_removed_directories(root,
             [change['evidence'] for change in document['artifact_evidence']['changes'] if change['category'] == 'runtimes'])
