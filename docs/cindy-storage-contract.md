@@ -29,9 +29,13 @@ cross-database consistency. These internal preparation primitives are not a live
 migration CLI or deletion authority; source cleanup requires a fresh verified
 record-operation plan after runtime acceptance.
 
-Cindy's frontend SQLite database, dedicated `codex-home`, `pi-agent-home`, and
-Claude store remain separate physical stores. The official Codex home is never
-substituted. The native catalog supplies project and parent/descendant evidence
+Cindy's frontend SQLite database and each resolved native home remain separate
+physical stores. The default Codex subscription account can select the official
+`~/.codex` or the dedicated `codex-home` according to `legacyCodexDefault`; an
+unresolved dedicated home must never silently fall back to the official one.
+See [default-account and legacy routing](adapters.md#codex-默认账号与旧版兼容路由)
+for the version-qualified product branches and the manager's parsing limits.
+The native catalog supplies project and parent/descendant evidence
 to both inventory and planning, including records without frontend references.
 Existing Windows normal/extended path aliases match only after the shared path
 identity helper proves they refer to the same object. A full path is not a prefix

@@ -79,7 +79,7 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 | 账号类型 | 已观察到的目录／绑定规则 |
 |---|---|
 | 旧 Codex 独立账号 | 本机曾使用 `<profile>/codex-accounts/<owner-key>/<provider-id>`。源码允许 `accountHome` 回调提供路径，该布局只是缺省构造，不是任意机器的强制位置。 |
-| 新 Codex 原生订阅账号 | 非默认账号由 `accountDirectory("openai", accountId)` 映射到 `~/.codex-<accountId>`；当前生成的 ID 形如 `cindy-<owner-hash-prefix>-<uuid>`。 |
+| 新 Codex 原生订阅账号 | 未映射旧 provider 的非默认账号由 `accountDirectory("openai", accountId)` 映射到 `~/.codex-<accountId>`；当前生成的 ID 形如 `cindy-<owner-hash-prefix>-<uuid>`。旧 provider 别名仍须检查旧目录映射。 |
 | 新 Claude 原生订阅账号 | 同一函数对 `anthropic` 映射到 `~/.claude-<accountId>`；`readBoundClaudeConfigDir` 读取原生绑定。这里只验证了源码映射，未做 Claude 账号迁移实测。 |
 | 原生默认账号 | `accountId=default` 在该函数中分别映射到 `~/.codex`、`~/.claude`。函数返回值不单独证明每条启动路径最终使用的 Home。 |
 
@@ -98,6 +98,43 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 删除原生目录，不保证清除 Cindy 数据库中的会话、消息与索引。应分别说明授权与验证
 范围，不能以登录成功、账号从 UI 消失或一个目录消失作为全部迁移／清理完成的证据。
 
+#### Codex 默认账号与旧版兼容路由
+
+2026-11-16 核对本机 Cindy **0.1.136** 安装包，并与公开
+[v0.1.136 runtime.ts](https://github.com/makecindy/cindy/blob/v0.1.136/apps/desktop/src/main/subscription-accounts/runtime.ts)
+的 `legacyCodexDefault`、`directoryFor`、`updatePool` 以及
+[store.ts](https://github.com/makecindy/cindy/blob/v0.1.136/apps/desktop/src/main/subscription-accounts/store.ts)
+的 `accountDirectory`、`migrateLegacyCodexAccounts` 对照。最终订阅账号 Home
+由 `directoryFor` 决定，不能只引用上表的底层 `accountDirectory("openai", "default")`：
+
+- 已有 `pools.openai` 且 `legacyCodexDefault === true`：`default` 使用
+  `getCodexHome()`，即该 Cindy 实例的 `app.getPath("userData")/codex-home`。
+- 已有 `pools.openai` 而该字段缺失或不为 `true`：`default` 使用 Cindy 进程
+  `os.homedir()` 下的 `.codex`。即使磁盘上有旧 `codex-home`，也不会据此自动补标记。
+- **没有 OpenAI pool** 时，产品才用“原生认证已绑定且不是共享系统凭据”推断旧兼容模式；
+  不符合条件时使用普通默认路径。不能把“没有 pool”和“已有 pool 但缺字段”混同。
+- 产品的普通 `updatePool` 会保留已确认或推断出的 `true`；旧 provider 迁移在首次创建
+  pool 时也可按 `legacyDefault` 初始化它。该迁移逻辑不会替已有 pool 自动补字段。
+- 普通新增账号使用 `~/.codex-cindy-<owner-hash-prefix>-<uuid>`；若该账号在
+  `legacyCodexAccounts` 中映射旧 provider，则仍走旧 `legacyCodexAccountHome`。
+  这与默认账号的 `legacyCodexDefault` 是两套不同的兼容机制。
+
+产品先把所选账号的 `directoryFor` 结果放入 `configDir`，再作为该订阅会话的
+`CODEX_HOME`；登录也按同一路由选目录。这里描述的是原生订阅账号路径，不能推广为
+任意网关／自定义 provider 的固定 Home。owner 注册表分开，不意味着默认 `.codex`
+也按 owner 隔离；账号身份、认证授权和物理存储仍须分别核实。
+
+本次迁移前冻结的已有 pool 缺少该标记，与默认写入官方 `.codex` 的现场一致；
+这不能定位是哪次升级或设置变更首次造成该状态。切换标记只改变路由，不自动迁移
+旧会话、绑定、索引或认证。升级、切换 owner 或重置账号池后，需要重核有效字段、
+逐条原生绑定和最终 Home，不能把一次隔离验收当作以后所有配置的保证。
+
+语言备注是另一层问题：0.1.136 会把 `[UI language]` 放入发给 Codex 的用户正文，
+Cindy 自己过滤展示不等于原生历史已经干净。共享官方 Home 时，官方客户端可从原生
+首消息／预览生成这种标题。[PR #10678](https://github.com/makecindy/cindy/pull/10678)
+停止普通模式的语言备注注入，但不改变上述账号路由、不清理历史或官方索引；
+是否生效须核实实际安装构建包含该改动，不能只看 PR 已合并。
+
 #### Codex 逐条原生账号绑定
 
 管理器根据 `cindy-<owner>.db` 的 owner 哈希定位其账号注册表，只使用
@@ -105,6 +142,12 @@ Paseo 自动发现也不展开自定义 provider 的 `extends`，额外 command 
 账号切换而变化，不能用来改写历史原生记录的归属。非默认账号必须属于该 owner，未知
 账号格式、重复 JSON 键或损坏注册表会阻止盘点进入可删除状态。显式指定的自定义
 `--cindy-codex-home` 保持优先；没有原生绑定的旧记录保留专属目录解析。
+
+管理器的 [Codex 账号解析器](../src/local_agent_manager/cindy_codex_accounts.py) 已按
+持久化 `legacyCodexDefault` 区分默认官方 Home 与旧专属 Home，并有
+[临时存储回归用例](../tests/test_cindy_codex_accounts.py)。它不读取认证来复现产品的
+无 pool 推断，也未解析 `legacyCodexAccounts` 的旧 provider 别名；遇到这些范围应
+先建立显式、可验证的 Home 归属，不能把推测路径当作删除依据。
 
 引用盘点、异常扫描和活跃会话保护使用每条绑定的实际 Home。只读保护源可以提供所选
 官方 Home 的 Cindy 引用；它们的其他 Home 不会因此成为清理候选。同名原生 ID 仍按
