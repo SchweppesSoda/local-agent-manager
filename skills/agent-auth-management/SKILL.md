@@ -5,18 +5,36 @@ description: Inspect, reuse, copy, export, restore, or repair existing Codex, Cl
 
 # Agent authentication management
 
-Complete the requested authentication task from source discovery through target
-configuration and verification. Default to one account on the current machine;
-start with Codex. Multiple accounts follow the chosen client's actual native
+Complete the requested authentication task to its stated endpoint. Default to
+one account on the current machine; inspect the requested provider only. Codex
+is the primary documented workflow. Multiple accounts follow the client's native
 capabilities. Do not build an account pool, automatic token synchronizer, or
 account-switching service for an ordinary reuse request.
 
 Skill authoring does not authorize changing live credentials. For live work,
-identify the source and target frontend/provider instance, OS account, and
-requested outcome from the conversation and local evidence. Ask only for an
+identify the relevant frontend/provider instance, OS account, and requested
+outcome from the conversation and local evidence. Ask only for an
 unresolved choice that affects the operation, such as two different signed-in
 source accounts, an existing different target account, or a missing export
 destination. Carry established authorization through execution and verification.
+
+## Select the requested operation
+
+- **Inspect:** identify the selected account, effective credential source and
+  available status evidence. No destination is needed. Do not export, repair,
+  refresh credentials deliberately, or start a login flow for a lookup request.
+- **Export:** identify the source and output file/consumer format. Preserve the
+  source backend and stop at a verified private artifact; do not configure a
+  client or substitute a new login when export is unsupported.
+- **Reuse/copy/repair:** identify both source and target, then configure and
+  verify the selected target within that scope.
+- **Restore:** inspect the prior operation's target and recovery evidence first;
+  follow [recovery](references/transfer.md#recovery), not a new source-to-target copy.
+
+For inspection-only work, use metadata or a status interface whose side effects
+are understood for that version. If a diagnostic may refresh or replace auth,
+report the available local evidence and the missing verification instead of
+treating the word "status" as a read-only guarantee.
 
 ## Read the matching route
 
@@ -45,6 +63,9 @@ when needed; this Skill does not add an `auth` CLI command.
    profile, backend, status and time. Omit token/key values and fragments, raw
    responses, environment dumps, and login logs. File presence alone is only
    `present`; locally recognized login is not proof of remote validity.
+   Distinguish recognized login, explicit no-login, and unknown/error. A timeout,
+   denied keyring, malformed output or a generic nonzero exit is not proof of
+   sign-out and must not trigger replacement or reauthentication.
 4. For T3, Cindy, Paseo and similar frontends, follow the specific instance's
    configuration, including overrides. An account label in the frontend is not
    proof that its running backend uses those credentials. Recheck after upgrades.
@@ -60,6 +81,8 @@ when needed; this Skill does not add an `auth` CLI command.
   request does not authorize replacing `CODEX_HOME` or `CLAUDE_CONFIG_DIR` with
   another client's full home. Reuse existing supported configuration writers.
 - **Backend cannot be reused safely:** use the target's official login flow.
+  First check its replacement/revocation effects and shared credential consumers
+  using the provider reference; "login" can revoke existing credentials too.
   Changing a keyring setting alone does not export its contents. Browser consent,
   account choice or MFA that only the user can complete is a real handoff; resume
   verification afterwards. Use the host's secret-input tool for required secrets.

@@ -15,8 +15,11 @@ confirmation. An export also needs an exact private destination.
 
 Determine whether source or target processes may refresh credentials or rewrite
 configuration during the operation. Take a coherent source snapshot; recheck
-its identity and digest before applying. Establish target writer exclusion
-through the product's supported lifecycle or transaction interface. If that
+its identity and digest before applying. A successful JSON parse or unchanged
+size/mtime alone does not establish a coherent snapshot. Use a compatible native
+lock, a verified atomic reader/writer protocol, or exclude source writers while
+reading. Establish target writer exclusion through the product's supported
+lifecycle or transaction interface. If that
 cannot be established, do not overwrite an active store. Preserve current work
 and arrange the needed lifecycle step within the user's task scope.
 
@@ -26,6 +29,17 @@ restricted to the intended OS identity and required system principals before
 writing bytes. Use exclusive creation and a fresh task-specific name. On Windows
 verify ACLs, including inherited access; on Unix use restrictive file modes.
 Applying permissions after a permissive write is insufficient.
+
+Before the first mutation, save a private recovery record of exact paths,
+physical identities, initial existence, before-image locations, access controls,
+and intended changes. Record completed steps and expected after-image digests
+as work proceeds, without credential contents. This evidence must survive a
+process interruption; chat context alone is not a recovery record.
+
+For native login/import, determine whether it replaces or revokes the existing
+grant and which other clients consume it. Separate files can contain the same
+grant. Reauthentication is a mutation even if no manual file write is planned;
+follow the provider's precautions before invoking it.
 
 ## Apply without exposing credentials
 
@@ -78,8 +92,15 @@ After an uncertain write, inspect the target before any retry. Restore a backup
 only while writers are excluded and the target still matches this operation's
 expected result. Preserve later user edits and refreshed credentials. Old OAuth
 backups may no longer authenticate; restoring bytes does not reverse remote
-refresh/revocation. Prefer a fresh official login when credential validity is
-uncertain. Do not log out the source to repair the target.
+refresh/revocation. For a target that was initially absent, rollback means
+removing only the exact file this operation created, under writer exclusion and
+only while its identity/content still match the recorded after-image. Otherwise
+preserve it and report the conflict. Restore related settings conditionally too;
+do not remove a whole home or provider instance.
+
+When validity is uncertain, inspect the provider's reauthentication effects
+before choosing fresh login. Do not log out the source to repair the target,
+or let target login silently revoke a grant copied from the source.
 
 Report completed mutations, current status and private recovery locations.
 Remove only this operation's disposable staging material once its outcome is

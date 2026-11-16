@@ -29,6 +29,9 @@ A documented storage path alone does not prove transfer compatibility. Follow
 use `claude auth login` in the target context. Do not copy `.claude.json`, an entire
 profile, or fabricated onboarding flags to suppress a login prompt. Diagnose
 the prompt with the native status and current authentication guidance.
+Before reauthentication, check the selected version's replacement/revocation
+behavior and shared consumers under the transfer procedure. A separate config
+directory does not prove that copied OAuth credentials are independent grants.
 
 Official guidance supports multiple accounts through separate configuration
 directories, with exceptions for some Console sign-ins stored elsewhere. This
@@ -53,8 +56,9 @@ not establish that a third-party managed ACP instance shares the same store.
 First use the target's supported account/status interface to see whether the
 existing login is already reusable. Check installed help for available commands;
 do not invent an `agy auth export` or status subcommand. If necessary, run its
-official login flow and let the user complete consent. Do not dump Windows
-Credential Manager, transplant encrypted credential-store files, or move an old
+official login flow after checking shared-keyring effects, and let the user
+complete consent. Do not dump Windows Credential Manager, transplant encrypted
+credential-store files, or move an old
 managed token into the CLI profile as a generic repair. A file-backed managed
 ACP transfer needs separately verified source/target format and account binding
 before following the transfer procedure.
