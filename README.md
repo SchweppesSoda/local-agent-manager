@@ -256,7 +256,7 @@ Blob/外部附件和未知旧格式仍阻挡完整删除。标题、配置、凭
 
 `records --client t3code` 只读盘点 `T3CODE_HOME` 或 `~/.t3` 中的 thread 元数据、
 provider 恢复 ID 和消息数量；可重复指定 `--t3code-root`。适配固定 schema，
-覆盖 `0.1.8-nightly.20261107.4301` 和 `0.1.8-nightly.20261108.4353`，未知结构阻挡。
+覆盖 0.1.8 Nightly 旧版结构与 0.1.10 Nightly `20261112.4580`、`20261113.4616`，未知结构阻挡。
 
 ```powershell
 local-agent-manager records --client t3code --json

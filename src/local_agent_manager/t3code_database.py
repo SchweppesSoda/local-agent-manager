@@ -20,6 +20,7 @@ from .t3code_references import content_reference, require_no_references
 from .t3code_store import CONTRACT, RELATIVE, V2, T3CodeError, database_path, fail, identifier, native_handle, qualify, rows
 
 SCHEMA = "larj.t3code-database.v1"
+TURN_ITEM_COUNTS = V2 + "turn_item_counts"
 THREAD_TABLES = (
     "mcp_app_model_context", "projection_thread_messages", "projection_thread_pull_requests",
     "projection_thread_sessions", "provider_session_runtime", "projection_threads",
@@ -29,6 +30,13 @@ THREAD_TABLES = (
         "provider_session_bindings", "provider_sessions", "provider_threads", "provider_turns", "run_attempts", "runs",
         "runtime_requests", "subagents", "threads", "turn_items")),
 )
+
+
+def _thread_tables(db):
+    # When present, remove exact counts before turn-item triggers can change them.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TURN_ITEM_COUNTS,)).fetchone():
+        return (TURN_ITEM_COUNTS, *THREAD_TABLES)
+    return THREAD_TABLES
 
 
 def _where(column, ids):
@@ -115,7 +123,7 @@ def closure(db, ids, *, native_ids=()):
     for table, column in (("orchestration_events", "stream_id"), ("orchestration_command_receipts", "aggregate_id")):
         if db.execute(f"SELECT 1 FROM {table} WHERE {_where(column,ids)} AND aggregate_kind != 'thread' LIMIT 1", ids).fetchone():
             fail("legacy_aggregate_ownership_unverified")
-    statements = [(table, where, ids) for table in THREAD_TABLES if table != V2 + "provider_sessions"]
+    statements = [(table, where, ids) for table in _thread_tables(db) if table != V2 + "provider_sessions"]
     if owned_sessions:
         statements.append((V2 + "provider_sessions", _where("provider_session_id", tuple(sorted(owned_sessions))), tuple(sorted(owned_sessions))))
     statements.extend((
@@ -308,7 +316,7 @@ def remaining(evidence, *, terminal_verified=False, compact=False):
         db.execute("BEGIN")
         _check(db)
         remaining_count = 0
-        for table in THREAD_TABLES:
+        for table in _thread_tables(db):
             remaining_count += db.execute(f'SELECT count(*) FROM "{table}" WHERE {_where("thread_id",ids)}', ids).fetchone()[0]
         for table, column in (("orchestration_events", "stream_id"), ("orchestration_command_receipts", "aggregate_id"),
                               (V2 + "context_transfers", "source_thread_id"), (V2 + "context_transfers", "target_thread_id")):

@@ -215,6 +215,7 @@ _LEGACY_EVENT_FIELDS = {
     **{name: _THREAD_EVENT_FIELDS for name in ('thread.created', 'thread.deleted', 'thread.metadata-updated',
         'thread.model-selection-updated', 'thread.visited')},
     **{name: _SESSION_EVENT_FIELDS for name in ('provider-session.attached', 'provider-session.updated')},
+    'provider-session.detached': 'providerSessionId detachedAt reason',
     **{name: _RUN_EVENT_FIELDS for name in ('run.created', 'run.updated')},
     **{name: _ATTEMPT_EVENT_FIELDS for name in ('run-attempt.created', 'run-attempt.updated')},
     'checkpoint-scope.created': '''id threadId runId nodeId parentScopeId providerThreadId kind ordinalWithinParent
@@ -248,6 +249,12 @@ _LEGACY_EVENT_FIELDS = {
         failure retry source outcome summary detail senderThreadId workflowScript message unresponsiveAt modelSwitch''',
 }
 
+_TURN_ITEM_TEXT_FIELDS = {
+    'assistant_message': {'phase'},
+    'command_execution': {'completionWake'},
+    'secret_request': {'delivery', 'label', 'reason', 'secretStatus', 'url'},
+}
+
 
 def _qualify_legacy_events(db):
     """Admit known V2 mirror payloads, never arbitrary legacy restore events."""
@@ -258,12 +265,18 @@ def _qualify_legacy_events(db):
         fail('legacy_restore_closure_unqualified')
     # Qualify field names in SQLite. Private historical bodies are neither
     # exported nor materialized as a Python list of every event.
-    fields = rows(db, '''SELECT DISTINCT event_type,j.key FROM orchestration_events AS t,
+    fields = rows(db, '''SELECT DISTINCT event_type,j.key,j.type AS value_type,
+        CASE WHEN event_type='turn-item.updated' THEN json_extract(t.payload_json,'$.type') END AS item_type
+        FROM orchestration_events AS t,
         json_each(t.payload_json) AS j WHERE aggregate_kind='thread'
         AND NOT lam_content_reference('orchestration_events','payload_json',t.payload_json,j.fullkey,t.event_type) ''')
     for row in fields:
-        if row['key'] not in _LEGACY_EVENT_FIELDS[row['event_type']].split():
-            fail('legacy_restore_closure_unqualified')
+        if row['key'] in _LEGACY_EVENT_FIELDS[row['event_type']].split():
+            continue
+        if (row['event_type'] == 'turn-item.updated' and row['value_type'] == 'text'
+                and isinstance(row['item_type'], str) and row['key'] in _TURN_ITEM_TEXT_FIELDS.get(row['item_type'], ())):
+            continue
+        fail('legacy_restore_closure_unqualified')
     # A new restore cursor nested inside an otherwise known event is still an
     # unqualified recovery mechanism. Read-tool bodies remain audit content.
     if db.execute('''SELECT 1 FROM orchestration_events AS t,json_tree(t.payload_json) AS j

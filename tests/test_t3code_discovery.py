@@ -299,6 +299,7 @@ class T3DiscoveryTests(unittest.TestCase):
                 ('unknown.restore', {'resumeCursor': {'threadId': NATIVE}}),
                 ('provider-thread.updated', {'nativeMetadata': {'resumeCursor': {'threadId': NATIVE}}}),
                 ('provider-thread.updated', {'unexpected': {'threadId': NATIVE}}),
+                ('turn-item.updated', {'type': 'secret_request', 'delivery': {'threadId': NATIVE}}),
             ):
                 insert(db, 'orchestration_events', event_id='unknown', stream_id=THREAD, aggregate_kind='thread',
                        event_type=event_type, payload_json=json.dumps(payload), metadata_json='{}')
@@ -307,6 +308,21 @@ class T3DiscoveryTests(unittest.TestCase):
                     history_references(self.root, {THREAD: {'engine': 'codex'}})
                 db.execute("DELETE FROM orchestration_events WHERE event_id='unknown'")
                 db.commit()
+
+    def test_new_nightly_mirror_events_keep_native_reference_protection(self):
+        with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
+            for i, (event_type, payload) in enumerate((
+                ('provider-session.detached', {'providerSessionId': 'session', 'detachedAt': '2026-11-13T00:00:00Z'}),
+                ('turn-item.updated', {'type': 'assistant_message', 'phase': 'commentary'}),
+                ('turn-item.updated', {'type': 'command_execution', 'completionWake': 'always'}),
+                ('turn-item.updated', {'type': 'secret_request', 'delivery': 'store_only', 'label': 'Example',
+                                       'reason': 'Example', 'secretStatus': 'cancelled', 'url': 'https://example.com'}),
+            )):
+                insert(db, 'orchestration_events', event_id=f'nightly-{i}', stream_id=THREAD, aggregate_kind='thread',
+                       stream_version=i + 1, event_type=event_type, payload_json=json.dumps(payload), metadata_json='{}')
+            db.commit()
+        refs = history_references(self.root, {THREAD: {'engine': 'codex'}})
+        self.assertEqual({row['native_id'] for row in refs}, {NATIVE})
 
     def test_v2_subagent_event_native_handle_belongs_to_child(self):
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:

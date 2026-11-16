@@ -995,6 +995,58 @@
           "CREATE INDEX orchestration_v2_projection_turn_items_conversation_idx\n    ON orchestration_v2_projection_turn_items(thread_id, ordinal, type, run_id)\n    WHERE type NOT IN (\n      'command_execution', 'reasoning', 'file_change', 'file_search', 'web_search', 'dynamic_tool'\n    )\n  "
         ]
       ]
+    },
+    {
+      "version": "0.1.10-nightly.20261113.4616",
+      "base_version": "0.1.10-nightly.20261112.4580",
+      "producer": "server.asar/apps/server/dist/ManagedEndpointRuntime-cHkpS5P5.mjs; migrations 084-087",
+      "remove": [],
+      "replace": [
+        [
+          "table",
+          "projection_projects",
+          "projection_projects",
+          "CREATE TABLE projection_projects (\n      project_id TEXT PRIMARY KEY,\n      title TEXT NOT NULL,\n      workspace_root TEXT NOT NULL,\n      scripts_json TEXT NOT NULL,\n      created_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      deleted_at TEXT\n    , default_model_selection_json TEXT, default_thread_env_mode TEXT, favicon_path TEXT, auto_pull INTEGER NOT NULL DEFAULT 0, project_icon_json TEXT, pinned_at TEXT, archived_at TEXT, has_custom_title INTEGER NOT NULL DEFAULT 0)"
+        ]
+      ],
+      "add": [
+        [
+          "index",
+          "orchestration_v2_projection_runs_last_executed_idx",
+          "orchestration_v2_projection_runs",
+          "CREATE INDEX orchestration_v2_projection_runs_last_executed_idx\n    ON orchestration_v2_projection_runs(\n      thread_id, (completed_at IS NULL) DESC, completed_at DESC, ordinal DESC, run_id DESC\n    )\n    WHERE status <> 'queued'\n      AND NOT (status = 'cancelled' AND json_extract(payload_json, '$.startedAt') IS NULL)\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_turn_items_queued_input_idx",
+          "orchestration_v2_projection_turn_items",
+          "CREATE INDEX orchestration_v2_projection_turn_items_queued_input_idx\n    ON orchestration_v2_projection_turn_items(run_id)\n    WHERE type = 'user_message' AND json_extract(payload_json, '$.inputIntent') = 'queued_turn'\n  "
+        ],
+        [
+          "table",
+          "orchestration_v2_projection_turn_item_counts",
+          "orchestration_v2_projection_turn_item_counts",
+          "CREATE TABLE orchestration_v2_projection_turn_item_counts (\n      thread_id TEXT NOT NULL,\n      run_key TEXT NOT NULL,\n      item_count INTEGER NOT NULL,\n      PRIMARY KEY (thread_id, run_key)\n    ) WITHOUT ROWID\n  "
+        ],
+        [
+          "trigger",
+          "orchestration_v2_turn_item_counts_delete",
+          "orchestration_v2_projection_turn_items",
+          "CREATE TRIGGER orchestration_v2_turn_item_counts_delete\n    AFTER DELETE ON orchestration_v2_projection_turn_items\n    BEGIN\n      UPDATE orchestration_v2_projection_turn_item_counts SET item_count = item_count - 1\n      WHERE thread_id = old.thread_id AND run_key = COALESCE(old.run_id, '');\n      DELETE FROM orchestration_v2_projection_turn_item_counts\n      WHERE thread_id = old.thread_id AND run_key = COALESCE(old.run_id, '') AND item_count <= 0;\n    END"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_turn_item_counts_insert",
+          "orchestration_v2_projection_turn_items",
+          "CREATE TRIGGER orchestration_v2_turn_item_counts_insert\n    AFTER INSERT ON orchestration_v2_projection_turn_items\n    BEGIN\n      INSERT INTO orchestration_v2_projection_turn_item_counts (thread_id, run_key, item_count)\n      VALUES (new.thread_id, COALESCE(new.run_id, ''), 1)\n      ON CONFLICT (thread_id, run_key) DO UPDATE SET item_count = item_count + 1;\n    END"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_turn_item_counts_update",
+          "orchestration_v2_projection_turn_items",
+          "CREATE TRIGGER orchestration_v2_turn_item_counts_update\n    AFTER UPDATE OF thread_id, run_id ON orchestration_v2_projection_turn_items\n    WHEN old.thread_id IS NOT new.thread_id OR old.run_id IS NOT new.run_id\n    BEGIN\n      UPDATE orchestration_v2_projection_turn_item_counts SET item_count = item_count - 1\n      WHERE thread_id = old.thread_id AND run_key = COALESCE(old.run_id, '');\n      DELETE FROM orchestration_v2_projection_turn_item_counts\n      WHERE thread_id = old.thread_id AND run_key = COALESCE(old.run_id, '') AND item_count <= 0;\n      INSERT INTO orchestration_v2_projection_turn_item_counts (thread_id, run_key, item_count)\n      VALUES (new.thread_id, COALESCE(new.run_id, ''), 1)\n      ON CONFLICT (thread_id, run_key) DO UPDATE SET item_count = item_count + 1;\n    END"
+        ]
+      ]
     }
   ]
 }

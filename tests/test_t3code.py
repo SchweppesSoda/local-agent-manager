@@ -109,6 +109,24 @@ class T3CodeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'schema_unverified'):
                     store.qualify(db)
 
+    def test_turn_item_counts_are_frozen_and_removed_with_their_threads(self):
+        home = self.root / 'turn-counts-t3'
+        with closing(create_store(home, objects=store.SCHEMA_CONTRACTS[2])) as db:
+            add_thread(db, 'selected')
+            add_thread(db, 'keeper')
+            for thread_id in ('selected', 'keeper'):
+                insert(db, V2 + 'turn_items', turn_item_id=thread_id, thread_id=thread_id, payload_json='{}')
+            db.commit()
+            evidence = database.freeze(home, ['selected'], compact=True)
+            self.assertEqual(evidence['counts'][database.TURN_ITEM_COUNTS], 1)
+            database.apply(evidence, phase_callback=lambda _: None, compact=True)
+            self.assertEqual(database.remaining(evidence, compact=True), 0)
+            self.assertEqual(db.execute(f'SELECT thread_id, item_count FROM {database.TURN_ITEM_COUNTS}').fetchall(),
+                             [('keeper', 1)])
+            db.execute('DROP TRIGGER orchestration_v2_turn_item_counts_delete')
+            with self.assertRaisesRegex(ValueError, 'schema_unverified'):
+                store.qualify(db)
+
     def test_titles_are_opt_in_metadata_without_message_content_or_adapter_changes(self):
         add_thread(self.db, 'named', native='native-name')
         add_thread(self.db, 'old-name', legacy=True)

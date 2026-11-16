@@ -27,9 +27,10 @@ CONTRACT = json.loads(files(__package__).joinpath("t3code_schema.json").read_tex
 
 def _schema_contracts():
     original = {(row[0], row[1]): row for row in CONTRACT["objects"]}
+    by_version = {CONTRACT["version"]: original}
     result = [CONTRACT["objects"]]
     for variant in CONTRACT.get("compatible_variants", ()):
-        objects = original.copy()
+        objects = by_version[variant.get("base_version", CONTRACT["version"])].copy()
         for key in variant["remove"]:
             del objects[tuple(key)]
         for row in variant["replace"]:
@@ -38,6 +39,7 @@ def _schema_contracts():
         for row in variant["add"]:
             assert (row[0], row[1]) not in objects
             objects[row[0], row[1]] = row
+        by_version[variant["version"]] = objects
         result.append([objects[key] for key in sorted(objects)])
     return tuple(result)
 
