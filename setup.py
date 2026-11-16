@@ -30,7 +30,7 @@ class BuildResources(build_py):
             if not source.is_file():
                 raise RuntimeError(f"Required resource file is missing {relative}")
             shutil.copy2(source, destination / relative)
-        for required in ("docs/agent-operation-contract.md", "docs/operation-cli.md", "skills/agent-management/SKILL.md", "skills/skill-management/SKILL.md"):
+        for required in ("docs/agent-operation-contract.md", "docs/operation-cli.md", "skills/agent-management/SKILL.md", "skills/agent-auth-management/SKILL.md", "skills/skill-management/SKILL.md"):
             if not (destination / required).is_file():
                 raise RuntimeError(f"Required resource is missing {required}")
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Authentication Management"
+  short_description: "Reuse and verify local Codex, Claude Code, and AGY logins"
+  default_prompt: "Use $agent-auth-management to locate an existing Agent login, reuse it in the requested local client, and verify the target account."

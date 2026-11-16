@@ -13,6 +13,11 @@ Identify the host, Windows user or other OS account, Agent client, and intended 
 
 Skill deployment and source maintenance use `skill-management`. Client installation and runtime repair remain here.
 
+Existing login discovery, credential export/copy/reuse, and target authentication
+verification use `agent-auth-management`. Keep runtime/home selection here;
+binding a whole home also shares data and does not itself prove working login.
+Locate the authentication Skill with `local-agent-manager resources --json`.
+
 ## Choose the workflow
 
 - **Inventory or diagnose.** Locate the manager command and run `environment inventory --json` or `environment doctor --json`. Use repeated `--client` to narrow discovery. When an alternate profile or fixture defines the whole scope, use explicit root and PATH overrides. Read [runtime and migration](references/runtime-and-migration.md) for the scoped example, inconclusive probes, PATH/config repair, profile moves, or functional verification.

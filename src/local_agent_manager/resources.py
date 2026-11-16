@@ -18,7 +18,7 @@ def describe_resources() -> dict:
     root = resource_root()
     return {
         "root": str(root),
-        "skills": {name: str(root / "skills" / name) for name in ("agent-management", "skill-management")},
+        "skills": {name: str(root / "skills" / name) for name in ("agent-management", "agent-auth-management", "skill-management")},
         "operationContract": str(root / "docs/agent-operation-contract.md"),
         "clientSchema": str(Path(__file__).with_name("skills") / "schemas/client-model.schema.json"),
     }
