@@ -24,6 +24,7 @@ from .mutation_guard import mutation_roots
 from .t3code_store import ID, fail
 
 SCHEMA = 'lam.t3-desktop-residual.v1'
+CACHE_SCHEMA = 'lam.t3-desktop-cache-only.v1'
 LEVEL = 'IndexedDB/t3code_app_0.indexeddb.leveldb'
 BLOB = 'IndexedDB/t3code_app_0.indexeddb.blob'
 FAMILIES = (LEVEL, BLOB)
@@ -378,6 +379,45 @@ def new_plan(source_path, profile, installed):
     return value
 
 
+def new_cache_plan(service, profile, installed, environment, ids):
+    """Explicit desktop-only selection, with no native deletion prerequisite."""
+    from .t3code_store import local_root, identifier
+    from .mutation_guard import mutation_guard, MutationScope
+    service, profile, installed = (local_root(str(Path(p).resolve())) for p in (service, profile, installed))
+    ids = sorted({identifier(i) for i in ids})
+    if not ids:
+        fail('empty_selection')
+    manifest = {'profile_root': str(service), 'environment_id': identifier(environment),
+                'runtime_binaries': [str(Path(installed) / 'T3 Code (Nightly).exe')],
+                'desktop_profiles': [{'root': str(profile), 'runtime_binaries': []}], 'native_stores': []}
+    life = {'root': str(service), 'binding_manifest': manifest, 'lifecycle': lifecycle.freeze(manifest)}
+    with mutation_guard([MutationScope(Path(profile), None)]), lifecycle.hold(life):
+        admission(profile)
+        absent = service_absence(service, ids)
+        proof = runtime_files(installed, service)
+        with isolated_runtime(installed, expected=proof, service=service) as runtime:
+            evidence = freeze(profile, runtime, environment, ids)
+            with prepared(evidence, runtime):
+                pass
+        if source_files(profile) != evidence['files']:
+            fail('desktop_planning_source_changed')
+    value = {'schema_version': CACHE_SCHEMA, 'operation_id': 'desktop-' + uuid.uuid4().hex,
+             'lifecycle': life, 'service_absence': absent, 'evidence': evidence,
+             'runtime_root': str(installed), 'runtime_files': proof, 'helpers': helpers_fingerprint()}
+    value['plan_sha256'] = plan_sha256(value)
+    return value
+
+
+@contextmanager
+def cache_admission(plan):
+    from .mutation_guard import mutation_guard, MutationScope
+    if plan['schema_version'] == CACHE_SCHEMA:
+        with mutation_guard([MutationScope(Path(plan['evidence']['root']), None)]):
+            yield
+    else:
+        yield
+
+
 def new_full_plan(manifest, database, profile):
     """Rehearse IDB on private copies, without acquiring a live writer lock.
 
@@ -432,11 +472,11 @@ def require_bound_state(plan, profile, environment, ids):
     """Allow only a frozen before or cold-verified after for a NEW full plan."""
     root = validate_plan(plan)
     if (root.resolve() != Path(profile).resolve() or plan['evidence']['environment'] != environment
-            or plan['evidence']['ids'] != sorted(ids) or plan['schema_version'] != 'lam.t3-desktop-full.v1'):
+            or plan['evidence']['ids'] != sorted(ids) or plan['schema_version'] not in {'lam.t3-desktop-full.v1', CACHE_SCHEMA}):
         fail('desktop_full_scope_changed')
-    admission(profile, own=plan['operation_id'])
     current = source_files(profile)
     if current == plan['evidence']['files']:
+        admission(profile, own=plan['operation_id'])
         return
     state_path = journal_root(profile, plan['operation_id']) / plan['operation_id'] / 'state.json'
     if state_path.exists():
@@ -445,9 +485,15 @@ def require_bound_state(plan, profile, environment, ids):
         if (state.get('phase') == 'complete' and state.get('plan_sha256') == plan['plan_sha256']
                 and result.get('logical_after_sha256') == plan['evidence']['native']['expectedAfterSha256']
                 and contents(current) == [tuple(i) for i in result.get('files', ())]):
+            # A layout companion's own pending journal does not invalidate
+            # this read-only proof of an unchanged, completed IDB image.
+            # Its writer/verify entry separately admits that exact journal.
+            if plan['schema_version'] != CACHE_SCHEMA:
+                admission(profile, own=plan['operation_id'])
             # This is exact receipt-bound state classification, not a new cold
             # verification. verify_plan still reopens the complete copy natively.
             return
+    admission(profile, own=plan['operation_id'])
     boundary = lifecycle.current_boundary(plan['lifecycle']['root'])
     with isolated_runtime(plan['runtime_root'], expected=plan['runtime_files'],
                           service=boundary['root'] if boundary else None) as runtime:
@@ -463,13 +509,19 @@ def remaining_bound(plan):
 
 
 def validate_plan(plan, authorized=None):
-    if (plan.get('schema_version') not in {SCHEMA, 'lam.t3-desktop-full.v1'} or plan.get('plan_sha256') != plan_sha256(plan)
+    if (plan.get('schema_version') not in {SCHEMA, CACHE_SCHEMA, 'lam.t3-desktop-full.v1'} or plan.get('plan_sha256') != plan_sha256(plan)
             or authorized is not None and authorized != plan['plan_sha256']
             or helpers_fingerprint() != plan['helpers']):
         fail('desktop_plan_or_helpers_changed')
     from .operation_store import validate_operation_id
     validate_operation_id(plan['operation_id'])
     evidence = plan['evidence']
+    if plan['schema_version'] == CACHE_SCHEMA:
+        manifest = plan['lifecycle']['binding_manifest']
+        if (manifest.get('native_stores') != [] or manifest['profile_root'] != plan['lifecycle']['root']
+                or manifest['desktop_profiles'] != [{'root': evidence['root'], 'runtime_binaries': []}]
+                or manifest['runtime_binaries'] != [str(Path(plan['runtime_root']) / 'T3 Code (Nightly).exe')]):
+            fail('desktop_cache_scope_changed')
     if (evidence['environment'] != plan['lifecycle']['binding_manifest']['environment_id']
             or evidence['ids'] != sorted(set(evidence['ids']))
             or any(not ID.fullmatch(i) for i in evidence['ids'])):
@@ -512,7 +564,7 @@ def apply_plan(plan, authorized, *, clients_closed=False, phase_callback=lambda 
     if not clients_closed:
         fail('desktop_clients_closed_required')
     profile = validate_plan(plan, authorized)
-    with mutation_roots([profile]), held_lifecycle(plan['lifecycle']):
+    with mutation_roots([profile]), cache_admission(plan), held_lifecycle(plan['lifecycle']):
         directory = journal_root(profile, plan['operation_id']) / plan['operation_id']
         admission(profile)
         if directory.exists():
@@ -562,7 +614,7 @@ def verify_plan(plan, *, clients_closed=False, recover=False):
     if not clients_closed:
         fail('desktop_clients_closed_required')
     profile = validate_plan(plan)
-    with mutation_roots([profile]), held_lifecycle(plan['lifecycle']):
+    with mutation_roots([profile]), cache_admission(plan), held_lifecycle(plan['lifecycle']):
         directory = journal_root(profile, plan['operation_id']) / plan['operation_id']
         admission(profile, own=plan['operation_id'])
         state = strict_json_load(directory / 'state.json')
@@ -631,6 +683,14 @@ def main():
     p.add_argument('--runtime-root', default=str(default_runtime()))
     p.add_argument('--plan', required=True)
     p.add_argument('--clients-closed', action='store_true', required=True)
+    p = sub.add_parser('plan-cache')
+    p.add_argument('--service-root', required=True)
+    p.add_argument('--profile', required=True)
+    p.add_argument('--environment-id', required=True)
+    p.add_argument('--record-id', action='append', required=True)
+    p.add_argument('--runtime-root', default=str(default_runtime()))
+    p.add_argument('--plan', required=True)
+    p.add_argument('--clients-closed', action='store_true', required=True)
     for command in ('apply', 'status', 'verify', 'recover'):
         p = sub.add_parser(command)
         p.add_argument('--plan', required=True)
@@ -640,8 +700,9 @@ def main():
             p.add_argument('--clients-closed', action='store_true', required=True)
     args = parser.parse_args()
     try:
-        if args.command == 'plan':
-            plan = new_plan(args.source_plan, args.profile, args.runtime_root)
+        if args.command in ('plan', 'plan-cache'):
+            plan = (new_cache_plan(args.service_root, args.profile, args.runtime_root, args.environment_id, args.record_id)
+                    if args.command == 'plan-cache' else new_plan(args.source_plan, args.profile, args.runtime_root))
             write_new_json(Path(args.plan), plan)
             result = {'goal_status': 'ready', 'goal_satisfied': False, 'plan_sha256': plan['plan_sha256'],
                       'operation_id': plan['operation_id'], 'counts': plan['evidence']['native']['counts']}
@@ -659,7 +720,7 @@ def main():
         return 0
     except Exception as exc:
         code = getattr(exc, 'kind', 'desktop_operation_failed')
-        print(json.dumps({'goal_status': 'unknown' if args.command != 'plan' else 'blocked',
+        print(json.dumps({'goal_status': 'blocked' if args.command in ('plan', 'plan-cache') else 'unknown',
                           'goal_satisfied': False, 'blocker_code': code}))
         return 2
 

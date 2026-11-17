@@ -87,7 +87,34 @@ def _require_shared_session(db, session_id, selected):
     return None
 
 
-def closure(db, ids, *, native_ids=()):
+def receipt_closure(db, ids):
+    """Only orphaned, rejected visits; never infer a historical native owner."""
+    ids = tuple(sorted({identifier(i) for i in ids}))
+    if not ids:
+        fail('empty_selection')
+    for table, column in [*((t, 'thread_id') for t in _thread_tables(db)),
+                          ('scheduled_tasks', 'thread_id'), ('orchestration_events', 'stream_id'),
+                          (V2 + 'context_transfers', 'source_thread_id'),
+                          (V2 + 'context_transfers', 'target_thread_id')]:
+        if db.execute(f'SELECT 1 FROM "{table}" WHERE {_where(column, ids)} LIMIT 1', ids).fetchone():
+            fail('receipt_thread_not_absent')
+    selected = rows(db, f'''SELECT command_id,aggregate_kind,aggregate_id,command_type,status
+        FROM orchestration_command_receipts WHERE {_where('aggregate_id', ids)} ORDER BY command_id''', ids)
+    if (len(selected) != len(ids) or {r['aggregate_id'] for r in selected} != set(ids)
+            or any(r['aggregate_kind'] != 'thread' or r['command_type'] != 'thread.visit'
+                   or r['status'] != 'rejected' for r in selected)):
+        fail('orphan_visit_receipts_unqualified')
+    commands = tuple(r['command_id'] for r in selected)
+    return {'counts': {'orchestration_command_receipts': len(selected)},
+            'provider_session_ids': [], 'native_references': [], 'receipt_rows': selected}, [
+        ('orchestration_command_receipts', _where('command_id', commands), commands)]
+
+
+def closure(db, ids, *, native_ids=(), receipt_only=False):
+    if receipt_only:
+        if native_ids:
+            fail('receipt_native_scope_invalid')
+        return receipt_closure(db, ids)
     ids = tuple(sorted({identifier(i) for i in ids}))
     if not ids:
         fail("empty_selection")
@@ -183,8 +210,8 @@ def closure(db, ids, *, native_ids=()):
     return result, statements
 
 
-def _transform(db, ids, *, native_ids=()):
-    owned, statements = closure(db, ids, native_ids=native_ids)
+def _transform(db, ids, *, native_ids=(), receipt_only=False):
+    owned, statements = closure(db, ids, native_ids=native_ids, receipt_only=receipt_only)
     for update in owned.get('shared_session_owner_updates', ()):
         changed = db.execute(f'''UPDATE {V2}provider_sessions SET thread_id=NULL
             WHERE provider_session_id=? AND thread_id=?''',
@@ -199,7 +226,7 @@ def _transform(db, ids, *, native_ids=()):
         fail("relations_inconsistent")
 
 
-def freeze(root, ids, *, native_ids=(), compact=False):
+def freeze(root, ids, *, native_ids=(), compact=False, receipt_only=False):
     ids = sorted({identifier(i) for i in ids})
     path = database_path(root)
     identity = list(frozen_files._identity(path.stat()))
@@ -211,7 +238,7 @@ def freeze(root, ids, *, native_ids=(), compact=False):
         deadline = time.monotonic() + 120
         source.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         _check(source)
-        owned, _ = closure(source, ids, native_ids=native_ids)
+        owned, _ = closure(source, ids, native_ids=native_ids, receipt_only=receipt_only)
         before = logical_hash(source)
         with tempfile.TemporaryDirectory(prefix="larj-t3code-simulation-") as directory:
             with closing(sqlite3.connect(Path(directory) / "state.sqlite")) as simulation:
@@ -219,7 +246,7 @@ def freeze(root, ids, *, native_ids=(), compact=False):
                 simulation.row_factory = sqlite3.Row
                 simulation.execute("PRAGMA foreign_keys=ON")
                 simulation.execute("PRAGMA secure_delete=ON")
-                _transform(simulation, ids, native_ids=native_ids)
+                _transform(simulation, ids, native_ids=native_ids, receipt_only=receipt_only)
                 staged = logical_hash(simulation)
                 simulation.commit()
                 if compact:
@@ -228,12 +255,15 @@ def freeze(root, ids, *, native_ids=(), compact=False):
     if list(frozen_files._identity(database_path(root).stat())) != identity:
         fail("database_replaced")
     return {"schema_version": SCHEMA, "root": str(root), "relative": RELATIVE, "thread_ids": ids,
-        "identity": identity, "before_sha256": before, "staged_sha256": staged, "after_sha256": after, **owned}
+        "identity": identity, "before_sha256": before, "staged_sha256": staged, "after_sha256": after,
+        **({'receipt_only': True} if receipt_only else {}), **owned}
 
 
 def validate(evidence):
     if not isinstance(evidence, dict) or evidence.get("schema_version") != SCHEMA or evidence.get("relative") != RELATIVE:
         fail("database_evidence_invalid")
+    if 'receipt_only' in evidence and evidence['receipt_only'] is not True:
+        fail('database_evidence_invalid')
     ids = evidence.get("thread_ids")
     if not isinstance(ids, list) or not ids or ids != sorted({identifier(i) for i in ids}):
         fail("database_evidence_invalid")
@@ -287,12 +317,14 @@ def apply(evidence, *, phase_callback, truncate_wal=False, compact=False):
             _check(db)
             if logical_hash(db) != evidence["before_sha256"]:
                 fail("database_changed")
-            owned, _ = closure(db, evidence["thread_ids"], native_ids=evidence.get('protected_native_ids', ()))
+            owned, _ = closure(db, evidence["thread_ids"], native_ids=evidence.get('protected_native_ids', ()),
+                               receipt_only=evidence.get('receipt_only', False))
             if owned != {key: evidence[key] for key in owned}:
                 fail("database_closure_changed")
             phase_callback("mutation_started")
             started = True
-            _transform(db, evidence["thread_ids"], native_ids=evidence.get('protected_native_ids', ()))
+            _transform(db, evidence["thread_ids"], native_ids=evidence.get('protected_native_ids', ()),
+                       receipt_only=evidence.get('receipt_only', False))
             if logical_hash(db) != evidence["staged_sha256"]:
                 fail("database_after_state_unverified")
             db.commit()

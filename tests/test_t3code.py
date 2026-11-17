@@ -39,6 +39,21 @@ class T3CodeTests(unittest.TestCase):
         self.assertNotIn(PRIVATE, out.getvalue() + err.getvalue())
         return code, json.loads(out.getvalue())
 
+    def test_receipt_only_rejects_existing_thread_non_visit_success_and_duplicate(self):
+        add_thread(self.db, 'present')
+        for id, kind, status in [('present', 'thread.visit', 'rejected'),
+                                 ('non-visit', 'thread.create', 'rejected'),
+                                 ('accepted', 'thread.visit', 'accepted'),
+                                 ('duplicate', 'thread.visit', 'rejected')]:
+            insert(self.db, 'orchestration_command_receipts', command_id=id, aggregate_kind='thread',
+                   aggregate_id=id, command_type=kind, status=status, error=PRIVATE)
+        insert(self.db, 'orchestration_command_receipts', command_id='second', aggregate_kind='thread',
+               aggregate_id='duplicate', command_type='thread.visit', status='rejected', error=PRIVATE)
+        self.db.commit()
+        for id in ('present', 'non-visit', 'accepted', 'duplicate', 'missing'):
+            with self.subTest(id=id), self.assertRaises(ValueError):
+                database.freeze(self.home, [id], receipt_only=True)
+
     def test_inventory_v1_v2_provider_identity_and_private_fields(self):
         add_thread(self.db, "codex-thread", native="native-1")
         add_thread(self.db, "claude-thread", native="native-2", driver="claudeAgent")
