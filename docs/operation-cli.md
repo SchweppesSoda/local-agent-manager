@@ -361,6 +361,9 @@ and its complete reference closure; it does not send overlapping deletion
 requests. Descendant references remain bound to their own native IDs. A
 child-only selection never implicitly selects its parent and remains subject
 to the existing lineage guards.
+For account-specific homes, the parent binding includes descendants evidenced
+by the native lineage in that same home. Other roots in a shared account home
+need their own Cindy binding.
 
 If a verified native deletion leaves Cindy references, a fresh plan can clear
 those exact references only when a complete inventory proves the native index,
@@ -1316,6 +1319,14 @@ All approved IDs in one Cindy database are guarded as a set and deleted in one
 transaction together with their supported message, FTS, embedding/vector, and
 session-owned dependency rows. Status changes invalidate the frozen evidence.
 Unselected retained rows and unproven schemas remain protected.
+
+A Claude session with a single root-qualified active Cindy reference can be
+deleted together with that Cindy conversation. Select both the full Claude
+session ID and the full Cindy session ID in one operation. The plan freezes
+the native manifest and the exact Cindy row. Apply rechecks the owning Cindy
+processes, row and reference inventory before native file removal. The Cindy
+row is removed only after verified native deletion. Additional references and
+ambiguous native roots block this route.
 
 Cindy automation run history can be selected separately with exact
 `--record-id schedule-run:<full-run-id>` values. This uses the independent

@@ -1278,6 +1278,15 @@ def build_client_inventory(
     catalog = build_session_catalog(proxies)
     errors.extend(catalog.errors)
     home_keys = {_path_key(proxy.codex_home) for proxy in proxies}
+    # Include the native descendants of each Cindy binding in the same home.
+    # Other records in a shared account home still need their own binding.
+    cindy_descendants = {
+        (_path_key(record.codex_home), descendant)
+        for record in catalog.records
+        if selected_client == "cindy"
+        and any(normalize_client(session.platform) == "cindy" for session in record.frontend_sessions)
+        for descendant in record.descendant_thread_ids
+    }
     all_frontend = tuple(
         sorted(
             frontend_rows,
@@ -1293,7 +1302,10 @@ def build_client_inventory(
         if (
             not requested_engines or _record_engine(record) in requested_engines
         )
-        and _record_belongs_to_client(record, selected_client, home_keys)
+        and (
+            _record_belongs_to_client(record, selected_client, home_keys)
+            or (_path_key(record.codex_home), record.thread_id) in cindy_descendants
+        )
     )
     bound_keys = {_frontend_binding_key(bound) for record in records for bound in record.frontend_sessions}
     unmapped = _deduplicate_frontend_sessions(

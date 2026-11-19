@@ -185,6 +185,66 @@ class ClientInventoryTests(unittest.TestCase):
                     fresh = context.session_catalog_builder()
                     self.assertEqual({r.session_id for r in fresh.records}, set(ids))
 
+    def test_cindy_claude_current_binding_requires_exact_pair_and_verified_native_deletion(self):
+        from local_agent_manager.claude_delete import ClaudeDeleteItemResult, ClaudeDeleteResult
+
+        native_id = "11111111-1111-4111-8111-111111111111"
+        frontend_id = "cindy-claude-exact"
+        for outcome in ("complete", "native_blocked", "new_reference"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(strict=True)
+                adapter = self._engine_profile(root, "claude", native_id, frontend_id=frontend_id)
+                service = CleanupService(client_inspector=lambda *_: ())
+                coordinator = OperationCoordinator(service)
+                scope = {"client": "cindy", "engines": ("claude",), "adapters": (adapter,)}
+                native_only = coordinator.plan_operation(
+                    **scope, record_ids=(native_id,), plan_path=root / "native-only.json",
+                )
+                self.assertEqual(native_only["goal_status"], "blocked", native_only)
+                plan_path = root / "paired.json"
+                plan = coordinator.plan_operation(**scope, record_ids=(native_id, frontend_id), plan_path=plan_path)
+                self.assertEqual(plan["goal_status"], "ready", plan)
+                native = next(a for a in plan["actions"] if a["kind"] == "delete_claude_session")
+                frontend = next(a for a in plan["actions"] if a["kind"] == "delete_frontend_session")
+                self.assertEqual(coordinator._frontend_native_dependencies(plan),
+                                 {frontend["action_id"]: frozenset({native["action_id"]})})
+
+                def apply():
+                    # A fresh coordinator exercises the CLI's cold revalidation.
+                    return OperationCoordinator(service).apply_operation(
+                        operation_id=plan["operation_id"], plan_path=plan_path,
+                        plan_sha256=plan["plan_sha256"], clients_closed=True, adapters=(adapter,),
+                    )
+
+                if outcome == "new_reference":
+                    with closing(sqlite3.connect(adapter.database)) as db:
+                        db.execute("INSERT INTO sessions (id,sdk_session_id,status,agent_kind) VALUES (?,?,?,?)",
+                                   ("other-session", native_id, "active", "cc"))
+                        db.commit()
+                    result = apply()
+                    self.assertFalse(result["mutation_started"], result)
+                elif outcome == "native_blocked":
+                    def blocked(selected, **_):
+                        action, = selected.actions
+                        return ClaudeDeleteResult((ClaudeDeleteItemResult(
+                            action.action_id, action.config_dir, action.session_id, "not_deleted",
+                        ),))
+                    with patch("local_agent_manager.claude_delete.execute_claude_delete", blocked):
+                        result = apply()
+                else:
+                    result = apply()
+                self.assertEqual(result["goal_status"] == "complete", outcome == "complete", result)
+                if outcome == "complete":
+                    verified = OperationCoordinator(service).verify_operation(
+                        operation_id=plan["operation_id"], plan_path=plan_path, adapters=(adapter,),
+                    )
+                    self.assertTrue(verified["goal_satisfied"], verified)
+                with closing(sqlite3.connect(adapter.database)) as db:
+                    row = db.execute("SELECT sdk_session_id FROM sessions WHERE id=?", (frontend_id,)).fetchone()
+                self.assertEqual(row, None if outcome == "complete" else (native_id,))
+                transcripts = list((root / "claude-home").rglob(f"{native_id}.jsonl"))
+                self.assertEqual(bool(transcripts), outcome != "complete")
+
     def test_default_inventory_finds_native_sessions_without_frontend_rows(self):
         for engine in ("pi", "claude"):
             with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:

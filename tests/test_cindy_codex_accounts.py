@@ -17,6 +17,7 @@ from unittest.mock import patch
 from local_agent_manager.adapters import CindyAdapter, NativeIntegrityAdapter
 from local_agent_manager.adapters.base import AdapterScanError
 from local_agent_manager.cindy_codex_accounts import codex_account_bindings
+from local_agent_manager.client_inventory import build_client_inventory
 from local_agent_manager.inventory import build_session_catalog
 from local_agent_manager.targeted_guard import TargetedReferenceGuard, TargetedGuardError
 from local_agent_manager.frontend_reference_cleanup import FrontendReferenceError
@@ -82,6 +83,33 @@ class CindyCodexAccountTests(unittest.TestCase):
         self.assertEqual({row.thread_id: row.codex_home for row in rows},
                          {"system": self.user / ".codex",
                           "independent": self.user / f".codex-{self.account_id}"})
+
+    def test_account_bound_parent_keeps_its_complete_native_cascade(self):
+        self.write_bindings({"openai:native:parent": self.binding(self.account_id)})
+        create_cindy_database(self.database, [
+            {"id": "task", "sdk_session_id": "parent", "agent_kind": "codex", "status": "active"},
+        ])
+        home = self.user / f".codex-{self.account_id}"
+        rows = []
+        for thread_id, parent in (("parent", None), ("child", "parent"),
+                                  ("grandchild", "child"), ("unrelated", None)):
+            source = {"subagent": {"thread_spawn": {"parent_thread_id": parent}}} if parent else "app-server"
+            path = write_rollout(home, thread_id, originator="cindy", source=source)
+            rows.append({"id": thread_id, "rollout_path": str(path), "source": json.dumps(source)})
+        create_thread_index(home, rows)
+
+        adapter = self.adapter()
+        inventory = build_client_inventory((adapter,), client="cindy", engines=("codex",))
+        self.assertEqual({record.thread_id for record in inventory.records}, {"parent", "child", "grandchild"})
+        plan = OperationCoordinator(CleanupService()).plan_operation(
+            client="cindy", engines=("codex",), record_ids=("parent",),
+            adapters=(adapter,), plan_path=self.root / "cascade-plan.json",
+        )
+        self.assertEqual(plan["goal_status"], "ready", plan)
+        native, reference = plan["actions"]
+        self.assertEqual(native["kind"], "delete_conversation")
+        self.assertEqual(set(native["impact"]["affected_thread_ids"]), {"parent", "child", "grandchild"})
+        self.assertEqual(reference["kind"], "remove_frontend_reference")
 
     def test_off_home_guard_protects_official_native_thread(self):
         self.write_bindings({"openai:native:thread": self.binding("default")})
