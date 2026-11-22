@@ -33,6 +33,8 @@ SUMMARY = 'conversation_summaries.db'
 CACHE = 'cache/last_conversations.json'
 CONTRACT = json.loads(files(__package__).joinpath('antigravity_cli_schema.json').read_text(encoding='utf-8'))
 SEARCH_VERSION_SQL = 'CREATE TABLE search_schema_version (version INTEGER PRIMARY KEY)'
+PARENTS_SQL = ('CREATE TABLE conversation_parents (conversation_id TEXT PRIMARY KEY, '
+               'parent_id TEXT NOT NULL) WITHOUT ROWID')
 SEARCH_SQL = '''CREATE VIRTUAL TABLE conversations_fts USING fts5(
     conversation_id UNINDEXED,
     chunk_index UNINDEXED,
@@ -56,7 +58,8 @@ SIDECARS = ('', '-wal', '-shm', '-journal')
 # These are preserved, never authorized by a conversation ID. Unknown top-level
 # storage (including legacy .pb histories) requires a new format qualification.
 PRESERVED = {'installation_id', 'jetski_state.pbtxt', 'settings.json', 'config.json', 'last_check.timestamp',
-             'builtin', 'skills', 'implicit', 'log', 'crashes', 'cache', 'bin', 'mcp', 'updater'}
+             'builtin', 'skills', 'implicit', 'log', 'crashes', 'cache', 'bin', 'mcp', 'updater',
+             'persistent_terminals'}
 CONTROL = {'.local-agent-record-janitor', '.local-agent-manager'}
 _ticket = ContextVar('antigravity_cli_writer_ticket', default=None)
 
@@ -148,6 +151,9 @@ def _check(db, contract):
     objects = _objects(db)
     search = contract is CONTRACT and any(row[1] in {'search_schema_version', 'conversations_fts'} for row in objects)
     expected = _search_contract() if search else contract
+    if contract is CONTRACT and any(row[1] == 'conversation_parents' for row in objects):
+        expected = {'objects': [*expected['objects'],
+                                ['table', 'conversation_parents', 'conversation_parents', PARENTS_SQL]]}
     if not schema_compatible(objects, expected):
         fail('database_schema_unqualified')
     if [tuple(r) for r in db.execute('PRAGMA quick_check')] != [('ok',)]:
@@ -216,6 +222,10 @@ def _rows(db):
         if row['battle_id'] or row['winning_conversation_id'] or row['group_id']:
             fail('summary_group_relationship_unqualified')
         rows[sid] = row
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='conversation_parents'").fetchone():
+        for sid, parent in db.execute('SELECT conversation_id,parent_id FROM conversation_parents'):
+            if sid not in rows or rows[sid]['parent_conversation_id'] != parent or parent not in rows:
+                fail('summary_parent_unresolved')
     # A parent column is a known relationship, never inferred from titles,
     # matching workspaces, or substring matches in a transcript.
     for sid, row in rows.items():
@@ -253,6 +263,8 @@ def _closure(rows, requested, *, absent=()):
 
 def _summary_transform(db, ids):
     db.execute('PRAGMA secure_delete=ON')
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='conversation_parents'").fetchone():
+        db.executemany('DELETE FROM conversation_parents WHERE conversation_id=?', [(sid,) for sid in ids])
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='conversations_fts' AND type='table'").fetchone():
         db.executemany('DELETE FROM conversations_fts WHERE conversation_id=?', [(sid,) for sid in ids])
         # Regenerate postings from the preserved content to remove stale terms.
@@ -269,6 +281,10 @@ def _summary_transform(db, ids):
 def _root_names(root):
     names = []
     for path in root.iterdir():
+        if path.name == 'persistent_terminals':
+            ff._plain(path.lstat(), directory=True)
+            if any(path.iterdir()):
+                fail('persistent_terminal_ownership_unqualified')
         if path.name in CONTROL:
             ff._plain(path.lstat(), directory=True)
         else:

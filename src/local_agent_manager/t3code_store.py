@@ -123,11 +123,21 @@ def database_path(root):
     return path
 
 
-def qualify(db):
+def qualify(db, *, reference_guard_only=False):
     objects = [list(row) for row in db.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")]
-    if objects not in SCHEMA_CONTRACTS:
-        fail("schema_unverified")
+    if objects in SCHEMA_CONTRACTS:
+        return
+    if reference_guard_only:
+        # Read every retained table including the new auth and issue-tracker
+        # columns. Secondary indexes carry no independent conversation rows.
+        variant = CONTRACT['reference_guard_variant']
+        versions = [CONTRACT['version'], *(v['version'] for v in CONTRACT['compatible_variants'])]
+        base = SCHEMA_CONTRACTS[versions.index(variant['base_version'])]
+        expected = {(r[0], r[1]): r for r in (*base, *variant['objects']) if r[0] != 'index'}
+        if {(r[0], r[1]): r for r in objects if r[0] != 'index'} == expected:
+            return
+    fail("schema_unverified")
 
 
 def rows(db, query, args=()):

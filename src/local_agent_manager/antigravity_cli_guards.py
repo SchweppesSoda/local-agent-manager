@@ -1,4 +1,4 @@
-"""Read-only protection of known T3/Paseo native handles and restore copies.
+"""Read-only protection of known Cindy, T3 and Paseo native handles and restore copies.
 
 An ID match is sufficient to block deletion, never sufficient to assign a
 native home or authorize removal of a frontend record. Deleted/archived
@@ -40,17 +40,20 @@ def read_source(root, relative, **options):
     return proof, raw
 
 
-def locations(*, t3code_roots=(), paseo_roots=()):
+def locations(*, t3code_roots=(), paseo_roots=(), cindy_databases=()):
+    from .cindy_agy import databases
     from .t3code_store import default_root as t3_default
     from .paseo_store import default_root as paseo_default
     # Explicit roots add coverage; they cannot replace default/env protection.
     groups = {'t3code': [Path.home()/'.t3', t3_default(), *map(Path, t3code_roots)],
               'paseo': [Path.home()/'.paseo', paseo_default(), *map(Path, paseo_roots)]}
-    return [{'client': client, 'root': str(path)} for client, paths in groups.items()
-            for _, path in sorted({canonical_path(p): p for p in paths}.items())]
+    return ([{'client': client, 'root': str(path)} for client, paths in groups.items()
+             for _, path in sorted({canonical_path(p): p for p in paths}.items())]
+            + [{'client': 'cindy', 'root': str(path.parent), 'database': path.name}
+               for path in databases(cindy_databases)])
 
 
-def freeze(sources, ids, *, joint=None):
+def freeze(sources, ids, *, joint=None, cindy_sessions=()):
     """Allow only the exact frozen frontend transform to remove protection.
 
     Scan its private after-image, including every unselected row/restore
@@ -82,7 +85,10 @@ def freeze(sources, ids, *, joint=None):
             else:
                 from .paseo_cleanup_files import remaining
             remaining(joint['files'])
-        if source['client'] == 't3code':
+        if source['client'] == 'cindy':
+            from .cindy_agy import inspect
+            item['files'] = inspect(source, ids, cindy_sessions, read_source)
+        elif source['client'] == 't3code':
             from .t3code_store import RELATIVE, qualify
             from .t3code_references import require_no_references
             from .t3code_cleanup_files import _names, _require_known_database_family
@@ -92,7 +98,7 @@ def freeze(sources, ids, *, joint=None):
             if any(d.get('entries') for d in item['directories'][1:]):
                 fail('t3code_recovery_source_unqualified')
             with private_database(root, RELATIVE, reader=read_source) as (db, proofs, _):
-                qualify(db)
+                qualify(db, reference_guard_only=not owned)
                 if owned:
                     from .t3code_database import _transform
                     from .office_database import logical_hash
@@ -142,13 +148,23 @@ def freeze(sources, ids, *, joint=None):
     return result
 
 
-def recheck(evidence, ids, *, joint=None):
-    sources = [{'client': s['client'], 'root': s['root']} for s in evidence]
+def recheck(evidence, ids, *, joint=None, cindy_sessions=(), frontend_removed=False):
+    sources = [{key: s[key] for key in ('client', 'root', 'database') if key in s} for s in evidence]
     # A newly selected default profile also becomes a protection source.
-    expected = {(s['client'], canonical_path(s['root'])) for s in sources}
-    if any((s['client'], canonical_path(s['root'])) not in expected for s in locations()):
+    databases = [Path(s['root'])/s['database'] for s in sources if s['client'] == 'cindy']
+    if any(s not in sources for s in locations(cindy_databases=databases)):
         fail('guard_discovery_changed')
-    if freeze(sources, ids, joint=joint) != evidence:
+    current = freeze(sources, ids, joint=joint, cindy_sessions=() if frontend_removed else cindy_sessions)
+    if frontend_removed:
+        owned = {canonical_path(row['database']) for row in cindy_sessions}
+        for before, after in zip(evidence, current):
+            if after['client'] == 'cindy' and canonical_path(Path(after['root'])/after['database']) in owned:
+                if before['files'][0]['identity'] != after['files'][0]['identity']:
+                    fail('cindy_database_replaced')
+                # The selected SQLite writer verified its own row/dependency closure.
+                # Only its pages and sidecars may now differ.
+                after['files'] = before['files']
+    if current != evidence:
         fail('guard_source_changed')
 
 
@@ -171,7 +187,8 @@ def require_closed(evidence, census=None):
         name = str(row.get('name') or '').casefold()
         if not name:
             fail('frontend_census_unverified')
-        if name.startswith(('t3 code', 't3code', 'paseo')):
+        if name.startswith(('t3 code', 't3code', 'paseo')) or (
+                name.startswith(('cindy', 'xdt-maker')) and any(s['client'] == 'cindy' for s in evidence)):
             fail('frontend_writer_running')
         if name in _RUNTIMES:
             command = row.get('command')

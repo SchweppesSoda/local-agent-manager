@@ -156,6 +156,7 @@ def freeze_guards(evidence, client, adapters):
     if not targets(evidence):
         return
     roots = {c: [] for c in ('t3code', 'paseo')}
+    cindy_databases = []
     roots[client].append(evidence['root'])
     for adapter in adapters:
         # Include explicitly supplied profiles as well as default discovery.
@@ -163,7 +164,10 @@ def freeze_guards(evidence, client, adapters):
         descriptor = describe_adapter(adapter)
         if descriptor.client in roots and descriptor.profile_root:
             roots[descriptor.client].append(descriptor.profile_root)
-    sources = guards.locations(t3code_roots=roots['t3code'], paseo_roots=roots['paseo'])
+        if descriptor.client == 'cindy':
+            cindy_databases.extend(descriptor.sources)
+    sources = guards.locations(t3code_roots=roots['t3code'], paseo_roots=roots['paseo'],
+                               cindy_databases=cindy_databases)
     ids = sorted({sid for t in targets(evidence) for sid in t['ids']})
     evidence['cli_guards'] = guards.freeze(sources, ids, joint=protection(evidence, client))
 

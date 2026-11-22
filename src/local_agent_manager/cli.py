@@ -1515,6 +1515,13 @@ def _run_operation_backend(
         if bool(getattr(args, "progress", False))
         else None
     )
+    agy_options = {}
+    if (scope or {}).get('client') in {'antigravity', 'cindy'}:
+        agy_options = {key: getattr(args, key) for key in
+                       ('antigravity_root', 'antigravity_bin', 'cindy_root', 'cindy_db', 'appdata')
+                       if getattr(args, key, None)}
+        if agy_options or (scope or {}).get('client') == 'antigravity':
+            agy_options.update(t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
 
     try:
         if verb == "plan":
@@ -1548,9 +1555,7 @@ def _run_operation_backend(
                 from .t3code_store import default_root
                 operation_kwargs["scope"] = scope
                 operation_kwargs["t3code_roots"] = tuple(args.t3code_root or (default_root(),))
-            if (scope or {}).get('client') == 'antigravity':
-                operation_kwargs.update(antigravity_root=args.antigravity_root, antigravity_bin=args.antigravity_bin,
-                                        t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
+            operation_kwargs.update(agy_options)
             if getattr(args, "magpie_bindings", None):
                 operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.plan_operation(**operation_kwargs)
@@ -1587,6 +1592,8 @@ def _run_operation_backend(
                 operation_kwargs['antigravity_root'] = args.antigravity_root
             if args.antigravity_bin:
                 operation_kwargs['antigravity_bin'] = args.antigravity_bin
+            operation_kwargs.update({key: getattr(args, key) for key in ('cindy_db', 'cindy_root', 'appdata')
+                                     if getattr(args, key, None)})
             if getattr(args, "magpie_bindings", None):
                 operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.apply_operation(**operation_kwargs)
@@ -1633,9 +1640,7 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
-            if (scope or {}).get('client') == 'antigravity':
-                operation_kwargs.update(antigravity_root=args.antigravity_root, antigravity_bin=args.antigravity_bin,
-                                        t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
+            operation_kwargs.update(agy_options)
             if getattr(args, "magpie_bindings", None):
                 operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.run_operation(**operation_kwargs)

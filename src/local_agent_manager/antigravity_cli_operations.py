@@ -4,7 +4,7 @@ import inspect
 from pathlib import Path
 import uuid
 
-from . import antigravity_cli_cleanup as native, antigravity_cli_guards as guards
+from . import antigravity_cli_cleanup as native, antigravity_cli_guards as guards, cindy_agy
 from .mutation_guard import MutationScope, mutation_guard, mutation_roots
 from .operation_store import OperationStore, plan_sha256, strict_json_load, write_new_json
 from .record_identity import canonical_path
@@ -50,12 +50,12 @@ def _receipt(store, expected_hash=None):
 
 def _scope(options):
     source = options.get('scope') or options
-    if (source.get('client') != 'antigravity' or not source.get('record_ids')
+    if (source.get('client') not in {'antigravity', 'cindy'} or not source.get('record_ids')
             or source.get('projects') or source.get('all_projects')
             or set(source.get('engines', ())) - {'antigravity'}
             or source.get('paseo_only') or source.get('t3code_only')):
         native.fail('exact_session_scope_required')
-    return {'client': 'antigravity', 'record_ids': sorted({native.native_id(s) for s in source['record_ids']}),
+    return {'client': source['client'], 'record_ids': sorted({native.native_id(s) for s in source['record_ids']}),
             'projects': [], 'all_projects': False, 'engines': ['antigravity']}
 
 
@@ -83,21 +83,42 @@ def plan(options):
         native.fail('explicit_runtime_required')
     if options.get('operation_home') and canonical_path(options['operation_home']) != canonical_path(root):
         native.fail('journal_requires_native_root')
-    evidence = native.freeze(root, scope['record_ids'], binary=binary)
-    sources = guards.locations(t3code_roots=options.get('t3code_roots', ()), paseo_roots=options.get('paseo_roots', ()))
-    protection = guards.freeze(sources, evidence['ids'])
+    requested = scope['record_ids']
+    sessions = []
+    extra = cindy_agy.explicit_databases(options)
+    guard_databases = set(extra or ())
+    if options.get('cindy_db') and (options.get('cindy_root') or options.get('appdata')):
+        guard_databases.update(cindy_agy.explicit_databases({**options, 'cindy_db': None}))
+    sources = guards.locations(t3code_roots=options.get('t3code_roots', ()), paseo_roots=options.get('paseo_roots', ()),
+                               cindy_databases=guard_databases)
+    if scope['client'] == 'cindy':
+        if not options.get('antigravity_root') or Path(binary).name.casefold() != 'agy.exe':
+            native.fail('cindy_explicit_cli_store_and_runtime_required')
+        selection = [s for s in sources if s['client'] == 'cindy' and
+                     (extra is None or Path(s['root'])/s['database'] in extra)]
+        sessions = cindy_agy.select(selection, requested)
+        requested = [s['expected_sdk_session_id'] for s in sessions]
+    evidence = native.freeze(root, requested, binary=binary)
+    dependency_keys = cindy_agy.dependency_keys(sessions) if sessions else None
+    protection = guards.freeze(sources, evidence['ids'], cindy_sessions=sessions)
     _progress(options, 'inventory', 'completed', counts={'selected_session_count': len(evidence['ids'])})
     operation_id = options.get('operation_id') or 'antigravity-'+uuid.uuid4().hex
     store = OperationStore(root, operation_id)
     path = Path(options['plan_path']) if options.get('plan_path') else store.plan_path
     action = {'kind': KIND, 'action_id': KIND+':'+operation_id,
               'thread_id': evidence['requested_ids'][0], 'affected_thread_ids': evidence['ids']}
+    if sessions:
+        action['cindy_database'] = sessions[0]['database']
+        action['cindy_session_ids'] = scope['record_ids']
     document = {'schema_version': 'larj.child-operation-plan.v1', 'document_type': 'operation_plan',
                 'writer': WRITER, 'operation_id': operation_id, 'scope': scope,
                 'mutation_family': KIND,
                 'target': {'codex_home': str(root)}, 'actions': [action],
                 'authorization': {'blockers': []}, 'antigravity_cli_evidence': evidence,
                 'guard_sources': protection, 'plan_path': str(path)}
+    if sessions:
+        document['cindy_sessions'] = sessions
+        document['cindy_dependency_keys'] = dependency_keys
     document['plan_sha256'] = plan_sha256(document)
     if path != store.plan_path:
         write_new_json(path, document)
@@ -124,13 +145,29 @@ def _load(path, options):
     root = native.validate(document['antigravity_cli_evidence'])
     if canonical_path(document['target']['codex_home']) != canonical_path(root):
         native.fail('journal_binding_changed')
-    if _scope(document) != document['scope'] or document['scope']['record_ids'] != document['antigravity_cli_evidence']['requested_ids']:
+    sessions = document.get('cindy_sessions', [])
+    requested = document['scope']['record_ids']
+    if sessions:
+        if (document['scope']['client'] != 'cindy' or sorted(s['session_id'] for s in sessions) != requested
+                or len({s['database'] for s in sessions}) != 1
+                or document['actions'][0].get('cindy_database') != sessions[0]['database']
+                or document['actions'][0].get('cindy_session_ids') != requested):
+            native.fail('cindy_scope_changed')
+        extra = cindy_agy.explicit_databases(options)
+        if extra is not None and Path(sessions[0]['database']) not in extra:
+            native.fail('cindy_scope_changed')
+        requested = sorted({s['expected_sdk_session_id'] for s in sessions})
+    elif document['scope']['client'] == 'cindy':
+        native.fail('cindy_scope_changed')
+    if _scope(document) != document['scope'] or requested != document['antigravity_cli_evidence']['requested_ids']:
         native.fail('scope_changed')
     if options.get('antigravity_root') and canonical_path(options['antigravity_root']) != canonical_path(root):
         native.fail('root_changed')
     supplied_scope = options.get('scope') or {}
     for key, value in supplied_scope.items():
         value = list(value) if isinstance(value, tuple) else value
+        if key in {'record_ids', 'engines'} and isinstance(value, list):
+            value = sorted(set(value))
         if value and value != document['scope'].get(key):
             native.fail('scope_changed')
     store = OperationStore(root, document['operation_id'])
@@ -167,7 +204,10 @@ def _result(document, state, goal, code=None):
             'goal_status': goal, 'goal_satisfied': complete, 'modified': bool(state.get('modified')),
             'mutation_started': bool(state.get('mutation_started')), 'scope': document['scope'],
             'blockers': [] if code is None else [{'blocker_code': code}],
-            'counts': {'selected_session_count': len(document['antigravity_cli_evidence']['ids'])},
+            'counts': {'selected_session_count': len(document['antigravity_cli_evidence']['ids']),
+                       **({'verified_native_sessions': state.get('verified_native_sessions', 0),
+                           'verified_cindy_sessions': state.get('verified_cindy_sessions', 0)}
+                          if document.get('cindy_sessions') else {})},
             'verification': {'all_satisfied': complete, 'verified_action_ids': [a['action_id'] for a in document['actions']] if complete else []},
             'final_scope_verification': {'all_satisfied': complete},
             'verification_scope': 'qualified_local_cli_store_and_known_frontend_references'}
@@ -183,7 +223,11 @@ def execute(document, store, options):
         return receipt
     evidence = document['antigravity_cli_evidence']
     root = Path(evidence['root'])
-    with mutation_guard((MutationScope(root, None),), store=store), store.mutation_lock():
+    sessions = document.get('cindy_sessions', [])
+    scopes = [MutationScope(root, None)]
+    if sessions:
+        scopes.append(MutationScope(Path(sessions[0]['database']).parent, None))
+    with mutation_guard(scopes, store=store), store.mutation_lock():
         state = _state(document)
         store.write_state(state)
         def phase(event):
@@ -193,14 +237,37 @@ def execute(document, store, options):
             store.append_event({'event': event}, state_updates=state)
             _progress(options, event, 'completed', operation_id=document['operation_id'])
         try:
-            guards.recheck(document['guard_sources'], evidence['ids'])
+            guards.recheck(document['guard_sources'], evidence['ids'], cindy_sessions=sessions)
             guards.require_closed(document['guard_sources'], options.get('census'))
             with HeldFiles() as held, native.execution_scope(evidence):
                 guards.acquire(document['guard_sources'], held)
+                if sessions:
+                    with guards.leased_reads(document['guard_sources'], held):
+                        guards.recheck(document['guard_sources'], evidence['ids'], cindy_sessions=sessions)
                 guards.require_closed(document['guard_sources'], options.get('census'))
                 native.apply(evidence, phase_callback=phase,
                              recovery_dir=store.directory/'native-recovery', census=options.get('census'))
-            guards.recheck(document['guard_sources'], evidence['ids'])
+            if sessions:
+                state['verified_native_sessions'] = len(evidence['ids'])
+                phase('native_sessions_verified')
+                with HeldFiles() as runtime:
+                    # Keep other frontend namespaces fenced while SQLite takes
+                    # a write transaction on the one approved Cindy database.
+                    others = [s for s in document['guard_sources'] if s['client'] != 'cindy'
+                              or Path(s['root'])/s['database'] != Path(sessions[0]['database'])]
+                    guards.acquire(others, runtime)
+                    runtime.acquire(Path(evidence['runtime']['root']), evidence['runtime']['file'])
+                    native.require_closed(evidence, options.get('census'))
+                    if native.remaining(evidence):
+                        native.fail('delete_unverified')
+                    with guards.leased_reads(others, runtime):
+                        cindy_agy.remove(document, options.get('census'), phase)
+                    if cindy_agy.remaining(document):
+                        native.fail('cindy_delete_unverified')
+                state['verified_cindy_sessions'] = len(sessions)
+                phase('cindy_sessions_verified')
+            guards.recheck(document['guard_sources'], evidence['ids'], cindy_sessions=sessions,
+                           frontend_removed=bool(sessions))
             goal, code = 'complete', None
         except Exception as exc:
             goal = 'unknown' if state['mutation_started'] else 'blocked'
@@ -228,8 +295,18 @@ def query(document, store, *, verify):
             return prior or _result(document, state, 'unknown', 'antigravity_cli_not_applied')
         evidence = document['antigravity_cli_evidence']
         try:
-            guards.recheck(document['guard_sources'], evidence['ids'])
+            sessions = document.get('cindy_sessions', [])
+            frontend_count = cindy_agy.remaining(document) if sessions else 0
+            frontend_done = bool(sessions and not frontend_count and state['mutation_started'])
+            guards.recheck(document['guard_sources'], evidence['ids'], cindy_sessions=sessions,
+                           frontend_removed=frontend_done)
             count = native.remaining(evidence)
+            if sessions:
+                if not count and state['mutation_started']:
+                    state['verified_native_sessions'] = len(evidence['ids'])
+                if frontend_done:
+                    state['verified_cindy_sessions'] = len(sessions)
+                count += frontend_count
             if not count:
                 native.discard_recovery(evidence, store.directory/'native-recovery')
             goal = 'complete' if not count else 'unknown' if state['mutation_started'] else 'blocked'
@@ -275,7 +352,10 @@ def route(verb):
                             selected = 'antigravity'
                     except (ValueError, OSError, RuntimeError):
                         pass
-            if selected != 'antigravity':
+            source = options.get('scope') or options
+            cindy_route = selected == 'cindy' and (options.get('antigravity_root') or options.get('antigravity_bin')
+                                                   or 'antigravity' in source.get('engines', ()))
+            if selected != 'antigravity' and not cindy_route:
                 return function(self, *args, **kwargs)
             store = None
             try:

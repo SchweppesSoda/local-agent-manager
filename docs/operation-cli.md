@@ -999,6 +999,30 @@ Windows CLI 的 `cli.log` 支持指向 `log/` 直接子文件的符号链接，�
 可写共享文件仍禁止硬链接。Skills 目录内的链接仅核对链接身份与目标字符串，不跟随到
 共享 Skill 源，也不删除链接或目标。
 
+## Cindy Agy ACP 会话删除
+
+Windows 上的 Cindy 0.1.143 会为本机 Antigravity 插件会话保存精确的 provider ID 和
+原生 `sdk_session_id`。用 `records --client cindy --engine antigravity --json` 查看
+`record_id`（Cindy 会话 ID）和 `native_thread_id`（Agy 会话 ID）。
+从插件设置确认实际使用的 `agy.exe`，并独立核实该启动用户的 CLI 原生数据目录。
+插件支持本机和跨设备执行。[插件的启动与检测规则](https://github.com/makecindy/cindy-antigravity-plugin#cindy-启动-agy-的方式)
+
+```powershell
+local-agent-manager delete plan --client cindy --engine antigravity --record-id '<完整 Cindy 会话 UUID>' --antigravity-bin 'C:\Apps\agy.exe' --antigravity-root 'D:\Profile\.gemini\antigravity-cli' --out plan.json --json
+local-agent-manager delete apply --operation-id '<计划返回的 ID>' --plan plan.json --authorized-plan-sha256 '<计划返回的 SHA256>' --clients-closed --json
+local-agent-manager operation verify --operation-id '<计划返回的 ID>' --plan plan.json --json
+```
+
+可重复选择同一 Cindy 数据库的会话。计划中的 `cindy_session_ids` 和 `selected_ids`
+分别列出前端选择和原生删除范围，后者包含已验证的原生子会话。执行前关闭 Cindy、
+Agy 和共用这些数据的客户端。原生删除通过核验后才删除 Cindy 会话、消息及索引。
+状态和复核结果分别报告两层已验证的数量。
+
+当前支持 `agent_kind=acp`、`provider_id=acp-plugin:_ns__local__agy-acp:agy`
+且有本地桌面执行证据的记录。远程绑定、所选会话仍有历史引擎绑定、其他会话仍引用
+所选原生记录或其子会话时，计划会报告阻挡。新建计划要求目标仍存在于指定原生库。
+单独删除 Agy 原生记录以及 T3/Paseo 联合清理也检查已发现的 Cindy 当前与历史引用。
+
 ## 独立 Antigravity CLI 原生清理
 
 摘要库中的已知 `conversations_fts` 全文索引与 `search_schema_version` 可参与清理。

@@ -77,9 +77,12 @@ class ClientTarget:
     references: tuple[ClientReference, ...] = ()
     relations: tuple[RelationEvidence, ...] = ()
     record_metadata: Mapping[str, Any] = field(default_factory=dict)
+    frontend_selection_id: str | None = None
 
     @property
     def record_id(self) -> str | None:
+        if self.frontend_selection_id is not None:
+            return self.frontend_selection_id
         return self.record_key.record_id if self.record_key else self.native_thread_id
 
     @property
@@ -92,6 +95,8 @@ class ClientTarget:
             values.extend((self.record_key.value, self.record_key.record_id))
         if self.native_thread_id:
             values.append(self.native_thread_id)
+        if self.frontend_selection_id:
+            values.append(self.frontend_selection_id)
         values.extend(self.frontend_reference_ids)
         values.extend(self.frontend_binding_keys)
         return tuple(dict.fromkeys(value for value in values if value))
@@ -2275,6 +2280,7 @@ def _target_from_frontend(
         record_key=record_key,
         project_key=project,
         native_thread_id=session.thread_id,
+        frontend_selection_id=session.platform_session_id if (client, engine) == ("cindy", "antigravity") else None,
         frontend_reference_ids=(f"{session.platform}:{session.platform_session_id}",),
         frontend_binding_keys=(_frontend_binding_key(session),),
         classification=(RecordClassification.UNVERIFIED

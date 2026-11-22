@@ -73,7 +73,7 @@ class CliFormatTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='lam-agy-test-')
         self.base = Path(self.temp.name).resolve()
         self.root, self.binary = fixture(self.base)
-        self.patch = patch.dict(os.environ, {'LOCALAPPDATA': str(self.base/'local'),
+        self.patch = patch.dict(os.environ, {'LOCALAPPDATA': str(self.base/'local'), 'APPDATA': str(self.base/'roaming'),
             'XDG_STATE_HOME': str(self.base/'state'), 'T3CODE_HOME': str(self.base/'no-t3'),
             'PASEO_HOME': str(self.base/'no-paseo')})
         self.patch.start()

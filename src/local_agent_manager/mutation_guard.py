@@ -281,7 +281,10 @@ def scopes_for_frozen_plan(plan: Mapping[str, Any]) -> tuple[MutationScope, ...]
     for action in actions:
         item_ids = action_target_ids(action)
         ids = None if ids is None or item_ids is None else ids | item_ids
-    return _merge_scopes((MutationScope(root, ids), *_joint_cli_scopes(actions)))
+    scopes = [MutationScope(root, ids), *_joint_cli_scopes(actions)]
+    if plan.get('writer') == 'antigravity-cli' and plan.get('cindy_sessions'):
+        scopes.append(MutationScope(Path(plan['cindy_sessions'][0]['database']).parent, None))
+    return _merge_scopes(scopes)
 
 
 def scopes_for_manual_plan(plan: Any) -> tuple[MutationScope, ...]:

@@ -29,7 +29,7 @@ from .base import (
 class CindyAdapter(FrontendAdapter):
     name = "cindy"
     supports_all_backends = True
-    inventory_engines = ("codex", "pi", "claude")
+    inventory_engines = ("codex", "pi", "claude", "antigravity")
 
     def __init__(
         self,

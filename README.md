@@ -292,7 +292,7 @@ T3、Paseo 和独立 Antigravity CLI 的写入使用已验证的 Windows 路径�
 | 客户端 | Codex | Claude | Pi | Antigravity |
 |---|---|---|---|---|
 | T3 Code | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线删除、已验证托管 ACP 或 CLI 联合清理 |
-| Cindy | 完整本地清理 | 完整本地清理 | 完整本地清理 | —（客户端尚未接入） |
+| Cindy | 完整本地清理 | 完整本地清理 | 完整本地清理 | [本机 Agy ACP 插件会话及原生记录](docs/operation-cli.md#cindy-agy-acp-会话删除) |
 | 原生客户端／CLI | Codex 本地历史清理 | Claude 本地历史清理 | Pi JSONL 清理 | Windows 原生会话清理 |
 | Paseo | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线删除、已验证内置插件的 CLI 联合清理 |
 | WorkBuddy | — | — | — | — |

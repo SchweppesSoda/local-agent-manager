@@ -77,9 +77,12 @@ def metadata_after(raw, ids, summaries):
         native_id(sid)
         if (sid not in summaries or not isinstance(record, dict)
                 or set(record) != {'summary', 'is_internal', 'last_modified_time'}
-                or not isinstance(record['summary'], dict) or set(record['summary']) != fields):
+                or not isinstance(record['summary'], dict)
+                or set(record['summary']) not in (fields, fields | {'AgentMode'})):
             fail('conversation_metadata_unqualified')
         summary = record['summary']
+        if 'AgentMode' in summary and (type(summary['AgentMode']) is not int or summary['AgentMode'] < 0):
+            fail('conversation_metadata_unqualified')
         if (summary['ID'] != sid or summary['AppDataDir'] not in ('', 'antigravity-cli')
                 or summary['Cloud'] is not False or summary['GroupID']):
             fail('conversation_metadata_external_reference')

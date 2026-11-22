@@ -2444,10 +2444,21 @@ class OperationCoordinator:
 
         grouped: dict[tuple[str, str], list[Any]] = {}
         databases: dict[tuple[str, str], tuple[Path, Path]] = {}
+        # The unfiltered snapshot includes parked ACP handles even when the
+        # caller selected another current engine. Keep their whole UI row.
+        acp_sessions = {(row.database, row.platform_session_id)
+                        for snapshot in getattr(inventory, "frontend_snapshots", ())
+                        for row in snapshot.records if row.details.get("agent_kind") == "acp"}
+        if any(sid in explicit_session_ids for _, sid in acp_sessions):
+            raise OperationCoordinatorError(
+                "Cindy ACP session selection requires a local agy binding, --antigravity-root and --antigravity-bin"
+            )
         for session in getattr(inventory, "frontend_sessions", ()):
             if str(getattr(session, "platform", "")).casefold() != "cindy":
                 continue
             if normalize_engine(getattr(session, "backend", "")) not in {"codex", "pi", "claude"}:
+                continue
+            if (session.database, session.platform_session_id) in acp_sessions:
                 continue
             status = str(getattr(session, "status", "") or "").casefold()
             details = getattr(session, "details", {})

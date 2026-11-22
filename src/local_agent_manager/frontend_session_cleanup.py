@@ -242,6 +242,7 @@ def execute_cindy_session_cleanup(
     owner_process_root: Path | None = None,
     client_inspector: Callable[..., Sequence[str]] | None = None,
     phase_callback: Callable[[str], None] | None = None,
+    transaction_guard: Callable[[sqlite3.Connection, tuple[str, ...], tuple[int, ...]], None] | None = None,
 ) -> FrontendSessionCleanupResult:
     evidence = _normalize_evidence(evidence_items)
     database = _one_database(evidence)
@@ -278,19 +279,9 @@ def execute_cindy_session_cleanup(
             item.session_id for item in evidence if item.explicit_unbound_active
         }, explicitly_selected_ids={item.session_id for item in evidence if item.explicitly_selected}))
         _guard_non_cascade_references(db, ids)
-        _temp_targets(db, ids)
-        messages = tuple(
-            str(row[0])
-            for row in db.execute("SELECT id FROM temp.larj_cindy_messages ORDER BY id")
-        )
-        vector_rows = tuple(
-            int(row[0])
-            for row in db.execute(
-                """SELECT job.rowid FROM embedding_jobs job
-                   JOIN temp.larj_cindy_messages message ON message.id = job.source_id
-                   ORDER BY job.rowid"""
-            )
-        ) if _has(db, "embedding_jobs") else ()
+        messages, vector_rows = _dependent_ids(db, ids)
+        if transaction_guard is not None:
+            transaction_guard(db, messages, vector_rows)
         if phase_callback is not None:
             phase_callback("mutation_started")
         started = True
@@ -863,7 +854,7 @@ def _one_database_from_seeds(items: Sequence[Mapping[str, Any]]) -> Path:
     return next(iter(paths.values()))
 
 
-def _temp_targets(db: sqlite3.Connection, ids: Sequence[str]) -> None:
+def _dependent_ids(db: sqlite3.Connection, ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[int, ...]]:
     db.execute("CREATE TEMP TABLE larj_cindy_targets (id TEXT PRIMARY KEY)")
     db.executemany(
         "INSERT INTO temp.larj_cindy_targets (id) VALUES (?)",
@@ -875,6 +866,12 @@ def _temp_targets(db: sqlite3.Connection, ids: Sequence[str]) -> None:
            SELECT message.id FROM messages message
            JOIN temp.larj_cindy_targets target ON target.id = message.session_id"""
     )
+    messages = tuple(str(row[0]) for row in db.execute("SELECT id FROM temp.larj_cindy_messages ORDER BY id"))
+    vectors = tuple(int(row[0]) for row in db.execute(
+        """SELECT job.rowid FROM embedding_jobs job
+           JOIN temp.larj_cindy_messages message ON message.id = job.source_id ORDER BY job.rowid"""
+    )) if _has(db, "embedding_jobs") else ()
+    return messages, vectors
 
 
 def _rows(

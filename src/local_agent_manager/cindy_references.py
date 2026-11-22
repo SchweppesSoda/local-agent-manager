@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .sqlite_utils import connect_readonly, table_exists
+from .providers.t3 import _unique_object
 from .sqlite_identity import (
     row_fingerprint,
     schema_fingerprint,
@@ -26,6 +27,15 @@ from .sqlite_identity import (
 
 
 _BACKENDS = {"cc": "claude", "codex": "codex", "pi": "pi"}
+AGY_PROVIDER_ID = "acp-plugin:_ns__local__agy-acp:agy"
+
+
+def local_agy_session(row: sqlite3.Row) -> bool:
+    """Only a current, locally executed desktop plugin binding proves this mapping."""
+    fields = {"agent_kind", "provider_id", "source", "remote_host_id", "agent_device_id"}
+    return (fields.issubset(row.keys()) and row["agent_kind"] == "acp"
+            and row["provider_id"] == AGY_PROVIDER_ID and row["source"] == "desktop"
+            and row["remote_host_id"] is None and row["agent_device_id"] is None)
 
 
 def backend_for_agent_kind(kind: str) -> str:
@@ -227,7 +237,7 @@ def build_cindy_reference_catalog(
                 raise CindyReferenceError("sessions.id is duplicated")
             sessions[session_id] = row
             kind = _agent_kind(row["agent_kind"], "sessions.agent_kind")
-            backend = backend_for_agent_kind(kind)
+            backend = "antigravity" if local_agy_session(row) else backend_for_agent_kind(kind)
             references.append(
                 _reference(
                     database,
@@ -375,8 +385,8 @@ def _switch_payload(value: object) -> Mapping[str, Any]:
     if not isinstance(value, str):
         raise CindyReferenceError("agent_switch content is not JSON text")
     try:
-        payload = json.loads(value)
-    except (json.JSONDecodeError, UnicodeError) as exc:
+        payload = json.loads(value, object_pairs_hook=_unique_object)
+    except (ValueError, UnicodeError) as exc:
         raise CindyReferenceError("agent_switch content is malformed JSON") from exc
     if not isinstance(payload, Mapping):
         raise CindyReferenceError("agent_switch content is not a JSON object")

@@ -534,6 +534,12 @@ def capability_for(
     if normalized_client == "antigravity" and normalized_engine == "antigravity":
         return EngineCapability("antigravity", "antigravity", native_delete=True, verify=True,
             reason="Exact CLI IDs in qualified local schemas; Windows leases and frozen frontend guards required")
+    if normalized_client == "cindy" and normalized_engine == "antigravity":
+        return EngineCapability("cindy", "antigravity", inventory=True, native_delete=True,
+            frontend_session_delete=True, verify=True,
+            blockers=({"blocker_code": NATIVE_ROOT_UNVERIFIED, "scope": "native_root",
+                       "message": "Plan with the Cindy session ID, --antigravity-root and --antigravity-bin"},),
+            reason="Exact local agy ACP session IDs require the plugin's explicit CLI binary and native store")
     if normalized_client == "qwenwork" and normalized_engine == normalized_client:
         return EngineCapability(normalized_client, normalized_engine, native_delete=True,
             frontend_session_delete=True, verify=True,
