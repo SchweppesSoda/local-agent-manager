@@ -141,6 +141,13 @@ def freeze_reset(root, ids):
         "directories": [], "changes": [], "preserved": []}
 
 
+def freeze_receipts(root, ids):
+    _require_known_database_family(root)
+    return {"schema_version": SCHEMA, "root": str(root), "thread_ids": ids,
+        "database": database.freeze(root, ids, receipt_only=True),
+        "directories": [], "changes": [], "preserved": []}
+
+
 def remaining(evidence, *, compact=False):
     root = validate(evidence)
     _require_known_database_family(root)

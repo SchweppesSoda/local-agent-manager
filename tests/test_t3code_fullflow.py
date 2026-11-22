@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from local_agent_manager import t3code_cleanup as cleanup, t3code_database as database
 from local_agent_manager import t3code_cleanup_files as files, t3code_lifecycle as lifecycle
-from local_agent_manager.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, T3CodeBoundAdapter, SCHEMA
+from local_agent_manager.t3code_bound_adapter import DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, DATABASE_RECEIPTS_SCHEMA, T3CodeBoundAdapter, SCHEMA
 from local_agent_manager.cleanup_service import CleanupService
 from local_agent_manager.operation_coordinator import OperationCoordinator
 from tests.orca_native_support import create_native_schema, add_native_record
@@ -238,7 +238,7 @@ class T3CodeFullflowTests(unittest.TestCase):
         # Stub Chromium's interpretation of the copy while exercising the
         # real file snapshots, rehearsal copy, and post-rehearsal drift check.
         with (patch.object(d, 'default_runtime', return_value=installed),
-              patch.object(d, 'observe', return_value={'counts': {'thread': 1}}),
+              patch.object(d, 'observe', return_value={'counts': {'thread': 1}, 'missing': []}),
               patch.object(d, 'prepared', side_effect=concurrent_writer),
               self.assertRaisesRegex(ValueError, 'desktop_planning_source_changed')):
             d.new_full_plan(self.manifest, frozen, profile)
@@ -310,6 +310,60 @@ class T3CodeFullflowTests(unittest.TestCase):
             self.assertEqual(db.execute("PRAGMA freelist_count").fetchone()[0], 0)
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
+
+    def receipt_plan(self):
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            for id in ('orphan-a', 'orphan-b', 'keep-receipt'):
+                insert(db, 'orchestration_command_receipts', command_id='visit-' + id,
+                       aggregate_kind='thread', aggregate_id=id, command_type='thread.visit',
+                       status='rejected', error=PRIVATE)
+            db.commit()
+        adapter = T3CodeBoundAdapter({**self.manifest, 'schema_version': DATABASE_RECEIPTS_SCHEMA, 'native_stores': []})
+        plan = self.coordinator().plan_operation(client='t3code', record_ids=('orphan-a', 'orphan-b'),
+            adapters=(adapter,), plan_path=self.plan_path, operation_id='orphan-receipts')
+        self.assertEqual(plan.get('goal_status'), 'ready', plan)
+        self.assertNotIn(PRIVATE, json.dumps(plan))
+        return plan
+
+    def test_orphan_receipt_plan_preserves_threads_projects_native_and_other_receipts(self):
+        native = add_native_record(self.home, NATIVE)
+        before = native.read_bytes()
+        plan = self.receipt_plan()
+        self.assertEqual([a['kind'] for a in plan['actions']], [cleanup.KIND])
+        evidence = cleanup.evidence_from_document(plan)
+        self.assertEqual(evidence['native_targets'], [])
+        self.assertEqual(evidence['files']['database']['counts'], {'orchestration_command_receipts': 2})
+        self.assertTrue(self.apply(plan)['goal_satisfied'])
+        self.assertEqual(native.read_bytes(), before)
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            self.assertEqual(db.execute(f'SELECT count(*) FROM {V2}threads').fetchone()[0], 2)
+            self.assertEqual(db.execute('SELECT aggregate_id FROM orchestration_command_receipts').fetchall(), [('keep-receipt',)])
+            self.assertEqual(db.execute('SELECT count(*) FROM projection_projects').fetchone()[0], 1)
+        self.assertTrue(self.coordinator().verify_operation(operation_id=plan['operation_id'],
+                                                          plan_path=self.plan_path)['goal_satisfied'])
+
+    def test_orphan_receipt_changed_private_cell_blocks_before_mutation(self):
+        plan = self.receipt_plan()
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            db.execute("UPDATE orchestration_command_receipts SET error='changed' WHERE aggregate_id='orphan-a'")
+            db.commit()
+        result = self.apply(plan)
+        self.assertFalse(result['goal_satisfied'])
+        self.assertFalse(result['mutation_started'])
+
+    def test_orphan_receipt_unknown_after_commit_uses_verify_without_replay(self):
+        plan = self.receipt_plan()
+        original = database.apply
+        def interrupted(*args, **kwargs):
+            original(*args, **kwargs)
+            raise OSError('synthetic interruption after receipt commit')
+        with patch.object(database, 'apply', side_effect=interrupted):
+            result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'unknown', result)
+        with patch.object(database, 'apply', side_effect=AssertionError('must not replay')):
+            self.assertEqual(self.apply(plan)['goal_status'], 'unknown')
+            result = self.coordinator().verify_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
+        self.assertTrue(result['goal_satisfied'], result)
 
     def test_native_dependency_and_exact_ticket(self):
         add_native_record(self.home, NATIVE)

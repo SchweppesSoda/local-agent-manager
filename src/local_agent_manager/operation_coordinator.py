@@ -2174,6 +2174,9 @@ class OperationCoordinator:
             engines=engines,
             inventory=inventory,
         )
+        from .cindy_operations import qualify_claude_current_references
+
+        frontend_actions = context.plan.actions
         native_contexts: list[Any] = []
         for engine_context in engine_contexts:
             engine = normalize_engine(engine_context.engine)
@@ -2185,6 +2188,11 @@ class OperationCoordinator:
             # rather than disappear into an empty operation.
             if catalog is None:
                 continue
+            paired_claude = False
+            if engine == "claude":
+                qualified = qualify_claude_current_references(catalog, frontend_actions, explicit_session_ids)
+                paired_claude = qualified is not catalog
+                catalog = qualified
             target_action_ids = {
                 str(action_id)
                 for target in engine_context.targets
@@ -2197,10 +2205,17 @@ class OperationCoordinator:
                 _engine: str = engine,
                 _catalog: Any = catalog,
                 _adapters: tuple[Any, ...] = adapters,
+                _paired_claude: bool = paired_claude,
             ) -> Any:
+                if _paired_claude:
+                    refresh_guard_sources(_adapters)
                 fresh = _build_native_catalog(_adapters, client, _engine)
                 if fresh is not None:
+                    if _paired_claude:
+                        return qualify_claude_current_references(fresh, frontend_actions, explicit_session_ids)
                     return fresh
+                if _paired_claude:
+                    raise OperationCoordinatorError("Could not revalidate the paired Claude catalog")
                 # The catalog was already proven by the inventory builder. A
                 # fallback keeps injected/native test adapters compatible; the
                 # real Cindy adapter always reaches the fresh builder above.
@@ -2360,6 +2375,16 @@ class OperationCoordinator:
                 and affected.intersection(native_binding.get("affected_thread_ids", ())))
             if covers:
                 dependencies[str(frontend["action_id"])] = covers
+        if document.get("scope", {}).get("client") == "cindy":
+            from .cindy_operations import claude_frontend_action_id
+
+            for native in document.get("actions", ()):
+                if native.get("kind") != "delete_claude_session":
+                    continue
+                payload = native.get("impact", {}).get("external_action_payload")
+                frontend_id = claude_frontend_action_id(payload)
+                if frontend_id:
+                    dependencies[frontend_id] = dependencies.get(frontend_id, frozenset()) | {str(native["action_id"])}
         return dependencies
 
     def _merge_cindy_orphan_references(self, context: Any, inventory: Any, *, client: str) -> Any:
@@ -4671,7 +4696,7 @@ class OperationCoordinator:
                         completed.add(child_id)
                         # Terminal-with-residuals means do not replay; it does
                         # not prove native success or release paired references.
-                        if goal == "complete" and raw.get("mutation_family") == "delete_conversation":
+                        if goal == "complete" and raw.get("mutation_family") in {"delete_conversation", "delete_claude_session"}:
                             verification = result.get("verification", {})
                             if verification.get("all_satisfied") is True:
                                 positively_deleted.update(set(map(str, raw.get("action_ids", ()))) &
@@ -4759,7 +4784,7 @@ class OperationCoordinator:
                         and str(events[-1].get("goal_status") or "") == goal
                     ):
                         completed.add(child_id)
-                        if goal == "complete" and raw.get("mutation_family") == "delete_conversation":
+                        if goal == "complete" and raw.get("mutation_family") in {"delete_conversation", "delete_claude_session"}:
                             positively_deleted.update(str(event["action_id"]) for event in events
                                 if event.get("event") == "action_verified" and event.get("result_status") == "deleted"
                                 and str(event.get("action_id")) in set(map(str, raw.get("action_ids", ()))))
@@ -5234,7 +5259,7 @@ class OperationCoordinator:
                         store.append_event({"event": "orca_runtime_boundary_observed", "startup_artifacts": snapshot},
                             state_updates={"startup_artifacts": snapshot})
 
-                    if str(batch.mutation_family) == "remove_frontend_reference":
+                    if batch.mutation_family in {"remove_frontend_reference", "delete_frontend_session"}:
                         required_frontend = {
                             str(action.action_id)
                             for action in batch.actions
@@ -5281,6 +5306,13 @@ class OperationCoordinator:
                         )
                     else:
                         batch_context = self._context_for_batch(live, batch)
+                        paired_claude = False
+                        if live.client == "cindy" and batch.mutation_family == "delete_claude_session":
+                            from .cindy_operations import guard_paired_claude_frontend
+
+                            paired_claude = guard_paired_claude_frontend(
+                                batch.actions, live.document["actions"], getattr(self.service, "client_inspector", None),
+                            )
                         typed_by_id = {
                             str(action.action_id): action
                             for action in getattr(
@@ -5300,7 +5332,7 @@ class OperationCoordinator:
                             ),
                             binary_resolver=effective_binary_resolver,
                             action_state_callback=checkpoint,
-                            session_preflight_verified=True,
+                            session_preflight_verified=not paired_claude,
                         )
                 outcome_doc = self._metadata(outcome)
                 statuses = self._outcome_statuses(outcome)

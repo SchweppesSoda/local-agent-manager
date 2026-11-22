@@ -18,6 +18,114 @@ Use the exact paths and identities again when checking the result. Refresh the s
 
 Report uninstall scope precisely: program files, extraction caches, retained profiles and shared resources have separate outcomes. Removing a runtime does not establish that its old instance data was removed. For T3 Antigravity, use the [instance-data scope checks](antigravity.md#distinguish-uninstall-results-from-discarded-instance-data) before treating an old profile as a selected disposal target.
 
+## Update the Cindy-managed Codex runtime on Windows
+
+Use this route for the Codex CLI and App Server launched by Cindy. Resolve a
+Cindy desktop update, a model preset change or a standalone Codex update
+through its corresponding workflow.
+
+1. **Identify the active runtime and requested version.** From the actual
+   Cindy client and startup/update logs, establish the host and account,
+   client build, physical data root, platform and architecture, region,
+   channel and feed URL. Use Windows process metadata such as
+   `Get-CimInstance Win32_Process` to tie a Codex process ID, parent and
+   executable path to that client. Run the resolved executable by absolute
+   path with `--version`. `local-agent-manager environment inventory --client
+   cindy --json` and shell command resolution identify candidates. Actual
+   selection comes from the launch evidence.
+   Preserve the Agent home, account, PATH and independent installations.
+
+2. **Inspect the feed, selector and retention behavior.** In the verified
+   Windows build, `codexPackage` identifies the full managed runtime and
+   `codex` identifies the legacy compressed executable. The version fields can
+   differ. Global and CN identify regions. Stable, Beta and Canary identify
+   release channels. The full package is laid out as
+   `<Cindy data root>/codex-package/<version>/bin/codex.exe` with
+   `codex-package.json` at the version root. The normal online resolver
+   prefers the highest eligible executable version from direct directories
+   containing `.verified` and the executable, subject to the feed version.
+   Cached and offline routes can select differently. Check whether the
+   requested version can actually win selection, and identify a usable
+   rollback package or native recovery route before publishing a change.
+   A side-by-side install does not pin a version against future updates.
+
+   Prefer the owning updater when it supplies the intended runtime and its
+   cleanup fits the request. On the checked Cindy 0.1.140 build, a successful
+   native archive install attempts to remove the other direct directories
+   under `codex-package`. Reusing an eligible local package skips that
+   cleanup. Check shared consumers and rollback needs before using the
+   updater, then inventory the actual retained versions afterward. If native
+   cleanup would affect a required version, preserve it and resolve a
+   compatible update route first.
+
+3. **Verify the full release package for a manual side-by-side update.**
+   Select the exact OpenAI release tag, full `codex-package` variant,
+   platform, architecture and archive format consumed by the installed
+   Cindy build. The verified x64 asset was
+   `codex-package-x86_64-pc-windows-msvc.tar.gz`. Use the exact asset's
+   SHA-256 from the [release assets on GitHub](https://github.com/openai/codex/releases)
+   or the [GitHub release asset digest](https://docs.github.com/en/rest/releases/assets#get-a-release-asset),
+   and compare it with `Get-FileHash -Algorithm SHA256 -LiteralPath <archive>`
+   before extracting. Resolve a missing or mismatched digest before proceeding.
+
+   Stage on the destination volume in a unique directory outside
+   `codex-package`. Reject archive entries that escape staging or would
+   create links. Verify the manifest variant, version, target and layout
+   against the expected values, including the entry point, helper and
+   resource paths. Preserve the whole payload. The tested layout version 1
+   included `bin`, `codex-path` and `codex-resources`. Use an isolated
+   temporary `CODEX_HOME` for test processes. Verify the exact
+   `bin/codex.exe --version` and start the staged executable with
+   `app-server --listen stdio://`. Run a bounded
+   [App Server handshake](https://learn.chatgpt.com/docs/app-server#initialization)
+   using newline-delimited JSON. Check the matching `initialize` response for
+   success, version and platform, send `initialized`, then shut down the
+   test process. This proves the staged binary starts in isolation.
+
+4. **Publish without racing the updater.** Verify the build's selector and
+   marker convention before publishing. The tested build uses an empty
+   `.verified` file, written only after validation. Its native provisioner
+   coordinates through `codex-package/install.lock`. Use the same exclusion
+   if the installed build exposes a supported way to take it. Otherwise let
+   active work finish and fully exit the affected Cindy processes and
+   updater before the final move. Confirm writer exclusion and recheck the
+   physical destination just before a same-volume rename of the complete
+   staged directory into the previously unused version path. A momentary
+   idle check or the presence of a lock file does not establish exclusion.
+   Leave the lock file and current package in place. If the destination
+   exists, verify the existing package and resolve the conflict before any
+   replacement.
+
+5. **Verify through Cindy and recover if needed.** Use a fresh task in the
+   same Cindy client and account. Reopen Cindy if its process still holds a
+   cached ready path. Confirm the actual App Server process path and version
+   and complete one harmless turn with the intended provider. Check other
+   running tasks separately for continued use of the old package. Record
+   package verification and observed launch as separate outcomes. If Cindy
+   still launches the old version, inspect the effective feed, cached
+   selection and launch logs. If the new package causes startup or task
+   failure, close its consumers and exclude the updater again, then move
+   only that candidate outside the managed scan for recovery. Reopen and
+   verify the previously working package can be selected and run. If the
+   current feed or build requires a different version, use the native
+   recovery path and confirm its actual result.
+
+6. **Retire the old package within the authorized scope.** Confirm the
+   replacement is working and the exact retired package has no remaining
+   selector, consumer or required rollback role. Follow
+   [AI-reviewed runtime retirement](#ai-reviewed-runtime-retirement), with
+   the same physical root and cited selector/writer evidence. Close the
+   affected clients and updater before applying the approved plan with
+   `--clients-closed`. Verify the retirement receipt and absence of
+   the approved runtime files, including the executable and marker. An empty
+   directory can remain. Reopen Cindy and verify it still launches the
+   replacement.
+
+The 2026-11-18 Windows x64 Global Stable case used a feed that offered
+0.166.0. Cindy launched the manually staged 0.169.1, and a separately
+authorized cleanup retired 0.166.0. Recheck the feed and launcher for each
+upgrade.
+
 ## Audit accumulated backups and runtime artifacts
 
 Start with metadata-only environment inventory and the exact owning profiles,

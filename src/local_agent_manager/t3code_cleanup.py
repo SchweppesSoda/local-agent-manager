@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import frozen_files, t3code_cleanup_files as files, t3code_database, t3code_lifecycle, t3code_localstorage
 from .environment_config import _unique_object
-from .t3code_bound_adapter import (DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, DATABASE_SCHEMAS,
+from .t3code_bound_adapter import (DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, DATABASE_RECEIPTS_SCHEMA, DATABASE_SCHEMAS,
     T3CodeBoundAdapter, validate_manifest, native_catalog)
 from .t3code_server_delete import _snapshot
 from .t3code_store import V2, database_path, identifier
@@ -58,6 +58,8 @@ def validate(evidence):
         files.fail("closure_root_changed")
     selected = set(evidence["selected_thread_ids"])
     schema = manifest["schema_version"]
+    if bool(evidence['files']['database'].get('receipt_only')) != (schema == DATABASE_RECEIPTS_SCHEMA):
+        files.fail('receipt_scope_changed')
     if schema in DATABASE_SCHEMAS:
         if (selected != set(evidence["selectors"]) or evidence["frontend_id"] != "t3code:" + digest(sorted(selected))[:24]
                 or any(evidence[key] != [] for key in ("native_targets", "native_actions", "references", "desktop"))
@@ -66,7 +68,7 @@ def validate(evidence):
         if schema == DATABASE_ONLY_SCHEMA and any(ref["driver"] != "antigravity"
                 for ref in evidence["files"]["database"]["native_references"]):
             files.fail("database_only_scope_invalid")
-        if schema == DATABASE_RESET_SCHEMA and any(evidence["files"][key] != [] for key in ("directories", "preserved")):
+        if schema in {DATABASE_RESET_SCHEMA, DATABASE_RECEIPTS_SCHEMA} and any(evidence["files"][key] != [] for key in ("directories", "preserved")):
             files.fail("database_only_scope_invalid")
         return
     if not selected <= {i["thread_id"] for i in manifest["native_stores"]}:
@@ -314,12 +316,18 @@ def _require_reset_threads(manifest, thread_ids):
                 files.fail("database_reset_not_quiescent")
 
 
+def _require_receipt_threads(manifest, thread_ids):
+    with closing(connect_readonly(database_path(Path(manifest['profile_root'])))) as db:
+        t3code_database.receipt_closure(db, thread_ids)
+
+
 def _database_only_context(coordinator, adapter, guards, selectors, engines, old):
     from .cleaner import ScanReport
     thread_ids = sorted({identifier(tid) for tid in selectors})
     reset = adapter.manifest["schema_version"] == DATABASE_RESET_SCHEMA
-    require_threads = _require_reset_threads if reset else _require_retired_threads
-    if engines and (reset or set(engines) != {"antigravity"}):
+    receipts = adapter.manifest['schema_version'] == DATABASE_RECEIPTS_SCHEMA
+    require_threads = _require_receipt_threads if receipts else _require_reset_threads if reset else _require_retired_threads
+    if engines and (reset or receipts or set(engines) != {"antigravity"}):
         files.fail("selector_engine_mismatch")
     if adapter.observation["peer_count"]:
         files.fail("peer_environment_closure_unqualified")
@@ -334,11 +342,11 @@ def _database_only_context(coordinator, adapter, guards, selectors, engines, old
         require_threads(adapter.manifest, thread_ids)
         evidence = {"schema_version": SCHEMA, "root": str(adapter.profile_root), "binding_manifest": adapter.manifest,
             "selected_thread_ids": thread_ids, "selectors": list(selectors), "frontend_id": "t3code:" + digest(thread_ids)[:24],
-            "files": (files.freeze_reset if reset else files.freeze)(adapter.profile_root, thread_ids),
+            "files": (files.freeze_receipts if receipts else files.freeze_reset if reset else files.freeze)(adapter.profile_root, thread_ids),
             "native_targets": [], "native_actions": [],
             "references": [], "desktop": [], "lifecycle": t3code_lifecycle.freeze(adapter.manifest)}
     base = coordinator.service.prepare_report(ScanReport(), active_adapters=(), platforms=("t3code",))
-    context, _ = _frontend_context(coordinator, base, adapter, guards, evidence, "t3code" if reset else "antigravity", [], {})
+    context, _ = _frontend_context(coordinator, base, adapter, guards, evidence, "t3code" if reset or receipts else "antigravity", [], {})
     return context, context.active_adapters, None, None, {}, {}
 
 
@@ -575,6 +583,8 @@ def execution_scope(document, actions, *, clients_closed, context, manual_action
             _require_retired_threads(evidence["binding_manifest"], evidence["selected_thread_ids"])
         elif schema == DATABASE_RESET_SCHEMA:
             _require_reset_threads(evidence["binding_manifest"], evidence["selected_thread_ids"])
+        elif schema == DATABASE_RECEIPTS_SCHEMA:
+            _require_receipt_threads(evidence['binding_manifest'], evidence['selected_thread_ids'])
         for target in evidence['native_targets']:
             if target['engine'] == 'antigravity':
                 native_remaining(target)

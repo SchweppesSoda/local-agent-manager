@@ -19,7 +19,8 @@ from contextlib import closing
 SCHEMA = "larj.t3code-bindings.v1"
 DATABASE_ONLY_SCHEMA = "larj.t3code-antigravity-database.v1"
 DATABASE_RESET_SCHEMA = "larj.t3code-database-reset.v1"
-DATABASE_SCHEMAS = {DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA}
+DATABASE_RECEIPTS_SCHEMA = "larj.t3code-orphan-visit-receipts.v1"
+DATABASE_SCHEMAS = {DATABASE_ONLY_SCHEMA, DATABASE_RESET_SCHEMA, DATABASE_RECEIPTS_SCHEMA}
 _NATIVE_ENGINES = frozenset(("codex", "claude", "pi", "antigravity"))
 
 

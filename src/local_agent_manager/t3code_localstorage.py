@@ -48,7 +48,7 @@ def _validate_scope(evidence):
         root = validate_plan(plan)
         if (root.resolve() != Path(evidence['root']).resolve()
                 or plan['evidence']['environment'] != evidence['environment_id']
-                or plan['evidence']['ids'] != ids or plan['schema_version'] != 'lam.t3-desktop-full.v1'):
+                or plan['evidence']['ids'] != ids or plan['schema_version'] not in {'lam.t3-desktop-full.v1', 'lam.t3-desktop-cache-only.v1'}):
             fail('desktop_full_scope_changed')
     return Path(evidence["root"])
 

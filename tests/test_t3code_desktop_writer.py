@@ -155,15 +155,73 @@ class DesktopWriterTests(unittest.TestCase):
         (self.root / 'userdata').mkdir()
         (self.root / 'userdata/environment-id').write_text(ENV, encoding='utf-8')
         with self.patches(), patch.object(d.lifecycle, 'freeze', return_value={}), patch.object(d, 'runtime_files', return_value=[]):
+            with self.assertRaisesRegex(T3CodeError, 'desktop_cache_origin_unqualified'):
+                d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, [IDS[0]])
             with self.assertRaisesRegex(T3CodeError, 'desktop_cache_origin_or_selection_changed'):
-                d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, 'Wrong host', [IDS[0]])
-            plan = d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, 'Other host', [IDS[0]])
+                d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, [IDS[0]], label='Wrong host')
+            plan = d.new_cache_plan(self.root, profile, d.default_runtime(), OTHER, [IDS[0]], label='Other host')
             self.assertEqual(plan['lifecycle']['binding_manifest']['environment_id'], ENV)
             self.assertEqual(plan['evidence']['environment'], OTHER)
             self.assertTrue(d.apply_plan(plan, plan['plan_sha256'], clients_closed=True)['goal_satisfied'])
             self.assertTrue(d.verify_plan(plan, clients_closed=True)['goal_satisfied'])
         local = d.freeze(profile, self.runtime, ENV, IDS)
         self.assertEqual(local['native']['counts'], self.evidence['native']['counts'])
+
+    def test_cache_only_plan_cold_apply_preserves_unselected_and_has_no_native_scope(self):
+        (self.root / 'userdata').mkdir(exist_ok=True)
+        (self.root / 'userdata/environment-id').write_text(ENV, encoding='utf-8')
+        with self.patches(), patch.object(d.lifecycle, 'freeze', return_value={}):
+            plan = d.new_cache_plan(self.root, self.profile, d.default_runtime(), ENV, IDS)
+            self.assertEqual(plan['schema_version'], d.CACHE_SCHEMA)
+            self.assertEqual(plan['lifecycle']['binding_manifest']['native_stores'], [])
+            self.assertEqual(plan['evidence']['native']['counts'], {'thread': 2, 'shell': 2, 'query': 1})
+            with patch.object(d, 'service_absence', return_value={'changed': True}):
+                with self.assertRaisesRegex(T3CodeError, 'desktop_service_schema_changed'):
+                    d.apply_plan(plan, plan['plan_sha256'], clients_closed=True)
+            self.assertTrue(d.apply_plan(plan, plan['plan_sha256'], clients_closed=True)['goal_satisfied'])
+            self.assertTrue(d.verify_plan(plan, clients_closed=True)['goal_satisfied'])
+            self.assertEqual(d.status_plan(plan)['attempts'], 1)
+        changed = copy.deepcopy(plan)
+        changed['lifecycle']['binding_manifest']['native_stores'] = [{'root': 'unapproved'}]
+        changed['plan_sha256'] = plan_sha256(changed)
+        with self.assertRaisesRegex(T3CodeError, 'cache_scope_changed'):
+            d.validate_plan(changed)
+
+    def test_layout_companion_requires_cache_completion_and_recovers_without_replay(self):
+        from local_agent_manager import t3code_layout_cleanup as layout
+        from tests.test_t3code_localstorage import local_storage
+        # A separate environment's draft remains untouched by the cache plan.
+        local_storage(self.profile, thread_id=IDS[0])
+        # Use the helper's env-1 for both actual synthetic native stores.
+        seed = json.loads(json.dumps(fixture()).replace(ENV, 'env-1'))
+        other = self.root / 'layout-profile'
+        other.mkdir()
+        d.observe(self.runtime, other, 'env-1', IDS, native=True, mode='seed', seed=seed)
+        local_storage(other, thread_id=IDS[0])
+        (self.root / 'userdata').mkdir(exist_ok=True)
+        (self.root / 'userdata/environment-id').write_text('env-1', encoding='utf-8')
+        with self.patches(), patch.object(d.lifecycle, 'freeze', return_value={}):
+            cache = d.new_cache_plan(self.root, other, d.default_runtime(), 'env-1', IDS)
+            plan = layout.new_plan(cache)
+            self.assertGreater(plan['evidence']['observation']['count']['removed_pairs'], 0)
+            with self.assertRaisesRegex(T3CodeError, 'completion_required'):
+                layout.apply_plan(plan, plan['plan_sha256'], clients_closed=True)
+            self.assertFalse(layout.directory(plan).exists())
+            d.apply_plan(cache, cache['plan_sha256'], clients_closed=True)
+            def interrupted(phase):
+                if phase == 'installed':
+                    raise OSError('synthetic interruption after layout install')
+            with self.assertRaises(OSError):
+                layout.apply_plan(plan, plan['plan_sha256'], clients_closed=True, phase_callback=interrupted)
+            self.assertEqual(layout.status_plan(plan)['goal_status'], 'unknown')
+            with self.assertRaises(T3CodeError):
+                layout.apply_plan(plan, plan['plan_sha256'], clients_closed=True)
+            with patch.object(layout, '_copy', side_effect=AssertionError('verify must not install')):
+                self.assertTrue(layout.verify_plan(plan, clients_closed=True)['goal_satisfied'])
+            self.assertTrue(layout.status_plan(plan)['goal_satisfied'])
+            self.assertFalse((layout.directory(plan) / 'after').exists())
+            self.assertFalse(list(other.glob('.larj-paseo-sealed-*')))
+            local_storage(other, inspect=True, thread_id=IDS[0])
 
     def test_changed_source_rejected_before_install(self):
         plan = self.plan()

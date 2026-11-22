@@ -24,6 +24,8 @@ from .claude_sessions import (
     _auxiliary_target_name_matches,
 )
 
+CINDY_APPROVED_CURRENT_REFERENCE = "approved_cindy_current_reference"
+
 
 class ClaudeDeletePlanError(ValueError):
     """A Claude deletion is incomplete, stale, or unsafe."""
@@ -467,7 +469,7 @@ def _make_action(record: Any, blocking: tuple[str, ...], duplicates: set[str]) -
             _validate_current_entry(entry)
         except ClaudeDeletePlanError as exc:
             reasons.append(str(exc))
-    if classification not in ("unreferenced", "deleted_frontend_reference"):
+    if classification not in ("unreferenced", "deleted_frontend_reference", CINDY_APPROVED_CURRENT_REFERENCE):
         reasons.append(f"Claude classification {classification!r} is not physically deletable")
     if not deletable:
         reasons.append("Claude inventory marks the session as not deletable")

@@ -361,6 +361,9 @@ and its complete reference closure; it does not send overlapping deletion
 requests. Descendant references remain bound to their own native IDs. A
 child-only selection never implicitly selects its parent and remains subject
 to the existing lineage guards.
+For account-specific homes, the parent binding includes descendants evidenced
+by the native lineage in that same home. Other roots in a shared account home
+need their own Cindy binding.
 
 If a verified native deletion leaves Cindy references, a fresh plan can clear
 those exact references only when a complete inventory proves the native index,
@@ -819,7 +822,7 @@ python -m local_agent_manager.t3code_desktop_cleanup status --plan residual.json
 python -m local_agent_manager.t3code_desktop_cleanup verify --plan residual.json --clients-closed
 ```
 
-仅清理桌面缓存时，用 `plan-cache` 指定本机 `--service-root`、实际桌面
+清理其他环境的本机桌面副本时，用 `plan-cache` 指定本机 `--service-root`、实际桌面
 `--profile`、缓存内的 `--environment-id` 与 `--environment-label`，以及
 重复的 `--record-id`。会话 ID 必须覆盖该环境当前的正文缓存、侧栏和会话查询
 条目。计划确认同一环境的服务器标签，持有本机 T3 生命周期锁，并在副本上
@@ -874,6 +877,38 @@ Pi 的 T3 原生句柄是绝对 JSONL 路径。绑定同时核对 session 根、
 `operation verify`。操作持有 T3 写入锁，从 `statev2.sqlite` 删除会话及关联事件、
 消息和索引记录，压缩数据库并截断 WAL。库内项目、T3 登录状态、原生 Agent 历史和
 工作树均保留。桌面缓存、附件及外部备份在本入口的数据库范围之外。
+
+### 只清理孤立访问回执和桌面缓存
+
+会话投影已不存在时，`delete plan --client t3code --t3code-bindings <JSON>` 接受
+`larj.t3code-orphan-visit-receipts.v1`。绑定填写 `profile_root`、`environment_id`、
+`runtime_binaries`，`native_stores` 与 `desktop_profiles` 均为 `[]`。通过重复的
+`--record-id` 选择完整 T3 ID；每个 ID 必须只剩一条 `rejected` 的 `thread.visit`
+回执，任何关联会话、事件、任务或重复回执都会阻挡。计划保留精确 command ID、行数和
+整个数据库的前后摘要，不导出错误正文。按哈希 `delete apply --clients-closed` 后，
+用原计划 `operation status/verify`。只删除这几行并截断 WAL，不处理原生历史或项目。
+
+独立桌面缓存不要求原生删除计划，可运行：
+
+```powershell
+python -m local_agent_manager.t3code_desktop_cleanup plan-cache --service-root <T3Home> --profile <DesktopProfile> --runtime-root <T3安装目录> --environment-id <本机环境ID> --record-id <完整T3-ID> --plan <计划路径> --clients-closed
+```
+
+重复 `--record-id` 选择多个缓存。选择本机环境时，要求所选服务端会话已不存在。选择其他
+环境时，必须提供标签并选中该环境的全部会话缓存。计划冻结实际环境、
+物理文件和安装运行时，并在私有副本上预演 IndexedDB 的 thread、shell 和 query 清理。
+它保留其他环境、未选缓存、登录数据以及全部原生会话。
+用同一模块的 `apply --plan <路径> --authorized-plan-sha256 <哈希> --clients-closed`
+执行，再用 `status` 和 `verify --clients-closed` 核验。未知结果不得重发 apply；
+已有的 `recover` 仅安装原操作封存的后镜像。操作状态仍保存在本工具的
+`.agent-manager-state`，不绕过未决回执或客户端关闭确认。
+
+同一批 ID 的 Local Storage 草稿/布局可用
+`python -m local_agent_manager.t3code_layout_cleanup plan --cache-plan <上述缓存计划> --plan <布局计划>`
+另行冻结；副本预演不修改原始数据。IndexedDB 操作确认完成后才允许同一模块
+`apply --plan <布局计划> --authorized-plan-sha256 <哈希> --clients-closed`，随后运行
+`status --plan <布局计划>`、`verify --plan <布局计划> --clients-closed`。
+封存的后镜像和单次尝试日志均在工具状态目录；中断只查询原计划，不重发删除。
 
 ### 已退役 Antigravity 的 T3 数据库清理
 
@@ -1321,6 +1356,14 @@ All approved IDs in one Cindy database are guarded as a set and deleted in one
 transaction together with their supported message, FTS, embedding/vector, and
 session-owned dependency rows. Status changes invalidate the frozen evidence.
 Unselected retained rows and unproven schemas remain protected.
+
+A Claude session with a single root-qualified active Cindy reference can be
+deleted together with that Cindy conversation. Select both the full Claude
+session ID and the full Cindy session ID in one operation. The plan freezes
+the native manifest and the exact Cindy row. Apply rechecks the owning Cindy
+processes, row and reference inventory before native file removal. The Cindy
+row is removed only after verified native deletion. Additional references and
+ambiguous native roots block this route.
 
 Cindy automation run history can be selected separately with exact
 `--record-id schedule-run:<full-run-id>` values. This uses the independent
