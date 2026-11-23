@@ -10,7 +10,7 @@ from contextvars import ContextVar
 import time
 
 from . import frozen_files as ff
-from .antigravity_cli_cleanup import fail, private_database, root_path
+from .antigravity_cli_cleanup import SIDECARS, fail, private_database, root_path
 from .record_identity import canonical_path
 
 _leased = ContextVar('joint_cli_guard_files', default=None)
@@ -38,6 +38,26 @@ def read_source(root, relative, **options):
     if proof != expected:
         fail('guard_source_changed')
     return proof, raw
+
+
+@contextmanager
+def catalog_database_path(database):
+    """SQLite cannot reopen a protection source while we hold its exclusive lease."""
+    ticket = _leased.get()
+    if ticket is None:
+        yield database
+        return
+    _, files = ticket
+    root_key = canonical_path(database.parent)
+    if (root_key, database.name) not in files:
+        yield database
+        return
+    family = [(root_key, database.name + suffix) for suffix in SIDECARS]
+    expected = [files[key][1] for key in family if key in files]
+    with private_database(database.parent, database.name, reader=read_source) as (_, proofs, copy):
+        if proofs != expected:
+            fail('guard_source_changed')
+        yield copy
 
 
 def locations(*, t3code_roots=(), paseo_roots=(), cindy_databases=()):

@@ -184,8 +184,9 @@ def build_cindy_reference_catalog(
             "Could not inspect Cindy database",
         )
 
+    from .antigravity_cli_guards import catalog_database_path
     try:
-        with closing(connect_readonly(database)) as connection:
+        with catalog_database_path(database) as source, closing(connect_readonly(source)) as connection:
             session_columns = _require_columns(
                 connection,
                 "sessions",

@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, ExitStack
 from unittest.mock import patch
 
 from tests import bootstrap
@@ -20,13 +20,15 @@ FRONT = '42345678-1234-4123-8123-123456789abc'
 
 class CindyAgyTests(unittest.TestCase):
     def setUp(self):
-        self.base = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        self.base = Path(stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.root, self.binary = fixture(self.base, child=True)
         roaming = self.base/'roaming'
-        self.enterContext(patch.dict(os.environ, {'APPDATA': str(roaming), 'T3CODE_HOME': str(self.base/'t3'),
-                                                  'PASEO_HOME': str(self.base/'paseo')}))
-        self.enterContext(patch('pathlib.Path.home', return_value=self.base))
-        self.enterContext(patch('local_agent_manager.office_runtime.processes', return_value=[]))
+        stack.enter_context(patch.dict(os.environ, {'APPDATA': str(roaming), 'T3CODE_HOME': str(self.base/'t3'),
+                                                   'PASEO_HOME': str(self.base/'paseo')}))
+        stack.enter_context(patch('pathlib.Path.home', return_value=self.base))
+        stack.enter_context(patch('local_agent_manager.office_runtime.processes', return_value=[]))
         self.db = roaming/'CindyGlobal/cindy-one.db'
         self.db.parent.mkdir(parents=True)
         with closing(sqlite3.connect(self.db)) as db:
@@ -86,6 +88,14 @@ class CindyAgyTests(unittest.TestCase):
         self.assertFalse(self.apply(plan,'0'*64)['mutation_started'])
         self.assertTrue((self.root/'conversations'/(TARGET+'.db')).exists())
         result = self.apply(plan)
+        if os.name != 'nt':
+            self.assertEqual(result['goal_status'], 'blocked', result)
+            self.assertEqual(result['blockers'][0]['blocker_code'], 'antigravity_cli_file_lease_platform_unqualified')
+            self.assertFalse(result['mutation_started'])
+            self.assertTrue((self.root/'conversations'/(TARGET+'.db')).exists())
+            with closing(sqlite3.connect(self.db)) as db:
+                self.assertEqual(db.execute('SELECT sdk_session_id FROM sessions WHERE id=?', (FRONT,)).fetchone(), (TARGET,))
+            return
         self.assertEqual(result['goal_status'], 'complete', result)
         self.assertEqual(result['counts']['verified_native_sessions'], 2)
         self.assertEqual(result['counts']['verified_cindy_sessions'], 1)
@@ -138,6 +148,7 @@ class CindyAgyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'metadata_unqualified'):
             transform()
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows mandatory file leases')
     def test_run_and_verify_detects_reappearing_index_entry(self):
         result = self.cli('delete','run','--client','cindy','--record-id',FRONT,
                           '--antigravity-root',self.root,'--antigravity-bin',self.binary,'--out',self.path,
@@ -167,6 +178,7 @@ class CindyAgyTests(unittest.TestCase):
         self.assertEqual(result['blockers'][0]['blocker_code'], 'antigravity_cli_cindy_native_reference')
         self.assertFalse(result['mutation_started'])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows mandatory file leases')
     def test_apply_repeated_selection_in_different_order(self):
         second = '52345678-1234-4123-8123-123456789abc'
         with closing(sqlite3.connect(self.db)) as db:
@@ -182,6 +194,7 @@ class CindyAgyTests(unittest.TestCase):
         self.assertEqual(result['goal_status'], 'complete', result)
         self.assertEqual(result['counts']['verified_cindy_sessions'], 2)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows mandatory file leases')
     def test_native_failure_preserves_frontend_and_partial_completion_survives_retry(self):
         plan = self.plan()
         with patch.object(native, 'apply', side_effect=native.CleanupError('writer_running')):

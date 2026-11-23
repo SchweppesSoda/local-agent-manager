@@ -220,7 +220,16 @@ def recovery_scope(document, coordinator, approved_hash):
             # The receipt/process/handle ticket is installed before the guard
             # refresh, which itself checks the owning frontend database.
             for evidence, client in frontends:
-                joint.recheck(evidence, client)
+                try:
+                    joint.recheck(evidence, client)
+                except native.CleanupError as exc:
+                    if client == 't3code' and exc.kind == 'antigravity_cli_cindy_references_unqualified':
+                        # Surface the catalog failure and affected T3 threads when
+                        # discovery can identify them. A successful lookup still
+                        # cannot authorize recovery past the failed source guard.
+                        from .t3code_discovery import discover_bindings
+                        discover_bindings(Path(evidence['root']))
+                    raise
                 guards.acquire(evidence['cli_guards'], held)
                 stack.enter_context(guards.leased_reads(evidence['cli_guards'], held))
             from .antigravity_cli_current import hold_current

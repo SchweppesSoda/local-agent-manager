@@ -1,6 +1,7 @@
 """Antigravity CLI plan/apply/run/status/verify on the shared operation store."""
 from functools import wraps
 import inspect
+import os
 from pathlib import Path
 import uuid
 
@@ -238,6 +239,8 @@ def execute(document, store, options):
             _progress(options, event, 'completed', operation_id=document['operation_id'])
         try:
             guards.recheck(document['guard_sources'], evidence['ids'], cindy_sessions=sessions)
+            if os.name != 'nt':
+                native.fail('file_lease_platform_unqualified')
             guards.require_closed(document['guard_sources'], options.get('census'))
             with HeldFiles() as held, native.execution_scope(evidence):
                 guards.acquire(document['guard_sources'], held)

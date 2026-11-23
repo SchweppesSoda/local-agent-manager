@@ -43,7 +43,7 @@ def mirrors(root):
     (root/restore.METADATA).write_text(json.dumps({'conversations': records}), encoding='utf-8')
 
 
-def initial_sources(root):
+def initial_sources(root, *, require_log_symlink=True):
     (root/'implicit').mkdir(exist_ok=True)
     (root/'implicit/original.pb').write_bytes(b'opaque unchanged original implicit evidence')
     (root/'cache/onboarding.json').write_text(json.dumps(dict.fromkeys(
@@ -54,9 +54,10 @@ def initial_sources(root):
     try:
         (root/'cli.log').symlink_to('log/cli-original.log')
     except OSError as exc:
-        if os.name == 'nt' and getattr(exc, 'winerror', None) == 1314:
+        if os.name != 'nt' or getattr(exc, 'winerror', None) != 1314:
+            raise
+        if require_log_symlink:
             raise unittest.SkipTest('Windows diagnostic-symlink recovery requires symlink privilege') from exc
-        raise
     mirrors(root)
 
 
@@ -85,5 +86,6 @@ def reopen(root, keep, sid=NEW_NATIVE):
     name = 'cli-'+sid+'.log'
     (root/'log'/name).write_text('new diagnostics may mention historical IDs')
     (root/'crashes'/('crash-'+sid+'.log')).touch()
-    (root/'cli.log').unlink()
-    (root/'cli.log').symlink_to('log/'+name)
+    if (root/'cli.log').is_symlink():
+        (root/'cli.log').unlink()
+        (root/'cli.log').symlink_to('log/'+name)

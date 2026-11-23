@@ -59,6 +59,8 @@ with patch('pathlib.Path.home',return_value=Path(sys.argv[2])), patch('local_age
 
 @unittest.skipUnless(os.name == 'nt', 'Windows held lifecycle')
 class TopologyTests(unittest.TestCase):
+    require_log_symlink = True
+
     def setUp(self):
         from tests.runtime_support import require_leveldb
         require_leveldb()
@@ -79,7 +81,7 @@ class TopologyTests(unittest.TestCase):
         summary = CliFormatTests('runTest')
         summary.root = self.f.native
         summary.search_index()
-        initial_sources(self.f.native)
+        initial_sources(self.f.native, require_log_symlink=self.require_log_symlink)
         self.configure_implicit()
         self.install = self.f.base/'install'
         self.install.mkdir()
@@ -361,6 +363,7 @@ const db=new(req('classic-level').ClassicLevel)(process.argv[2],{keyEncoding:'bu
 
 @unittest.skipUnless(os.name == 'nt', 'Windows held lifecycle')
 class CatalogTopologyTests(unittest.TestCase):
+    require_log_symlink = False
     setUp = TopologyTests.setUp
     cold = TopologyTests.cold
     assert_blocked = TopologyTests.assert_blocked
@@ -385,6 +388,9 @@ class CatalogTopologyTests(unittest.TestCase):
         with closing(sqlite3.connect(self.f.t3/'userdata/statev2.sqlite')) as db:
             for number in range(2):
                 add_thread(db, 'new-claude-'+str(number), native=self.claude_id, driver='claudeAgent')
+        # Recovery binds the original Cindy file as well as its contents.
+        original_database = self.reference_database.rename(self.f.base/'original.db')
+        shutil.copy2(original_database, self.reference_database)
         with closing(sqlite3.connect(self.reference_database)) as db:
             db.execute('ALTER TABLE sessions RENAME TO hidden_sessions')
         payload = self.assert_blocked('catalog-reference-schema')
@@ -398,8 +404,10 @@ class CatalogTopologyTests(unittest.TestCase):
         self.assertEqual(error['error_type'], 'CindyReferenceError')
         self.assertIn('sessions', error['details']['causes'][0]['reason'])
         self.assertNotIn('PRIVATE_BODY', json.dumps(payload))
-        with closing(sqlite3.connect(self.reference_database)) as db:
-            db.execute('ALTER TABLE hidden_sessions RENAME TO sessions')
+        shutil.copy2(original_database, self.reference_database)
+        payload = self.assert_blocked('catalog-replaced')
+        self.assertEqual(payload['blockers'][0]['blocker_code'], 'antigravity_cli_guard_source_changed')
+        original_database.replace(self.reference_database)
         result, payload = self.cold('catalog-repaired-first')
         self.assertEqual(result.returncode, 0, payload)
         self.assertTrue(payload['goal_satisfied'])
