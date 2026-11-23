@@ -38,7 +38,8 @@ treating the word "status" as a read-only guarantee.
 
 ## Read the matching route
 
-- **Codex:** read [Codex reuse](references/codex.md).
+- For **Codex**, read [Codex reuse](references/codex.md), including
+  [account registration](references/codex.md#cindy-account-registration) for Cindy.
 - **Claude Code or AGY:** read [other providers](references/providers.md).
 - **Any credential/configuration write or export:** also read
   [transfer and verification](references/transfer.md).

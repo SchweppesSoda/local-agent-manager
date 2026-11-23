@@ -135,6 +135,21 @@ Cindy 自己过滤展示不等于原生历史已经干净。共享官方 Home �
 停止普通模式的语言备注注入，但不改变上述账号路由、不清理历史或官方索引；
 是否生效须核实实际安装构建包含该改动，不能只看 PR 已合并。
 
+#### Cindy 订阅账号登记与登录状态
+
+Cindy **0.1.144** 的账号列表按当前 owner 的 `subscription-accounts.json` 列出
+`pools.openai.accounts`，并按 `subscription-account-placement.json` 决定账号属于
+哪个供应商。没有显式位置映射的账号归内置 OpenAI 供应商。首次登录失败或取消时，
+该版本会回滚本次新增的非默认账号条目和供应商位置，原生 Home 和其中的凭据可以保留。
+[v0.1.144 登录回滚](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/subscription-accounts/runtime.ts#L3198-L3217)
+[v0.1.144 供应商位置解析](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/subscription-accounts/placement.ts#L91-L115)
+
+Cindy 使用为该实例选定的 Codex app-server，在该账号的 `CODEX_HOME` 下调用
+`account/read`，并传入 `refreshToken: false`。这个结果用于判断原生登录身份。
+凭据迁移后还需在目标供应商下核对账号登记。缺失登记的恢复流程见
+[认证技能的 Cindy 账号登记](../skills/agent-auth-management/references/codex.md#cindy-account-registration)。
+[v0.1.144 原生账号读取](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/subscription-accounts/nativeCli.ts#L78-L130)
+
 #### Codex 逐条原生账号绑定
 
 管理器根据 `cindy-<owner>.db` 的 owner 哈希定位其账号注册表，只使用

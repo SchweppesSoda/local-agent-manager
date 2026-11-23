@@ -42,7 +42,8 @@ identified native Codex home. Official guidance permits copying an existing
 file-backed auth cache; this does not qualify an arbitrary third-party import
 format. Follow [transfer and verification](transfer.md).
 
-1. Check source login locally and establish the actual source `auth.json` path.
+1. Check source login locally and locate its native `auth.json` or a verified
+   frontend store that holds the complete native Codex credential payload.
    Check target backend, provider and account/workspace restrictions first.
    Resolve conflicting environment/helper authentication rather than assuming
    this file will take precedence. Preserve restrictions; do not bypass them.
@@ -50,7 +51,7 @@ format. Follow [transfer and verification](transfer.md).
    as a private rollback copy, or record its absence. If the target needs a
    backend-setting change, include that exact setting in the authorized change
    and backup; do not change the source backend merely to obtain a file.
-3. Transfer the entire compatible credential file as opaque bytes with a stable
+3. Transfer the complete native credential payload as opaque bytes with a stable
    source snapshot and conditional atomic target replacement. Do not extract
    only the access token, reconstruct token JSON from memory, or copy the full
    home. Never print the parsed file or a decoded JWT.
@@ -64,6 +65,45 @@ valid independently forever: token refresh and revocation behavior must be
 verified for the selected version/backend. On a refresh conflict, inspect which
 copy is current. Follow the login precautions below before reauthentication;
 never repeatedly overwrite with an older snapshot or run a two-way sync loop.
+
+For example, Magpie v0.1.4717 stores native Codex credentials as the saved
+account's raw `auth` object and passes that object to its Codex writer. Check
+that the installed version does likewise and that the selected login qualifies
+for native reuse, including Magpie's checks for access-only accounts and grants
+already held by another Codex home.
+[Magpie's versioned saved-login implementation](https://github.com/yetone/magpie/blob/v0.1.4717/internal/provider/logins.go#L1499-L1644)
+
+## Cindy account registration
+
+For Cindy subscription reuse, verify the active owner, selected provider and
+exact Cindy account ID alongside the native Codex home. In Cindy v0.1.144, a
+failed or cancelled first login rolls back the newly added non-default account
+and its provider placement. The native home and its credential file can remain.
+The standard add flow uses a new ID for another account. Its existing-login
+shortcut attaches only the default CLI login.
+[Cindy's versioned login flow](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/subscription-accounts/runtime.ts#L3015-L3217)
+
+Before retrying a login, check the active owner's `subscription-accounts.json`
+for the exact ID under `pools.openai.accounts` and check its provider placement.
+In v0.1.144, an account with no mapping in `subscription-account-placement.json`
+belongs to the built-in OpenAI provider. For an authorized repair of a known
+Cindy-generated ID with a verified native login, prefer a supported attach
+operation if the installed build offers one. Otherwise restore only its missing
+pool entry and any confirmed placement required by the target provider. Let
+any pending add/login for that ID finish before editing so its rollback cannot
+remove the restored entry. Use a private before-image and a conditional atomic
+write under Cindy's settings write lock or with Cindy closed. Preserve other
+accounts, the default account routing and task/native bindings. Leave valid
+credentials in place.
+[Cindy's versioned placement lookup](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/subscription-accounts/placement.ts#L91-L115)
+[Cindy's versioned settings writer](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/maker-host/override-settings-file.ts#L258-L284)
+
+Verify the account under the intended provider in Cindy's account view. For
+v0.1.144, the native identity check uses the selected Codex app-server's
+`account/read` with `refreshToken: false` and Cindy's launch environment. The
+RPC can confirm the identity for that home while the account is still missing
+from the frontend. Report desktop registration and native login separately.
+[Cindy's versioned account reader](https://github.com/makecindy/cindy/blob/v0.1.144/apps/desktop/src/main/subscription-accounts/nativeCli.ts#L78-L130)
 
 ## Keyring, ephemeral and frontend-managed authentication
 
@@ -114,8 +154,8 @@ import nor evidence that a particular historical session belongs to an account.
 
 ## Evidence maintenance
 
-The provider guidance above was checked on 2026-11-16. Paths, storage selection
-and compatible file formats remain per-operation findings. Installed help and
-matching versioned implementation take precedence over assumptions based on an
-upstream development branch; a documented or compiled export helper is not
-proof that this CLI exposes an export command.
+The Codex storage guidance above was checked on 2026-11-16. The Cindy and Magpie
+notes apply to the versions cited. Paths, storage selection and compatible file
+formats remain per-operation findings. Use installed help and matching versioned
+implementation to verify CLI commands. A documented or compiled export helper
+may be absent from the selected CLI.
