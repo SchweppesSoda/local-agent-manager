@@ -11,7 +11,7 @@ Identify the requested operation and authoritative source first. For client-faci
 
 - Skill creation, content review, routing, or resource maintenance use [content maintenance](references/content-maintenance.md).
 - Deployment, imports, source registration, or global deletion use [registry changes](references/registry-changes.md).
-- Client upgrades or loading failures use [client verification](references/client-verification.md).
+- Client upgrades or loading failures use [client verification](references/client-verification.md). For duplicate Codex Skills or a proposed private copy, [check the shared and private discovery paths](references/client-verification.md#codex-shared-skills-and-independent-copies) first.
 - Script or dependency changes use [runtime audit](references/runtime-audit.md).
 
 Content work can proceed directly in the selected Skill source. Use `local-agent-manager` for supported source audits, deployment transactions, and client evidence; verify the relevant command's help when needed. `local-agent-manager resources --json` locates its matching management Skills and operation documents. Deployment configuration is required for managed deployment operations, not for ordinary Skill authoring.

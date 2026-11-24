@@ -5,11 +5,11 @@ Identify whether the requested Skill lives in a standalone directory, a source r
 Read the current source and relevant references before editing. Protect existing changes. Keep descriptions focused on the action and trigger. Put long workflows in references and preserve necessary precision and authorization boundaries. Keep UI metadata consistent with the Skill's actual scope.
 
 When repairing a Skill that behaved incorrectly, compare the exact body supplied
-by the client's discovery path with the authoritative source. Check same-name
-copies in that client's active discovery roots. A healthy shared mount does not
-prove a private copy is current. Preserve intentional local overrides, update
-the affected copied deployment within scope, and report any stale or duplicate
-entry that still prevents the correction from reaching the client.
+by the client's discovery path with the authoritative source. For Codex, first
+[distinguish links from independent copies](client-verification.md#codex-shared-skills-and-independent-copies).
+An edit to the source reaches every direct mount. For an independent deployment,
+check its references and local overrides before updating it within scope.
+Report any stale copy that can still supply the old instructions.
 
 Validate frontmatter, relative resources, and representative positive and negative routing cases. Use `local-agent-manager skills audit --repo-root <source>` for a requested source audit. Static `sourceAudit.sharedResourceReferences` may permit exact cross-Skill resources within that source. Shared resources remain owned by their original Skill.
 

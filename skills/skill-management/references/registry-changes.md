@@ -7,7 +7,7 @@ Use the selected source's deployment configuration: `local-agent-manager skills 
 3. Apply the same arguments and exact reviewed ID with `local-agent-manager skills apply --repo-root <source> --target <adapter> --plan-id <id> --yes`.
 4. Read back the deployment, then perform affected native loading checks.
 
-The source owns its manifest and transaction journal. Shared target roots and discovery files use cross-source locks. Other sources' entries and unrelated external links are preserved. Same-name Skills in the actual discovery scope are blocking conflicts.
+The source owns its manifest and transaction journal. Shared target roots and discovery files use cross-source locks. Other sources' entries and unrelated external links are preserved. A competing source publishing the same Skill name blocks registration in a shared discovery manifest. For multiple Codex paths, [check physical identity](client-verification.md#codex-shared-skills-and-independent-copies) before reporting a duplicate deployment. If the user requests removal of a particular independent copy, scope the operation to that verified directory and preserve the source and its mounts.
 
 `--create-only` permits CREATE_LINK only. Source registration, adoption, replacement, import, and deletion need separately reviewed plans. Existing unattended authorization belongs to its original source workflow.
 
