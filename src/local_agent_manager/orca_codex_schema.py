@@ -1,4 +1,4 @@
-"""Fixed metadata-only SQLx schema for accepted Codex 0.160.0 binary.
+"""Reviewed SQLx migrations and SQLite object definitions for Orca writes.
 
 No record rows or chat contents are included.
 """
@@ -273,6 +273,16 @@ SCHEMA_METADATA = {'goals_1.sqlite': {'migrations': [[1,
                                     '11BA7EF8C0291B94F6475660FEB84DC8C10C513EE82665A1AC8A94F50670028250DDA9A9EC7132F2C76BFA66AF6F0F21']],
                     'schema_sha256': 'c24c2cd890eb0b5109f6ee881113dad0eac34fc8103f6690dd1823d77cd873ca'}}
 
+
+ATTACHED_STATE_SCHEMA = {
+    "schema_sha256": "b308495242a59120fff1ca8d25fc417a43baaa70608e649c71d2250eebc0b517",
+    "migrations": SCHEMA_METADATA["state_5.sqlite"]["migrations"] + [
+        [59, "thread attachment reverse lookup", 1, "28AC43B18C07B3DA9F930528629AFFB9F4008AD2D63E34C2D4561C660CDE99733AB430F03F0563AB22890892C15B9711"],
+        [60, "guardian review feedback", 1, "4AA9F1CE86AC6741D086FCA017BBD7546AD7DB1FDD7A56C88854566628B9B1DB4F102C4C4366BF016B70BCC91BC09366"],
+        [61, "thread read state", 1, "0E2E8A05ACBE268720436C0874F226CD6CD8783482DC368DFE004CCDD2E241CAE4B1963F483D1A60FE23F8F28BCC3267"],
+        [62, "threads attached parent", 1, "875FFAACAF8D6F3E1ED49628B2B746BDD08CC1B4617C74900729CAA4248AD4BD0A3DDC57F6A122CC50E241D7133D269C"],
+    ],
+}
 
 STARTUP_FILES = frozenset(['installation_id',
  'skills/.system/.codex-system-skills.marker',

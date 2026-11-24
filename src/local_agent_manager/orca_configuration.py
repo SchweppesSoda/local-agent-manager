@@ -63,14 +63,3 @@ def validate_configuration(path: Path, identity: dict) -> None:
     except (ValueError, KeyError, TypeError, RecursionError, OverflowError):
         # TOML parse exceptions can contain private configuration values.
         raise ValueError("orca_storage_configuration_unverified") from None
-
-
-def package_manifest_paths(binary: Path) -> tuple[Path, ...]:
-    """Known install-context probes for the qualified standalone executable."""
-    parts = tuple(part.casefold() for part in binary.parts)
-    if any(parts[index:index + 3] == ("packages", "standalone", "releases") for index in range(len(parts) - 2)):
-        raise ValueError("orca_package_context_unverified")
-    paths = [binary.parent / "codex-package.json"]
-    if binary.parent.name.casefold() in {"bin", "codex-resources"}:
-        paths.append(binary.parent.parent / "codex-package.json")
-    return tuple(paths)

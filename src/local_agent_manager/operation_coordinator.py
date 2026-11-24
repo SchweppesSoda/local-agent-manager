@@ -5838,6 +5838,7 @@ class OperationCoordinator:
             from .orca_runtime import IsolatedCodexRuntime
             from .adapters.orca import OrcaAdapter
             evidence = evidence_for_actions(live.document, actions)
+            contract = evidence[0]["frozen"]["invocation_policy"]["contract"]
             startup_snapshot = None
             def boundary(phase):
                 nonlocal startup_snapshot
@@ -5847,15 +5848,16 @@ class OperationCoordinator:
                     raise OperationCoordinatorError("; ".join(sorted(set(errors))))
                 home = Path(evidence[0]["frozen"]["home"])
                 if phase == "post_start":
-                    startup_snapshot = _startup_manifest(home, after_start=True)
+                    startup_snapshot = _startup_manifest(home, after_start=True, contract=contract)
                     startup_boundary_callback(startup_snapshot)
                 elif phase == "readonly_recovery" and startup_snapshot is not None:
-                    recheck_startup_snapshot(home, startup_snapshot)
+                    recheck_startup_snapshot(home, startup_snapshot, contract=contract)
             boundary("before_start")
-            binaries = {value["frozen"]["binary"]["path"] for value in evidence}
+            binaries = {(value["frozen"]["binary"]["path"], value["frozen"]["binary"]["sha256"]) for value in evidence}
             if len(binaries) != 1:
                 raise OperationCoordinatorError("Orca batch has conflicting pinned binaries")
-            runtime = IsolatedCodexRuntime(Path(next(iter(binaries))))
+            binary, digest = binaries.pop()
+            runtime = IsolatedCodexRuntime(Path(binary), expected_sha256=digest)
             def factory(*, codex_home, codex_binary, timeout):
                 if Path(codex_binary) != runtime.binary or canonical_path(codex_home) != canonical_path(evidence[0]["frozen"]["home"]):
                     raise OperationCoordinatorError("Orca runtime factory scope differs from approval")
@@ -6105,7 +6107,9 @@ class OperationCoordinator:
                     schemas = {value["schema_version"] for value in evidence}
                     if len(schemas) != 1:
                         return ("orca_startup_snapshot_invalid",)
-                    recheck_startup_snapshot(storages[batch["storage_id"]], snapshot, evidence_schema=next(iter(schemas)))
+                    contract = (evidence[0]["frozen"].get("invocation_policy") or {}).get("contract")
+                    recheck_startup_snapshot(storages[batch["storage_id"]], snapshot,
+                                             evidence_schema=next(iter(schemas)), contract=contract)
         except (ValueError, OSError, KeyError, TypeError):
             return ("orca_runtime_instance_unproven",)
         return ()

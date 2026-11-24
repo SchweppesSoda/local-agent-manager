@@ -228,8 +228,10 @@ Qualified Orca native deletion uses `larj.operation-plan.v3`. Its target safety
 evidence freezes one managed account home, each complete native cascade, ordinary
 rollout/SQLite/index identities and link counts, required sources, bounded
 configuration hashes, opaque credential identities/hashes, approved startup
-artifacts, and the fixed binary/invocation policy. Target evidence and runtime
-policy v2 qualify configured homes under the exact [registered boundary](adapters.md#orca精确原生删除的限定组合).
+artifacts, and the executable digest for this approval. Runtime policy v3 checks the publisher,
+exercises native deletion in a disposable home, and compares the measured schema and startup
+artifacts to the selected home. A pending shared-store migration or an unselected attachment-only
+child blocks the operation. See the [Orca write conditions](adapters.md#orca精确原生删除的限定组合).
 Unregistered optional databases, compressed rollouts, a pre-existing fixed index
 replacement file, or nonempty native logs block startup. Apply rechecks current references
 and target-scoped Windows process metadata and still requires a real

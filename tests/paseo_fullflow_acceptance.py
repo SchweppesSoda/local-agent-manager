@@ -5,7 +5,7 @@ _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.pare
 from tests import bootstrap as _test_bootstrap
 """Opt-in actual Codex/Pi/Claude deletion against owned synthetic Paseo stores.
 
-Run with --binary ABSOLUTE_PINNED_CODEX_EXE and --scenario complete or
+Run with --binary ABSOLUTE_CODEX_EXE and --scenario complete or
 cold-continue. Every phase runs in a new process with isolated homes, Git
 configuration and loopback-only proxies. Generated stores stay beneath
 .codex-artifacts/herdr-fullflow-fixtures. Never uses a real Paseo deployment,
@@ -72,11 +72,11 @@ def seed(base, binary, scenario):
     from local_agent_manager.paseo_bound_adapter import PaseoBoundAdapter, SCHEMA
     from local_agent_manager.cleanup_service import CleanupService
     from local_agent_manager.operation_coordinator import OperationCoordinator
-    from tests.orca_native_support import create_native_schema, add_native_record
+    from tests.orca_native_support import warm_native_schema, add_native_record
     profile, codex, pi, claude = base/'paseo', base/'codex', base/'pi', base/'claude'
     profile.mkdir(); codex.mkdir(); (pi/'sessions').mkdir(parents=True); claude.mkdir()
     (profile/'server-id').write_text('srv_acceptance\n', encoding='utf-8')
-    create_native_schema(codex)
+    warm_native_schema(codex, binary)
     selected_paths = [add_native_record(codex, NATIVE[0]), add_native_record(codex, CHILD, parent=NATIVE[0])]
     keeper_paths = [add_native_record(codex, NATIVE_KEEP[0])]
     index = codex/'session_index.jsonl'
@@ -204,9 +204,10 @@ def worker(base,binary,scenario,phase):
 
 
 def wrapper(binary,scenario):
-    from local_agent_manager.orca_runtime import isolated_environment, PINNED_BINARY_SHA256
+    from local_agent_manager.orca_runtime import isolated_environment
+    from local_agent_manager.orca_runtime_probe import _verify_publisher
     assert os.name=='nt' and binary.is_absolute()
-    assert metadata(binary)['sha256']==PINNED_BINARY_SHA256, 'Pinned Codex executable drift'
+    _verify_publisher(binary)
     artifacts = REPOSITORY/'.codex-artifacts/herdr-fullflow-fixtures'
     artifacts.mkdir(parents=True,exist_ok=True)
     base = Path(tempfile.mkdtemp(prefix='paseo-native-'+scenario+'-',dir=artifacts)).resolve(strict=True)

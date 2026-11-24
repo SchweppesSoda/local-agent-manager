@@ -1,10 +1,11 @@
-"""Fixed isolated invocation validated through the public Orca v3 operation."""
+"""Isolated invocation and per-plan executable identity for Orca native writes."""
 
 from __future__ import annotations
 
 import ctypes
 import hashlib
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -14,10 +15,7 @@ from pathlib import Path
 from .codex_app_server import CodexAppServer
 from .orca_discovery import require_plain_directory, require_plain_file
 
-RUNTIME_POLICY_SCHEMA = "larj.orca-runtime.v2"
-PINNED_BINARY_SHA256 = "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d"
-# The exact Windows binary/policy passed fresh public v3 plan, cold apply and
-# cold verify in owned TEMP. Static brand capabilities remain closed.
+RUNTIME_POLICY_SCHEMA = "larj.orca-runtime.v3"
 RUNTIME_ACCEPTED = True
 CONFIG_OVERRIDES = (
     'model="janitor-metadata-local"', 'model_provider="janitor_local"',
@@ -32,13 +30,15 @@ DISABLED_FEATURES = ("plugins", "remote_plugin", "apps", "hooks", "skill_mcp_dep
                      "in_app_updates", "daemon_auto_start", "system_proxy_fallback", "code_mode_host")
 
 
-def invocation_policy() -> dict:
+def invocation_policy(binary: Path, digest: str) -> dict:
     """Bind the actual fixed invocation and trusted implementation bytes."""
+    from .orca_runtime_probe import probe_contract
     files = (Path(__file__), Path(__file__).with_name("orca_runtime_launcher.py"),
              Path(__file__).with_name("codex_app_server.py"), Path(__file__).with_name("orca_codex_schema.py"),
              Path(__file__).with_name("orca_target_safety.py"), Path(__file__).with_name("orca_configuration.py"),
-             Path(__file__).with_name("orca_startup_0160.json"), Path(sys.executable).absolute())
-    return {"schema_version": RUNTIME_POLICY_SCHEMA, "binary_sha256": PINNED_BINARY_SHA256,
+             Path(__file__).with_name("orca_runtime_probe.py"), Path(sys.executable).absolute())
+    return {"schema_version": RUNTIME_POLICY_SCHEMA, "binary_sha256": digest,
+            "contract": probe_contract(binary, digest),
             "config_overrides": list(CONFIG_OVERRIDES), "disabled_features": list(DISABLED_FEATURES),
             "enabled_features": ["skip_host_skill_discovery"], "strict_config": True,
             "environment_policy": "complete_allowlist_isolated_homes_git_configs_loopback_proxy.v2",
@@ -225,8 +225,7 @@ def isolated_environment(root: Path, codex_home: Path) -> tuple[dict[str, str], 
         environment[name] = "http://127.0.0.1:1"
     environment["NO_PROXY"] = "127.0.0.1,localhost,::1"
     environment["CODEX_HOME"] = str(codex_home)
-    # This pinned release removed the similarly named feature flag. Its
-    # startup environment gate disables remote control before authentication.
+    # Native app-server reads this startup marker before it spawns workers.
     environment["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1"
     environment["HOMEDRIVE"] = root.drive
     environment["HOMEPATH"] = str(root / "userprofile")[len(root.drive):]
@@ -246,22 +245,33 @@ def isolated_environment(root: Path, codex_home: Path) -> tuple[dict[str, str], 
 class IsolatedCodexRuntime:
     """One owned scratch directory and job-contained app-server invocation."""
 
-    def __init__(self, binary: Path, *, expected_sha256: str = PINNED_BINARY_SHA256, root: Path | None = None) -> None:
+    def __init__(self, binary: Path, *, expected_sha256: str, root: Path | None = None) -> None:
         if os.name != "nt":
             raise ValueError("Orca runtime requires Windows")
         self.binary = binary.absolute()
         info = require_plain_file(self.binary)
-        if info.st_nlink != 1 or hashlib.sha256(self.binary.read_bytes()).hexdigest() != expected_sha256:
-            raise ValueError("Orca runtime binary identity does not match its acceptance pin")
+        if info.st_nlink != 1:
+            raise ValueError("orca_runtime_binary_changed")
         self.temporary = tempfile.TemporaryDirectory(prefix="janitor-orca-runtime-") if root is None else None
         self.root = Path(self.temporary.name).resolve(strict=True) if self.temporary else root.absolute()
         require_plain_directory(self.root)
+        # Launch the checked bytes with no adjacent DLLs or package manifests.
+        # Replacing the configured executable after this copy cannot change it.
+        self.executable = self.root / "codex.exe"
+        try:
+            with self.binary.open("rb") as source, self.executable.open("xb") as target:
+                shutil.copyfileobj(source, target)
+            if hashlib.sha256(self.executable.read_bytes()).hexdigest() != expected_sha256:
+                raise ValueError("orca_runtime_binary_changed")
+        except BaseException:
+            self.close()
+            raise
 
     def server(self, *, codex_home: Path, timeout: float = 30.0, job_ready_callback=None) -> CodexAppServer:
         environment, cwd = isolated_environment(self.root, codex_home)
         launcher = Path(__file__).with_name("orca_runtime_launcher.py")
         require_plain_file(launcher)
-        command = [sys.executable, "-I", str(launcher), str(self.binary), "app-server", "--stdio", "--strict-config"]
+        command = [sys.executable, "-I", str(launcher), str(self.executable), "app-server", "--stdio", "--strict-config"]
         for override in CONFIG_OVERRIDES:
             command.extend(("-c", override))
         for feature in DISABLED_FEATURES:

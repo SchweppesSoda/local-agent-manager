@@ -31,6 +31,16 @@ class IsolatedCodexRuntimeTests(unittest.TestCase):
         self.home = self.root / "codex-home"
         self.home.mkdir()
 
+    @unittest.skipUnless(os.name == "nt", "Authenticode qualification uses Windows")
+    def test_unsigned_candidate_is_blocked_before_app_server_start(self):
+        from hashlib import sha256
+        from local_agent_manager.orca_runtime_probe import probe_contract
+        binary = self.root / "codex.exe"
+        binary.write_bytes(b"synthetic unsigned executable")
+        with patch.object(JobCodexAppServer, "start", side_effect=AssertionError), \
+                self.assertRaisesRegex(ValueError, "orca_runtime_publisher_unverified"):
+            probe_contract(binary, sha256(binary.read_bytes()).hexdigest())
+
     def protocol_script(self, *, descendant=False):
         path = self.root / "synthetic-protocol.py"
         path.write_text(

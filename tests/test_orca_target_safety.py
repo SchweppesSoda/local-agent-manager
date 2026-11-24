@@ -50,7 +50,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
             patch("local_agent_manager.orca_runtime.RUNTIME_ACCEPTED", False),
             patch("local_agent_manager.orca_target_safety._schema_metadata", return_value={}),
             patch("local_agent_manager.orca_target_safety._startup_control", return_value={}),
-            patch("local_agent_manager.orca_runtime.PINNED_BINARY_SHA256", hashlib.sha256(self.binary.read_bytes()).hexdigest()),
+            patch("local_agent_manager.orca_runtime_probe.probe_contract", return_value=None),
             patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()),
             patch("local_agent_manager.orca_target_safety._system_configuration_root", return_value=self.root / "system-config"),
             patch.dict(os.environ, {"APPDATA": str(self.root / "appdata"), "ORCA_USER_DATA_PATH": "",
@@ -72,6 +72,38 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.assertNotIn(SENTINEL, json.dumps(evidence))
         self.assertNotIn("spawnToken", json.dumps(evidence))
         self.assertEqual(recheck_orca_target(evidence, self.adapter), ())
+
+    def test_replaced_executable_requires_new_approval_before_probing(self):
+        evidence = self.freeze()
+        self.binary.write_bytes(b"different build at same path")
+        with patch("local_agent_manager.orca_runtime_probe.probe_contract", side_effect=AssertionError):
+            self.assertIn("orca_runtime_binary_changed", recheck_orca_target(evidence, self.adapter))
+
+    def test_shared_store_requiring_migration_blocks_before_native_start(self):
+        from local_agent_manager.orca_codex_schema import SCHEMA_METADATA, ATTACHED_STATE_SCHEMA
+        existing = SCHEMA_METADATA["state_5.sqlite"]
+        contract = {"schemas": {"state_5.sqlite": ATTACHED_STATE_SCHEMA["schema_sha256"]}}
+        with patch("local_agent_manager.orca_target_safety._schema_metadata", return_value=existing), \
+                patch("local_agent_manager.orca_runtime_probe.probe_contract", return_value=contract):
+            self.assertIn("orca_runtime_store_schema_mismatch", self.freeze()["blocker_codes"])
+
+    def test_attachment_only_child_and_orphan_read_receipt(self):
+        import sqlite3
+        from contextlib import closing
+        from local_agent_manager.orca_target_safety import _check_attached_scope
+        with closing(sqlite3.connect(self.home / "state_5.sqlite")) as db, db:
+            db.execute("ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT")
+            for table in ("guardian_review_feedback", "thread_attachments", "thread_read_receipts"):
+                db.execute(f"CREATE TABLE {table}(thread_id TEXT)")
+            db.execute("UPDATE threads SET attached_thread_parent_id=? WHERE id=?", (CHILD_ID, TARGET_ID))
+            db.execute("INSERT INTO thread_read_receipts VALUES(?)", (TARGET_ID,))
+        with self.assertRaisesRegex(ValueError, "orca_attached_thread_outside_scope"):
+            _check_attached_scope(self.home, (CHILD_ID,))
+        _check_attached_scope(self.home, (CHILD_ID, TARGET_ID))
+        with closing(sqlite3.connect(self.home / "state_5.sqlite")) as db, db:
+            db.execute("DELETE FROM threads WHERE id=?", (TARGET_ID,))
+        with self.assertRaisesRegex(ValueError, "orca_native_thread_metadata_residual"):
+            _check_attached_scope(self.home, (TARGET_ID,))
 
     def test_native_filename_and_compressed_copies_block_before_start(self):
         from local_agent_manager.orca_target_safety import _rollout_boundary
@@ -385,7 +417,8 @@ class OrcaTargetSafetyTests(unittest.TestCase):
                     saved = path.with_name(path.name + ".saved")
                     path.rename(saved)
                     path.write_bytes(data)
-                    self.assertIn("orca_target_boundary_changed", recheck_orca_target(evidence, self.adapter))
+                    expected = "orca_runtime_binary_changed" if change == "binary" else "orca_target_boundary_changed"
+                    self.assertIn(expected, recheck_orca_target(evidence, self.adapter))
                     path.unlink()
                     saved.rename(path)
 
@@ -436,7 +469,7 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         self.assertIn("orca_startup_content_unverified", self.freeze()["blocker_codes"])
         marker.unlink()
         (self.binary.parent / "codex-package.json").write_bytes(b"PRIVATE_PACKAGE_SENTINEL")
-        self.assertIn("orca_system_configuration_unverified", self.freeze()["blocker_codes"])
+        self.assertTrue(self.freeze()["preflight_complete"])
         (self.binary.parent / "codex-package.json").unlink()
         (self.home / "environments.toml").write_bytes(b"PRIVATE_ENVIRONMENT_SENTINEL")
         self.assertIn("orca_system_configuration_unverified", self.freeze()["blocker_codes"])

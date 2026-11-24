@@ -38,14 +38,20 @@ def coordinator_scope(evidence, *, execution=False, plan_sha256=None, frontend_c
 
 def _qualified(evidence):
     from .orca_target_safety import EVIDENCE_SCHEMA, FRONTEND_EVIDENCE_SCHEMA
-    from .orca_runtime import RUNTIME_ACCEPTED, invocation_policy, PINNED_BINARY_SHA256
+    from pathlib import Path
+    from .orca_runtime import RUNTIME_ACCEPTED, invocation_policy
     values = list(evidence)
     if not RUNTIME_ACCEPTED or not values or any(
         value.get("schema_version") not in {EVIDENCE_SCHEMA, FRONTEND_EVIDENCE_SCHEMA} or value.get("preflight_complete") is not True
         or value.get("native_delete") is not True or value.get("api_boundary") != "validated_fixed_runtime"
-        or value.get("frozen", {}).get("invocation_policy") != invocation_policy()
-        or value.get("frozen", {}).get("binary", {}).get("sha256") != PINNED_BINARY_SHA256 for value in values):
+        for value in values):
         raise ValueError("Orca coordinator ticket lacks validated target evidence")
+    for value in values:
+        frozen = value["frozen"]
+        binary = frozen.get("binary") or {}
+        if (not isinstance(binary.get("path"), str) or not isinstance(binary.get("sha256"), str)
+                or frozen.get("invocation_policy") != invocation_policy(Path(binary["path"]), binary["sha256"])):
+            raise ValueError("Orca coordinator ticket lacks validated executable evidence")
     return values
 
 

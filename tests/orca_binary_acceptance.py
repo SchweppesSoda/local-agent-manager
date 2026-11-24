@@ -6,7 +6,7 @@ from tests import bootstrap as _test_bootstrap
 """Opt-in fixed-binary P5 acceptance; creates only fresh owned TEMP stores.
 
 Run from this checkout with PYTHONPATH=src:
-python -m tests.orca_binary_acceptance --binary ABSOLUTE_PINNED_CODEX_EXE
+python -m tests.orca_binary_acceptance --binary ABSOLUTE_CODEX_EXE
 No user store, auth file, transcript, turn, or login is used.
 """
 
@@ -38,21 +38,43 @@ def row_digest(home):
     return hashlib.sha256(json.dumps(row, separators=(",", ":")).encode()).hexdigest()
 
 
+def check_shared_store_upgrade(root, binary, expected_schema):
+    from local_agent_manager.orca_codex_schema import ATTACHED_STATE_SCHEMA
+    from local_agent_manager.orca_target_safety import _schema_metadata
+    from tests.orca_native_support import create_native_schema, add_native_record, warm_native_schema
+    home = root / "migration-only"
+    home.mkdir()
+    create_native_schema(home)
+    files = [add_native_record(home, tid, parent=PARENT if tid == CHILD else None) for tid in (PARENT, CHILD, SENTINEL)]
+    def threads():
+        with closing(sqlite3.connect(home / "state_5.sqlite")) as db:
+            return list(db.execute("SELECT * FROM threads ORDER BY id"))
+    before_rows = threads()
+    before_files = [file_metadata(p) for p in files]
+    warm_native_schema(home, binary)
+    schema = _schema_metadata(home / "state_5.sqlite")
+    assert schema["schema_sha256"] == expected_schema
+    expected_rows = [row + (None,) for row in before_rows] if schema == ATTACHED_STATE_SCHEMA else before_rows
+    assert threads() == expected_rows and before_files == [file_metadata(p) for p in files]
+    return [m[:2] for m in schema["migrations"] if m[0] > 58]
+
+
 def run(binary):
     # Only the fresh isolated worker imports/discovers product stores.
     from local_agent_manager.adapters import OrcaAdapter
     from local_agent_manager.cleanup_service import CleanupService
     from local_agent_manager.operation_coordinator import OperationCoordinator
-    from local_agent_manager.orca_runtime import PINNED_BINARY_SHA256, RUNTIME_ACCEPTED, invocation_policy
-    from tests.orca_native_support import create_native_schema, add_native_record
+    from local_agent_manager.orca_runtime import RUNTIME_ACCEPTED, invocation_policy
+    from tests.orca_native_support import warm_native_schema, add_native_record
     from tests.orca_support import create_profile
     if os.name != "nt" or not RUNTIME_ACCEPTED or not binary.is_absolute():
         raise ValueError("Acceptance requires Windows, the admitted combination, and an absolute fixed binary")
-    if file_metadata(binary)["sha256"] != PINNED_BINARY_SHA256:
-        raise ValueError("Acceptance binary differs from its fixed SHA256")
+    digest = file_metadata(binary)["sha256"]
     root = Path(tempfile.mkdtemp(prefix="janitor-orca-v3-acceptance-")).resolve(strict=True)
+    policy = invocation_policy(binary, digest)
+    migrations = check_shared_store_upgrade(root, binary, policy["contract"]["schemas"]["state_5.sqlite"])
     home = create_profile(root / "orca", accounts=1)[0]
-    create_native_schema(home)
+    warm_native_schema(home, binary)
     parent = add_native_record(home, PARENT)
     child = add_native_record(home, CHILD, parent=PARENT)
     sentinel = add_native_record(home, SENTINEL)
@@ -86,8 +108,8 @@ def run(binary):
     status = cold.status_operation(operation_id=plan["operation_id"], plan_path=root / "plan.json")
     verify = cold.verify_operation(operation_id=plan["operation_id"], plan_path=root / "plan.json")
     after = {"sentinel": file_metadata(sentinel), "row": row_digest(home), "outside": file_metadata(outside)}
-    report = {"root": str(root), "binary": str(binary), "binary_sha256": PINNED_BINARY_SHA256,
-              "invocation_policy": invocation_policy(), "schema_version": plan["schema_version"],
+    report = {"root": str(root), "binary": str(binary), "binary_sha256": digest,
+              "invocation_policy": policy, "schema_version": plan["schema_version"], "additional_migrations": migrations,
               "clients_closed_ack_rejected": no_ack["goal_status"], "hardlink_rejected": link_rejection["goal_status"],
               "result": result, "cold_status": status, "cold_verify": verify, "sentinel_unchanged": before == after,
               "approved_rollouts_absent": not parent.exists() and not child.exists(),

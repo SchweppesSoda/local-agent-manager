@@ -19,7 +19,7 @@ def run(binary, scenario="complete"):
     from local_agent_manager.cleanup_service import CleanupService
     from local_agent_manager.operation_coordinator import OperationCoordinator
     from tests.test_orca_frontend_cleanup import OrcaFrontendCleanupTests
-    from tests.orca_native_support import create_native_schema, add_native_record
+    from tests.orca_native_support import warm_native_schema, add_native_record
     from tests.orca_support import CURRENT_ID, HISTORY_ID
     from tests.orca_binary_acceptance import file_metadata
     fixture = OrcaFrontendCleanupTests()
@@ -27,7 +27,7 @@ def run(binary, scenario="complete"):
     fixture.addCleanup = lambda cleanup: cleanup.__self__._finalizer.detach()
     fixture.setUp()
     root, home = fixture.root, fixture.homes[0]
-    create_native_schema(home)
+    warm_native_schema(home, binary)
     paths = [add_native_record(home, sid) for sid in (CURRENT_ID, HISTORY_ID)]
     sentinel = add_native_record(home, "00000000-0000-4000-8000-000000000103")
     before = file_metadata(sentinel)

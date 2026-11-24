@@ -11,6 +11,17 @@ from contextlib import closing
 from pathlib import Path
 
 
+def warm_native_schema(home, binary):
+    from hashlib import sha256
+    from local_agent_manager.orca_runtime import IsolatedCodexRuntime
+    from local_agent_manager.orca_runtime_probe import _verify_publisher
+    digest = sha256(binary.read_bytes()).hexdigest()
+    with IsolatedCodexRuntime(binary, expected_sha256=digest) as owned:
+        _verify_publisher(owned.executable)
+        with owned.server(codex_home=home) as server:
+            server.request("thread/list", {})
+
+
 def create_native_schema(home):
     fixture = json.loads((Path(__file__).parent / "fixtures" / "orca_codex_0160_schema.json").read_text())
     for name, value in fixture.items():

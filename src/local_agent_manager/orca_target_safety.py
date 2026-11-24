@@ -1,8 +1,7 @@
 """Target-scoped Orca evidence for one validated Windows managed account home.
 
-This module never launches a product or initializes a store. Its frozen evidence
-is consumed by the coordinator's exact action ticket; static capabilities and
-legacy writers do not inherit that qualification.
+Target inspection is read-only. Executable qualification uses a separate
+synthetic home. The coordinator binds its ticket to the frozen target.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ import stat
 import re
 import uuid
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -36,7 +35,7 @@ _STARTUP_PATHS = ("installation_id", "skills", "tmp", ".tmp", "thread-writer-loc
 
 
 def _rollout_boundary(home: Path, rollouts: Iterable[str], affected: Iterable[str]) -> dict:
-    """Match the pinned native filename parser without reading transcripts.
+    """Match the reviewed native filename format without reading transcripts.
 
     Native deletion can remove compressed siblings and discover compressed-only
     copies. This write combination therefore requires their bounded absence in
@@ -84,7 +83,7 @@ def _rollout_boundary(home: Path, rollouts: Iterable[str], affected: Iterable[st
 
 
 def _schema_metadata(path: Path) -> dict:
-    from .orca_codex_schema import SCHEMA_METADATA
+    from .orca_codex_schema import ATTACHED_STATE_SCHEMA, SCHEMA_METADATA
     info = require_plain_file(path)
     if info.st_nlink != 1:
         raise ValueError("orca_sqlite_schema_unverified")
@@ -94,17 +93,35 @@ def _schema_metadata(path: Path) -> dict:
             "SELECT version,description,success,hex(checksum) FROM _sqlx_migrations ORDER BY version")]
     value = {"schema_sha256": hashlib.sha256(json.dumps(schema, separators=(",", ":"), sort_keys=True).encode()).hexdigest(),
              "migrations": migrations}
-    if value != SCHEMA_METADATA[path.name]:
+    if value != SCHEMA_METADATA[path.name] and not (path.name == "state_5.sqlite" and value == ATTACHED_STATE_SCHEMA):
         raise ValueError("orca_sqlite_schema_unverified")
     return value
 
 
-def _startup_manifest(home: Path, *, after_start: bool, evidence_schema: str = EVIDENCE_SCHEMA) -> list[dict]:
+def _startup_manifest(home: Path, *, after_start: bool, evidence_schema: str = EVIDENCE_SCHEMA, contract=None) -> list[dict]:
     from .orca_codex_schema import STARTUP_FILES, STARTUP_DIRECTORIES
     legacy = evidence_schema == LEGACY_EVIDENCE_SCHEMA
-    fingerprints = {} if legacy else json.loads(Path(__file__).with_name("orca_startup_0160.json").read_text(encoding="utf-8"))["files"]
+    fingerprints = (contract["skills"] if contract else {} if legacy else
+                    json.loads(Path(__file__).with_name("orca_startup_0160.json").read_text(encoding="utf-8"))["files"])
+    files, directories = STARTUP_FILES, STARTUP_DIRECTORIES
+    arg0 = "arg0"
+    sandbox_log = contract and contract["sandbox_log"]
+    index_lock = contract and contract["index_lock"]
+    historical_logs = 0
+    today_log = datetime.now(timezone.utc).strftime("sandbox.%Y-%m-%d.log")
+    if contract:
+        arg0 = contract["arg0"]
+        if arg0 not in {"arg0", "arg0-windows"}:
+            raise ValueError("orca_runtime_startup_unverified")
+        files = {p for p in files if not p.startswith("skills/")} | set(fingerprints)
+        directories = {p for p in directories if not p.startswith(("skills/", "tmp/"))}
+        directories.update(parent.as_posix() for p in fingerprints for parent in Path(p).parents)
+        directories.add("tmp/" + arg0)
+        if sandbox_log:
+            directories.add(".sandbox")
     result = []
-    for name in _STARTUP_PATHS + (() if legacy else (".sqlite-maintenance.lock",)):
+    roots = _STARTUP_PATHS + (() if legacy else (".sqlite-maintenance.lock",))
+    for name in roots + ((".sandbox",) if sandbox_log else ()) + (("session_index.jsonl.lock",) if index_lock else ()):
         root = home / name
         try:
             root.lstat()
@@ -118,21 +135,28 @@ def _startup_manifest(home: Path, *, after_start: bool, evidence_schema: str = E
             path = pending.pop()
             info = path.lstat()
             relative = path.relative_to(home).as_posix()
-            bucket = re.fullmatch(r"tmp/arg0/codex-arg0[A-Za-z0-9]{6}", relative)
-            ephemeral_leaf = re.fullmatch(r"tmp/arg0/codex-arg0[A-Za-z0-9]{6}/(?:\.lock|apply_patch\.bat|applypatch\.bat)", relative)
+            bucket_path = rf"tmp/{arg0}/codex-arg0[A-Za-z0-9]{{6}}"
+            bucket = re.fullmatch(bucket_path, relative)
+            ephemeral_leaf = re.fullmatch(bucket_path + r"/(?:\.lock|apply_patch\.bat|applypatch\.bat)", relative)
             if not after_start and (bucket or ephemeral_leaf):
                 raise ValueError("orca_existing_startup_artifact_unverified")
             if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
                 raise ValueError("orca_startup_artifact_linked")
             if stat.S_ISDIR(info.st_mode):
-                if relative not in STARTUP_DIRECTORIES and not bucket:
+                if relative not in directories and not bucket:
                     raise ValueError("orca_startup_artifact_unapproved")
                 require_plain_directory(path)
                 pending.extend(path.iterdir())
                 result.append({"path": str(path), "kind": "directory", "device_id": info.st_dev, "file_id": info.st_ino})
             else:
-                maintenance_lock = not legacy and relative == ".sqlite-maintenance.lock"
-                if relative not in STARTUP_FILES and not ephemeral_leaf and not maintenance_lock:
+                maintenance_lock = (not legacy and relative == ".sqlite-maintenance.lock"
+                                    or index_lock and relative == "session_index.jsonl.lock")
+                diagnostic = sandbox_log and re.fullmatch(r"\.sandbox/sandbox\.\d{4}-\d{2}-\d{2}\.log", relative)
+                if diagnostic and not after_start and path.name != today_log:
+                    historical_logs += 1
+                    if historical_logs > contract["sandbox_history_limit"]:
+                        raise ValueError("orca_sandbox_log_rotation_unverified")
+                if relative not in files and not ephemeral_leaf and not maintenance_lock and not diagnostic:
                     raise ValueError("orca_startup_artifact_unapproved")
                 require_plain_file(path)
                 if info.st_nlink != 1:
@@ -171,13 +195,17 @@ def _startup_manifest(home: Path, *, after_start: bool, evidence_schema: str = E
         if name == ".tmp" and any(Path(value["path"]).name == "plugins.sync.lock" or
                                   Path(value["path"]).name.startswith("git-") for value in result):
             raise ValueError("orca_unapproved_plugin_sync_artifact")
+    if contract and (home / "skills/.system").exists():
+        observed = {Path(value["path"]).relative_to(home).as_posix() for value in result if value.get("kind") == "file"}
+        if not fingerprints.keys() <= observed:
+            raise ValueError("orca_startup_content_unverified")
     return sorted(result, key=lambda value: value["path"])
 
 
-def recheck_startup_snapshot(home: Path, snapshot, *, evidence_schema: str = EVIDENCE_SCHEMA) -> None:
+def recheck_startup_snapshot(home: Path, snapshot, *, evidence_schema: str = EVIDENCE_SCHEMA, contract=None) -> None:
     """Keep observed stable startup objects; arg0 buckets may disappear."""
     home = local_orca_path(home)
-    current = {value["path"]: value for value in _startup_manifest(home, after_start=True, evidence_schema=evidence_schema)}
+    current = {value["path"]: value for value in _startup_manifest(home, after_start=True, evidence_schema=evidence_schema, contract=contract)}
     for value in snapshot:
         if value.get("absent"):
             continue
@@ -186,8 +214,24 @@ def recheck_startup_snapshot(home: Path, snapshot, *, evidence_schema: str = EVI
             raise ValueError("orca_startup_snapshot_invalid")
         observed = current.get(value["path"])
         relative = path.relative_to(home).as_posix()
-        if observed is None and relative.startswith("tmp/arg0/codex-arg0"):
+        if observed is None and relative.startswith(("tmp/arg0/codex-arg0", "tmp/arg0-windows/codex-arg0")):
             continue
+        if observed and observed != value and contract and contract["sandbox_log"] and path.parent == home / ".sandbox":
+            # The native startup appends a Windows sandbox diagnostic. Preserve
+            # the existing file identity and every byte preceding the append.
+            if (all(value[k] == observed[k] for k in ("kind", "device_id", "file_id")) and
+                    0 <= value["size"] < observed["size"]):
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    remaining = value["size"]
+                    while remaining:
+                        block = stream.read(min(remaining, 1024 * 1024))
+                        if not block:
+                            break
+                        digest.update(block)
+                        remaining -= len(block)
+                if remaining == 0 and digest.hexdigest() == value["sha256"]:
+                    continue
         if observed != value:
             raise ValueError("orca_startup_artifact_identity_changed")
 
@@ -402,11 +446,30 @@ def _startup_control(home: Path) -> dict[str, Any]:
     return {"backfill_state": list(rows[0]), "rollout_migration_counts": migration_counts}
 
 
+def _check_attached_scope(home: Path, affected) -> None:
+    # Native deletion follows spawn edges. A surviving attachment-only child
+    # would retain a dangling parent. Never add it to the user's approved IDs.
+    with closing(sqlite3.connect((home / "state_5.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+        selected = set(affected)
+        for offset in range(0, len(affected), 250):
+            batch = affected[offset:offset + 250]
+            params = ",".join("?" for _ in batch)
+            if any(row[0] not in selected for row in db.execute(
+                    f"SELECT id FROM threads WHERE attached_thread_parent_id IN ({params})", batch)):
+                raise ValueError("orca_attached_thread_outside_scope")
+            for table in ("thread_read_receipts", "guardian_review_feedback", "thread_attachments"):
+                if db.execute(f"SELECT 1 FROM {table} WHERE thread_id IN ({params}) "
+                              f"AND NOT EXISTS (SELECT 1 FROM threads WHERE id={table}.thread_id) LIMIT 1",
+                              batch).fetchone():
+                    raise ValueError("orca_native_thread_metadata_residual")
+
+
 def freeze_orca_target(adapter: Any, home: Path, record_id: str, *,
                        affected_ids: Iterable[str], rollout_paths: Iterable[str | Path],
                        binary: Path | None, process_records: Iterable[Mapping[str, Any]] | None = None,
                        after_start: bool = False, readonly_recovery: bool = False,
-                       evidence_schema: str = EVIDENCE_SCHEMA, frontend_evidence=None) -> dict[str, Any]:
+                       evidence_schema: str = EVIDENCE_SCHEMA, frontend_evidence=None, recovery_contract=None,
+                       expected_binary=None) -> dict[str, Any]:
     """Collect body-free boundaries only from the already selected scope."""
     home = local_orca_path(home)
     root = adapter.profile_root
@@ -466,6 +529,9 @@ def freeze_orca_target(adapter: Any, home: Path, record_id: str, *,
                 frozen["sqlite_schemas"][name] = _schema_metadata(home / name)
             elif name == "state_5.sqlite":
                 blockers.append("orca_sqlite_schema_unverified")
+        from .orca_codex_schema import ATTACHED_STATE_SCHEMA
+        if frozen["sqlite_schemas"].get("state_5.sqlite") == ATTACHED_STATE_SCHEMA:
+            _check_attached_scope(home, affected)
         if not readonly_recovery:
             frozen["startup_control"] = _startup_control(home)
         if not legacy:
@@ -525,14 +591,14 @@ def freeze_orca_target(adapter: Any, home: Path, record_id: str, *,
             frozen["environment_configuration_absence"] = _absent_configuration(home / "environments.toml")
         frozen["forbidden_startup_absence"] = [_absent_configuration(home / name)
             for name in ("plugins.sync.lock", ".tmp/plugins.sync.lock")]
-        frozen["startup_artifacts"] = _startup_manifest(home, after_start=after_start, evidence_schema=evidence_schema)
         system_root = _system_configuration_root()
         frozen["system_configuration"] = [_absent_configuration(system_root / name)
                                            for name in ("config.toml", "requirements.toml")]
         # Recovery never launches a binary. A software/policy update cannot
         # prevent read-only recovery of an earlier approved mutation.
-        from .orca_runtime import invocation_policy, PINNED_BINARY_SHA256, RUNTIME_ACCEPTED
-        frozen["invocation_policy"] = None if readonly_recovery else invocation_policy()
+        from .orca_runtime import invocation_policy
+        frozen["invocation_policy"] = None
+        contract = recovery_contract if readonly_recovery else None
         if readonly_recovery:
             frozen["binary"] = None
         elif binary is None or binary.suffix.casefold() != ".exe":
@@ -540,11 +606,15 @@ def freeze_orca_target(adapter: Any, home: Path, record_id: str, *,
             frozen["binary"] = None
         else:
             frozen["binary"] = _identity(local_orca_path(binary), digest=True)
-            if frozen["binary"].get("sha256") != PINNED_BINARY_SHA256:
-                blockers.append("orca_binary_unregistered")
-            if not legacy:
-                from .orca_configuration import package_manifest_paths
-                frozen["package_context"] = [_absent_configuration(path) for path in package_manifest_paths(local_orca_path(binary))]
+            if expected_binary is not None and expected_binary != frozen["binary"]:
+                raise ValueError("orca_runtime_binary_changed")
+            policy = invocation_policy(binary, frozen["binary"]["sha256"])
+            frozen["invocation_policy"] = policy
+            contract = policy["contract"]
+        if contract and any(s.get("schema_sha256") != contract["schemas"].get(name)
+                            for name, s in frozen["sqlite_schemas"].items()):
+            raise ValueError("orca_runtime_store_schema_mismatch")
+        frozen["startup_artifacts"] = _startup_manifest(home, after_start=after_start, evidence_schema=evidence_schema, contract=contract)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         if str(exc).startswith("orca_"):
             blockers.append(str(exc))
@@ -582,7 +652,9 @@ def recheck_orca_target(evidence: Mapping[str, Any], adapter: Any, *,
                                     affected_ids=frozen["affected_thread_ids"], rollout_paths=frozen["rollout_paths"],
                                     binary=Path(binary["path"]) if binary else None, process_records=process_records,
                                     after_start=phase != "before_start", readonly_recovery=phase == "readonly_recovery",
-                                    evidence_schema=schema, frontend_evidence=frozen.get("frontend"))
+                                    evidence_schema=schema, frontend_evidence=frozen.get("frontend"),
+                                    recovery_contract=(frozen.get("invocation_policy") or {}).get("contract"),
+                                    expected_binary=binary)
         old, new = dict(frozen), dict(current["frozen"])
         if phase == "readonly_recovery":
             for data in (old, new):
@@ -602,9 +674,15 @@ def recheck_orca_target(evidence: Mapping[str, Any], adapter: Any, *,
         if phase != "before_start":
             # Runtime creation is permitted only for absent approved startup
             # objects. Every pre-existing stable object retains identity/hash.
-            recheck_startup_snapshot(Path(frozen["home"]), frozen.get("startup_artifacts", ()), evidence_schema=schema)
+            recheck_startup_snapshot(Path(frozen["home"]), frozen.get("startup_artifacts", ()), evidence_schema=schema,
+                                     contract=(frozen.get("invocation_policy") or {}).get("contract"))
             created_aux = {Path(entry["path"]).name for entry in old.get("files", ())
                            if entry.get("absent") and Path(entry["path"]).name in _DATABASES[1:]}
+            # Old journals have no measured runtime contract. Keep their
+            # original schema boundary even as more formats become supported.
+            if any(new.get("sqlite_schemas", {}).get(name) != schema_value
+                   for name, schema_value in old.get("sqlite_schemas", {}).items()):
+                return tuple(sorted(set((*current["blocker_codes"], "orca_target_boundary_changed"))))
             for data in (old, new):
                 data.pop("startup_artifacts", None)
                 # The fixed runtime creates its accepted auxiliary databases;

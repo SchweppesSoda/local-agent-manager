@@ -11,7 +11,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from local_agent_manager.orca_configuration import MAX_CONFIG_BYTES, package_manifest_paths, validate_configuration
+from local_agent_manager.orca_configuration import MAX_CONFIG_BYTES, validate_configuration
 
 
 class OrcaConfigurationTests(unittest.TestCase):
@@ -50,9 +50,3 @@ class OrcaConfigurationTests(unittest.TestCase):
         self.config.write_bytes(b'model="new"')
         with self.assertRaisesRegex(ValueError, '^orca_storage_configuration_unverified$'):
             validate_configuration(self.config, {"sha256": hashlib.sha256(b'model="old"').hexdigest()})
-
-    def test_package_context_checks_parent_manifest_without_reading_untrusted_values(self):
-        binary = self.root / "bin" / "codex.exe"
-        self.assertEqual(package_manifest_paths(binary), (binary.parent / "codex-package.json", self.root / "codex-package.json"))
-        with self.assertRaisesRegex(ValueError, "orca_package_context_unverified"):
-            package_manifest_paths(self.root / "packages" / "standalone" / "releases" / "version" / "codex.exe")

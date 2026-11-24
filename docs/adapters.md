@@ -669,32 +669,15 @@ hooks 根、已知生产/开发 namespace、status、authority、spool 和临时
 保持阻挡。runtime metadata 与 daemon lock 只作进程身份输入，不能凭文件不存在
 认定停止。前端需要关闭 Orca 及相关后台进程；探测失败阻挡，执行中每次写入前重查。
 
-固定 API 为真实 `codex-cli 0.160.0` Windows 原生 exe，SHA-256 为
-`fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d`。
-依据为官方 `rust-v0.160.0` 的 Windows standalone 包及固定源码
-[`a956835d`](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc)。
-相同版本字符串不替代文件哈希；先前登记的同版本 binary 不继承本次资格。
-此限制只用于启动 Codex 的 Orca 原生删除。即使 `thread/delete` 接口相同，新程序仍可能在
-启动期间迁移未选记录所在的共享数据库。例如 0.170.0 在空的临时 Home 中以相同启动参数
-创建了含 62 条迁移的 state 库，超出下述已验证的 58 条。接入新构建需验证其启动写入范围。
-要求 `state_5.sqlite` 的 SQLx 58 项及四个辅助 DB 各 2 项 migration/schema 与登记元数据
-一致，backfill 为已完成单行，rollout migration 两表为空；缺 state DB、空 DB、旧/未知
-schema 均不授予 writer，缺辅助 DB 仅允许固定运行时创建。所有共享 DB/index、已知
-rollout 必须 plain、nlink=1；已知别名、managed marker、父目录和配置来源纳入冻结。
+新计划按 Orca 选定的 Windows Codex 可执行文件验证 `thread/delete`。管理器把程序复制到独占临时目录，核对 SHA-256，验证 Windows Authenticode 签名和发布者 OpenAI OpCo, LLC。在独立的临时 Codex home 中实际删除合成父子会话，核对同项目未选会话、共享附件键、反馈、阅读状态、rollout、索引和辅助库。签名有效且通过同一接口和数据格式检查的构建可以直接使用。计划冻结本次程序摘要和调用策略，更换程序后需要重新生成计划。
 
-target evidence/runtime policy v2 同时验收空启动目录及带受限配置、模拟凭据、已有
-启动产物的 managed home。`config.toml` 仅接受有界的模型/推理/审批/沙箱/认证偏好、
-更新开关与项目 trust 标记；未知 key、provider/profile/hooks/MCP 表及存储重定向阻挡。
-配置只冻结哈希；`auth.json`、`.credentials.json`、`credentials.json` 仅冻结身份和
-哈希，不解析或输出值。固定 runtime 强制 ephemeral auth，不加载这些凭据。
-`environments.toml`、Windows system config/requirements 及已知相邻 package manifest
-必须不存在，祖先目录身份可证明；不读取这些配置文件。
+真实目标库须与该程序在空 home 创建的已审查 SQLite 定义和成功的 SQLx 迁移完全一致。缺少辅助库时可由原生运行时创建。共享 state 库待迁移时，应先让产品完成升级，再生成删除计划。Backfill 须已完成，rollout migration 两表须为空。共享 DB、索引和 rollout 的路径、文件身份及链接数均纳入检查。
 
-已有 startup 产物仅允许固定 bundle 的逐文件内容哈希、合法 installation UUID、
-已登记目录及 plain、单链接、空的协调锁；已有活动 arg0 bucket 阻挡。允许的新建
-副作用限已登记的辅助 SQLite family、bundled system skills、installation ID、
-精确 arg0 shim/锁、thread coordination lock 和 `.sqlite-maintenance.lock`。
-未知叶、内容漂移、链接或目录替换阻挡。
+Codex 0.170.0 的四项新增迁移均已按 Windows 包的 SQLx 校验和核对。59 为附件标识和会话建立反查索引，60 增加随会话级联删除的审核反馈表，61 增加由原生删除显式清理的阅读状态表，62 增加可空的 `attached_thread_parent_id` 和部分索引。原有行的新列为 NULL。原生删除沿 spawn 关系处理后代，单独使用新增父字段关联的未选会话会保留对已删除父项的引用。发现这种关系时，管理器在启动前阻挡当前操作。见 [Codex 迁移 SQL](https://github.com/openai/codex/tree/rust-v0.170.0/codex-rs/state/migrations)。
+
+`config.toml` 支持受限的模型、推理、审批、沙箱、认证偏好、更新开关及项目 trust 标记。未知键、provider/profile/hooks/MCP 表和存储重定向阻挡启动。配置和本地凭据只冻结文件身份及哈希。隔离程序强制 ephemeral auth。要求 `environments.toml` 及 Windows system config/requirements 缺失。程序通过独立副本运行，因此原安装目录可以有自己的包清单。
+
+管理器根据合成启动测得的 bundled skills 内容及 arg0 目录检查目标 home。活动 arg0 bucket、未知叶、链接和内容漂移会阻挡启动。新版可创建空的 `session_index.jsonl.lock` 并向 `.sandbox` 下当天的 Windows 诊断日志追加内容。复查验证既有文件身份和原有字节。Windows 运行时按 UTC 日期轮换诊断日志，最多保留 90 份。探测用 88 份旧日志核实保留行为，并为跨日运行留出两份空间。超出已验证范围的目标在启动前阻挡。见 [Windows 日志实现](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/windows-sandbox-rs/src/logging.rs)。
 
 原生启动会清理跨 thread 的过期日志，因此已有 `logs_2.sqlite.logs` 必须为空。
 未登记的 `thread_history_1.sqlite`、`memories_v2_1.sqlite`、
@@ -711,9 +694,7 @@ Git 配置/credential helper；采用固定 strict-config 覆盖并禁用 plugin
 apps/hooks/skill 搜索依赖安装等启动同步。早期默认启动曾实际尝试 GitHub `ls-remote`；
 最终禁同步策略不能用 loopback proxy 拒绝本身代替验收。Windows Job 在 native spawn
 前建立，parent 为唯一 Job handle owner；父进程崩溃会回收整个子树。
-该固定版本的 remote control feature 已移除，隔离环境使用实际启动门槛
-`CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1` 关闭 transport 的认证与连接循环，
-并把此设置纳入 invocation policy；不依赖已经无效的 feature 开关。
+隔离环境使用 `CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1` 禁用远程控制并将服务地址限制到 loopback。0.170.0 仍会写入连接循环的启动诊断，实际连接前等待启用状态。
 
 关闭资格使用真实 Toolhelp PID/父 PID/image name/birth metadata，拒绝已知 Orca 主进程、
 目标相关 lease owner 及其已知子链，保留探测错误；不采集全局 argv。无关 Codex/
@@ -721,20 +702,20 @@ ChatGPT 实例不扩大这个目标保护范围，显式 `--clients-closed` 仍�
 原机器与 Windows 登录 session、原 named Job 不存在，直接核查冻结目标残留，不重启
 binary。协议版本与 unknown 占用见 [operation 协议](operation-cli.md)。
 
-固定 binary 隔离验收入口仅创建合成 TEMP stores，无真实 profile、凭据或聊天正文：
+隔离验收入口使用新建的合成 TEMP stores。
 
 ```powershell
 $env:PYTHONPATH = 'src'
-python -m tests.orca_binary_acceptance --binary 'C:\absolute\pinned\codex.exe'
-python -m tests.orca_configured_acceptance --binary 'C:\absolute\pinned\codex.exe'
-python -m tests.orca_fullflow_acceptance --binary 'C:\absolute\pinned\codex.exe'
-python -m tests.orca_fullflow_acceptance --binary 'C:\absolute\pinned\codex.exe' --scenario cold-continue
+python -m tests.orca_binary_acceptance --binary 'C:\absolute\path\codex.exe'
+python -m tests.orca_configured_acceptance --binary 'C:\absolute\path\codex.exe'
+python -m tests.orca_fullflow_acceptance --binary 'C:\absolute\path\codex.exe'
+python -m tests.orca_fullflow_acceptance --binary 'C:\absolute\path\codex.exe' --scenario cold-continue
 # 独立检查延迟后台维护，不发送删除请求：
-python -m tests.orca_configured_acceptance --binary 'C:\absolute\pinned\codex.exe' --maintenance-warm-seconds 65
+python -m tests.orca_configured_acceptance --binary 'C:\absolute\path\codex.exe' --maintenance-warm-seconds 65
 ```
 
 入口先进入完整隔离环境的新 Python worker，再执行公共 v3 plan/cold apply/status/verify；
-结果保留在输出的 TEMP 路径。它只接受登记 SHA 和限定资格，不是 live cleanup 命令。
+结果保留在输出的 TEMP 路径。每次验收使用调用者指定的 Codex 程序。
 配置验收还从真实启动生成 schema/skills，冻结合成配置及不合法的模拟凭据，验证
 执行前漂移阻断、父子删除、范围外哨兵保持，以及三个独立进程的 apply/status/verify。
 延长维护检查允许运行时生成自身日志，并验证下一次启动仍被空日志条件阻挡；

@@ -35,7 +35,7 @@ class OrcaFullflowTests(unittest.TestCase):
         self.adapter = OrcaAdapter(profile_root=self.root, codex_bin_hint=self.binary)
         self.plan_path = self.root.parent / "full-plan.json"
         for patcher in (
-            patch("local_agent_manager.orca_runtime.PINNED_BINARY_SHA256", hashlib.sha256(self.binary.read_bytes()).hexdigest()),
+            patch("local_agent_manager.orca_runtime_probe.probe_contract", return_value=None),
             patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()),
             patch("local_agent_manager.orca_target_safety._system_configuration_root", return_value=self.root.parent / "system-config"),
             patch.dict(os.environ, {"APPDATA": str(self.root.parent / "appdata"), "LOCALAPPDATA": str(self.root.parent / "localappdata"),

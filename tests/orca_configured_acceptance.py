@@ -1,11 +1,9 @@
-"""Opt-in v2 configured-home acceptance. Fresh owned TEMP synthetic stores only.
+"""Configured-home acceptance on fresh owned TEMP stores.
 
-python -m tests.orca_configured_acceptance --binary ABSOLUTE_PINNED_CODEX_EXE
+python -m tests.orca_configured_acceptance --binary ABSOLUTE_CODEX_EXE
 
-Requires the production source to admit the exact measured binary with v2
-evidence and ephemeral auth. It never monkeypatches registration, a binary pin,
-configuration policy, or authorization. Native deletion runs once, only through
-the public coordinator; negative guard cases must not start an app-server.
+The public coordinator uses the measured executable and ephemeral auth.
+Prewrite failures must leave the configured home and its sentinels intact.
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ import time
 from unittest.mock import patch
 import uuid
 
-CANDIDATE_SHA256 = "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d"
 PARENT = "00000000-0000-4000-8000-000000000301"
 CHILD = "00000000-0000-4000-8000-000000000302"
 SENTINEL = "00000000-0000-4000-8000-000000000303"
@@ -119,13 +116,12 @@ def imports(repository):
     from local_agent_manager import orca_runtime as runtime
     from local_agent_manager import orca_target_safety as safety
     if (os.name != "nt" or not runtime.RUNTIME_ACCEPTED
-            or runtime.PINNED_BINARY_SHA256 != CANDIDATE_SHA256
-            or runtime.RUNTIME_POLICY_SCHEMA != "larj.orca-runtime.v2"
+            or runtime.RUNTIME_POLICY_SCHEMA != "larj.orca-runtime.v3"
             or safety.EVIDENCE_SCHEMA != "larj.orca-target-safety.v2"
             or 'cli_auth_credentials_store="ephemeral"' not in runtime.CONFIG_OVERRIDES
             or 'approval_policy="never"' not in runtime.CONFIG_OVERRIDES
             or 'sandbox_mode="read-only"' not in runtime.CONFIG_OVERRIDES):
-        raise ValueError("acceptance_requires_registered_v2_exact_candidate_ephemeral_policy")
+        raise ValueError("acceptance_requires_measured_runtime_and_ephemeral_policy")
     return runtime, safety
 
 
@@ -171,16 +167,15 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     from local_agent_manager.cleanup_service import CleanupService
     from local_agent_manager.cli import main
     from local_agent_manager.operation_coordinator import OperationCoordinator
-    from tests.orca_native_support import add_native_record, create_native_schema
+    from tests.orca_native_support import add_native_record, warm_native_schema
     from tests.orca_support import create_profile
 
-    if file_metadata(source_binary)["sha256"] != CANDIDATE_SHA256:
-        raise ValueError("acceptance_candidate_source_hash_unverified")
+    candidate_sha256 = file_metadata(source_binary)["sha256"]
     # Own both package-manifest locations; no other agent's binary is modified.
     binary = root / "standalone-binary" / "bin" / "codex.exe"
     binary.parent.mkdir(parents=True)
     shutil.copyfile(source_binary, binary)
-    if file_metadata(binary)["sha256"] != CANDIDATE_SHA256 or binary.stat().st_nlink != 1:
+    if file_metadata(binary)["sha256"] != candidate_sha256 or binary.stat().st_nlink != 1:
         raise ValueError("acceptance_candidate_copy_identity_unverified")
     for name in ("config.toml", "requirements.toml"):
         safety._absent_configuration(safety._system_configuration_root() / name)
@@ -189,20 +184,21 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     outside = root / "outside-sentinel"
     outside.write_bytes(b"synthetic outside sentinel unchanged\n")
     if maintenance_warm_seconds:
-        create_native_schema(home)
+        warm_native_schema(home, binary)
         maintenance_sentinel = add_native_record(home, SENTINEL)
         (home / "config.toml").write_text('model="synthetic-preused-model"\n', encoding="utf-8")
         (home / "auth.json").write_text(PRIVATE_MARKERS[1], encoding="utf-8")
         maintenance_files = (outside, maintenance_sentinel, home / "config.toml", home / "auth.json")
         maintenance_before = {str(path): file_metadata(path) for path in maintenance_files}
         maintenance_rows_before = native_rows(home)
+    policy = runtime.invocation_policy(binary, candidate_sha256)
     warm_root = root / "warm-runtime"
     warm_root.mkdir()
     instance = {}
     def ready(name):
         instance.update(schema_version="larj.orca-runtime-instance.v1", job_name=name, **runtime.runtime_host_identity())
     # Startup is measured from the actual candidate, not reconstructed fixtures.
-    with runtime.IsolatedCodexRuntime(binary, root=warm_root) as owned:
+    with runtime.IsolatedCodexRuntime(binary, expected_sha256=candidate_sha256, root=warm_root) as owned:
         server = owned.server(codex_home=home, timeout=20.0, job_ready_callback=ready)
         try:
             with server:
@@ -232,8 +228,7 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     # Genuine SQLite schemas must independently pass the fixed full-schema proof.
     schemas = {name: safety._schema_metadata(home / name) for name in (
         "state_5.sqlite", "logs_2.sqlite", "memories_1.sqlite", "queue_1.sqlite", "goals_1.sqlite")}
-    startup_registry = json.loads(Path(safety.__file__).with_name("orca_startup_0160.json").read_text(encoding="utf-8"))
-    if startup_registry.get("binary_sha256") != CANDIDATE_SHA256 or len(startup_registry.get("files", {})) != 49:
+    if {name: schema["schema_sha256"] for name, schema in schemas.items()} != policy["contract"]["schemas"]:
         raise ValueError("acceptance_startup_registry_candidate_mismatch")
     if safety._startup_control(home)["backfill_state"][1] != "complete":
         raise ValueError("acceptance_warm_backfill_incomplete")
@@ -247,12 +242,12 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
         adapter = OrcaAdapter(profile_root=root / "orca", codex_bin_hint=binary)
         evidence = safety.freeze_orca_target(adapter, home, SENTINEL, affected_ids=(SENTINEL,),
             rollout_paths=(maintenance_sentinel,), binary=binary)
-        report = {"root": str(root), "binary_sha256": CANDIDATE_SHA256, "schemas": schemas,
+        report = {"root": str(root), "binary_sha256": candidate_sha256, "schemas": schemas,
             "maintenance_warm_seconds": maintenance_warm_seconds, "warm_job_absent": True,
             "maintenance_lock": lock, "native_runtime_log_count": warm_log_count,
             "native_log_targets": warm_log_targets,
             "configured_and_sentinel_files_unchanged": unchanged,
-            "startup_manifest": safety._startup_manifest(home, after_start=True),
+            "startup_manifest": safety._startup_manifest(home, after_start=True, contract=policy["contract"]),
             "next_startup_blockers": evidence["blocker_codes"], "native_delete_attempted": False}
         if not unchanged or warm_log_count and "orca_startup_logs_cleanup_unverified" not in evidence["blocker_codes"]:
             raise ValueError("acceptance_maintenance_postcondition_failed")
@@ -308,7 +303,7 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     save_json(root / "public-records.json", records)
 
     report = {"root": str(root), "binary": str(binary), "binary_source": str(source_binary),
-              "binary_sha256": CANDIDATE_SHA256, "invocation_policy": runtime.invocation_policy(),
+              "binary_sha256": candidate_sha256, "invocation_policy": policy,
               "schemas": schemas, "warm_job_absent": True, "maintenance_warm_seconds": maintenance_warm_seconds,
               "public_records_ids": sorted(value for value in ids if value),
               "negative_cases": [], "native_delete_send_count_policy": "one apply; never retry ambiguous outcome"}
@@ -366,6 +361,15 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
                 connection.execute("DELETE FROM logs WHERE target='acceptance' AND thread_id=?", (SENTINEL,))
             connection.commit()
     negative("unrelated-expired-log-added", lambda: change_log(insert=True), lambda: change_log(insert=False))
+    from local_agent_manager.orca_codex_schema import ATTACHED_STATE_SCHEMA
+    if schemas["state_5.sqlite"] == ATTACHED_STATE_SCHEMA:
+        def attach_sentinel(parent_id):
+            with closing(sqlite3.connect(home / "state_5.sqlite")) as db, db:
+                db.execute("UPDATE threads SET attached_thread_parent_id=? WHERE id=?", (parent_id, SENTINEL))
+        negative("unselected-attached-child", lambda: attach_sentinel(PARENT), lambda: attach_sentinel(None))
+    if policy["contract"]["index_lock"]:
+        index_lock = home / "session_index.jsonl.lock"
+        negative("linked-index-lock", lambda: os.link(sentinel, index_lock), index_lock.unlink)
     temporary_index = home / "session_index.jsonl.tmp"
     negative("native-index-replacement-added", lambda: os.link(sentinel, temporary_index), temporary_index.unlink)
     def change_memory(*, insert):
@@ -391,12 +395,9 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     skill_original = skill.read_bytes()
     negative("stable-startup-content-drift", lambda: skill.write_bytes(skill_original + b"\nsynthetic content drift\n"),
              lambda: skill.write_bytes(skill_original))
-    for label, manifest in (("binary-adjacent-manifest-added", binary.parent / "codex-package.json"),
-                            ("binary-parent-manifest-added", binary.parent.parent / "codex-package.json")):
-        if manifest.exists():
-            raise ValueError("acceptance_owned_package_manifest_not_initially_absent")
-        negative(label, lambda path=manifest: path.write_bytes(b'{"synthetic":"unapproved-package-context"}\n'),
-                 lambda path=manifest: path.unlink())
+    # The isolated executable has no package manifests alongside it.
+    (binary.parent / "codex-package.json").write_bytes(b"synthetic invalid package context")
+    (binary.parent.parent / "codex-package.json").write_bytes(b"synthetic invalid package context")
 
     final_plan, _ = make_plan("final")
     save_json(root / "cold-context.json", {"operation_id": final_plan["operation_id"], "plan_sha256": final_plan["plan_sha256"]})
@@ -428,7 +429,7 @@ def worker(repository, source_binary, root, script, maintenance_warm_seconds=0):
     unchanged_files = {name: file_metadata(path) == baseline["files"][name]
                        for name, path in preserved.items() if name not in {"parent", "child", "index"}}
     startup_preserved = all(after_startup.get(name) == value for name, value in baseline["startup"].items())
-    startup_manifest = safety._startup_manifest(home, after_start=True)
+    startup_manifest = safety._startup_manifest(home, after_start=True, contract=policy["contract"])
     report.update(schema_version=final_plan["schema_version"], result=result, cold_status=status, cold_verify=verify,
                   approved_rollouts_absent=not parent.exists() and not child.exists(),
                   native_ids_after=after_rows["ids"], native_edges_after=after_rows["edge_count"],
