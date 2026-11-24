@@ -102,17 +102,20 @@ class PaseoStoreTests(unittest.TestCase):
         code, result = self.invoke("records", "--client", "paseo", "--json")
         self.assertEqual(code, 0, result)
         self.assertEqual({row["record_id"] for row in result["targets"]}, {sample["record"]["id"] for sample in fixture["records"]})
-        self.assertTrue(all(fixture["upstream_commit"] in row["record_metadata"]["supported_upstream_commits"] for row in result["targets"]))
 
-    def test_0153_restart_and_private_launch_environment(self):
-        self.write(self.record(resumeOnStartup=True, launchEnv={"TOKEN": PRIVATE}))
+    def test_current_registry_metadata_and_launch_environment_stay_private(self):
+        self.write(self.record(resumeOnStartup=True, launchEnv={"TOKEN": PRIVATE}, metadata={"note": PRIVATE},
+                               controls=[{"label": PRIVATE}], sessionMetrics=[{"label": PRIVATE}], background=True,
+                               futureDisplayMetadata={"detail": PRIVATE}))
         code, result = self.invoke("records", "--client", "paseo", "--json")
         self.assertEqual(code, 0, result)
         row = result["targets"][0]["record_metadata"]["snapshots"][0]
         self.assertTrue(row["resume_on_startup"])
         self.assertTrue(row["launch_environment_present"])
+        self.assertTrue(row["unrecognized_fields_present"])
         self.assertNotIn("launchEnv", row)
-        for change in ({"resumeOnStartup": 1}, {"launchEnv": {"TOKEN": 3}}):
+        for change in ({"resumeOnStartup": 1}, {"launchEnv": {"TOKEN": 3}}, {"background": 1},
+                       {"controls": {}}, {"sessionMetrics": [1]}, {"metadata": []}):
             self.write(self.record(**change))
             code, result = self.invoke("records", "--client", "paseo", "--json")
             self.assertNotEqual(code, 0)

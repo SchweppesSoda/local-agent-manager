@@ -180,8 +180,9 @@ def paseo_launch(provider, overlay=None, manifest=None):
     if not isinstance(provider, dict) or provider.get('extends') is not None:
         native.fail('provider_implementation_unqualified')
     env = environment(provider.get('env', {}), overlay or {})
-    command = provider.get('command', ['agy'])
-    if not isinstance(command, list) or len(command) != 1 or not isinstance(command[0], str):
+    command = provider.get('command', ['agy', 'acp', '--disable-telemetry'])
+    if (not isinstance(command, list) or not command or not isinstance(command[0], str)
+            or command[1:] not in ([], ['acp'], ['acp', '--disable-telemetry'])):
         native.fail('provider_command_unqualified')
     binary = command[0]
     if not Path(binary).is_absolute():

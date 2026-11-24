@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch
 from local_agent_manager import claude_session_import
 
 from local_agent_manager.claude_session_import import (
-    PASEO_VERSION, T3_VERSION, T3_VERSIONS, SessionImportError,
+    SessionImportError,
     prepare_paseo_import, prepare_t3code_import, run_session_import, verify_session_import,
 )
 from tests.t3code_support import add_thread, create_store, insert
@@ -52,6 +52,14 @@ class ClaudeSessionImportTests(unittest.TestCase):
         self.claude.write_bytes(b"fixture, never executed")
 
     def paseo_fixture(self):
+        self.cli_version = "0.20.0"
+        def version_probe(argv, *, stdout, **kwargs):
+            self.assertEqual(argv[-1], "--version")
+            stdout.write(self.cli_version.encode())
+            return SimpleNamespace(returncode=0)
+        probe = patch.object(subprocess, "run", side_effect=version_probe)
+        probe.start()
+        self.addCleanup(probe.stop)
         self.profile = self.root / "paseo"
         (self.profile / "agents").mkdir(parents=True)
         self.executable = self.root / "paseo-cli.exe"
@@ -89,8 +97,8 @@ class ClaudeSessionImportTests(unittest.TestCase):
 
     def paseo_runner(self, *, timeout=False):
         def run(argv, *, stdout, **kwargs):
-            if argv[1:] == ["--version"]:
-                stdout.write(PASEO_VERSION.encode())
+            if argv[1:] == ["import", "--help"]:
+                stdout.write(b"Usage: paseo import <id>\n--provider <provider> --cwd <path> --home <path> --json")
                 return SimpleNamespace(returncode=0)
             self.assertEqual(argv[1:], ["import", NATIVE, "--provider", "claude-cindy", "--cwd",
                                        str(self.cwd), "--home", str(self.profile), "--json"])
@@ -103,6 +111,7 @@ class ClaudeSessionImportTests(unittest.TestCase):
 
     def test_paseo_exact_import_checks_registry_and_redacts_product_reply(self):
         plan = self.paseo_fixture()
+        self.assertEqual(plan["version"], "0.20.0")
         self.assertEqual(verify_session_import(plan)["status"], "not_observed")
         runner = self.paseo_runner()
         result = run_session_import(plan, approved_sha256=plan["plan_sha256"], runner=runner)
@@ -116,7 +125,19 @@ class ClaudeSessionImportTests(unittest.TestCase):
         self.assertEqual(runner.call_count, 2)
         repeated = run_session_import(plan, approved_sha256=plan["plan_sha256"], runner=runner)
         self.assertEqual(repeated["status"], "already_imported", repeated)
-        self.assertEqual(runner.call_count, 3)  # Only the version check repeats.
+        self.assertEqual(runner.call_count, 2)
+
+    def test_paseo_changed_release_or_missing_import_options_block_dispatch(self):
+        plan = self.paseo_fixture()
+        runner = Mock(side_effect=lambda argv, *, stdout, **kw: reply(stdout, {"flags": "--json"}))
+        with self.assertRaisesRegex(SessionImportError, "import_interface_unverified"):
+            run_session_import(plan, approved_sha256=plan["plan_sha256"], runner=runner)
+        self.assertEqual(runner.call_args.args[0][1:], ["import", "--help"])
+        self.cli_version = "0.21.0"
+        with self.assertRaisesRegex(SessionImportError, "import_preflight_changed"):
+            run_session_import(plan, approved_sha256=plan["plan_sha256"], runner=runner)
+        runner.assert_called_once()
+        self.assertEqual(self.paseo_plan()["version"], "0.21.0")
 
     def test_paseo_timeout_does_not_retry_a_possible_import(self):
         plan = self.paseo_fixture()
@@ -157,7 +178,7 @@ class ClaudeSessionImportTests(unittest.TestCase):
         self.paseo_record(archived=True)
         with self.assertRaisesRegex(SessionImportError, "archived_restore_requires_separate_scope"):
             run_session_import(plan, approved_sha256=plan["plan_sha256"], runner=runner)
-        self.assertEqual(runner.call_count, 1)
+        runner.assert_not_called()
         self.assertEqual(verify_session_import(plan)["status"], "archived")
 
         provider = self.paseo_config["agents"]["providers"]["claude-cindy"]
@@ -195,7 +216,7 @@ class ClaudeSessionImportTests(unittest.TestCase):
         (self.profile / "userdata/environment-id").write_text("env_fixture", encoding="utf-8")
         write_json(self.profile / "userdata/server-runtime.json", {
             "version": 1, "pid": 9, "origin": "http://127.0.0.1:7733", "port": 7733,
-            "serverVersion": T3_VERSION, "startedAt": "fixture", "ownerId": "fixture",
+            "serverVersion": "0.2.0", "startedAt": "fixture", "ownerId": "fixture",
         })
         self.t3_settings = {"providerInstances": {"claudeAgent": {
             "driver": "claudeAgent", "enabled": True, "config": {
@@ -266,11 +287,13 @@ class ClaudeSessionImportTests(unittest.TestCase):
         write_json(self.profile / "userdata/settings.json", self.t3_settings)
         self.assertEqual(verify_session_import(plan)["status"], "unknown")
 
-    def test_t3_versions_are_frozen_and_unknown_versions_are_rejected(self):
+    def test_t3_freezes_the_observed_stable_or_nightly_release(self):
         self.t3_fixture()
         locator_path = self.profile / "userdata/server-runtime.json"
         locator = json.loads(locator_path.read_text(encoding="utf-8"))
-        for version in T3_VERSIONS:
+        self.db.execute("CREATE TABLE unrelated_new_feature (id INTEGER)")
+        self.db.commit()
+        for version in ("0.2.0", "0.3.0-nightly.20261124.1"):
             with self.subTest(version=version):
                 locator["serverVersion"] = version
                 write_json(locator_path, locator)
@@ -278,7 +301,7 @@ class ClaudeSessionImportTests(unittest.TestCase):
                                              cwd=self.cwd, project_id="project-1")
                 self.assertEqual(plan["version"], version)
                 self.assertEqual(plan["locator"]["serverVersion"], version)
-        locator["serverVersion"] = "0.1.8-nightly.20261109.9999"
+        locator["serverVersion"] = ""
         write_json(locator_path, locator)
         with self.assertRaisesRegex(SessionImportError, "t3code_import_local_server_unverified"):
             prepare_t3code_import(executable=self.executable, profile=self.profile,
@@ -292,6 +315,16 @@ class ClaudeSessionImportTests(unittest.TestCase):
         write_json(locator_path, locator)
         runner = Mock()
         with self.assertRaisesRegex(SessionImportError, "import_preflight_changed"):
+            run_session_import(plan, approved_sha256=plan["plan_sha256"],
+                               accept_project_history=True, runner=runner)
+        runner.assert_not_called()
+
+    def test_t3_required_projection_change_blocks_before_session_issuance(self):
+        plan = self.t3_fixture()
+        self.db.execute("ALTER TABLE projection_projects RENAME COLUMN workspace_root TO unknown_root")
+        self.db.commit()
+        runner = Mock()
+        with self.assertRaisesRegex(SessionImportError, "preflight_unverified"):
             run_session_import(plan, approved_sha256=plan["plan_sha256"],
                                accept_project_history=True, runner=runner)
         runner.assert_not_called()

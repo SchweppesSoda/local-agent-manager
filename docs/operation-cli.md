@@ -441,7 +441,7 @@ snapshots and unreadable sources report incomplete inventory rather than an empt
 `inventory_scope=persisted_agent_registry` does not cover provider transcripts,
 schedules, workspaces, client caches or all writers. Saved status is not a live
 probe: `--inspect-clients` keeps `clients_closed=null`. No daemon is started or
-contacted. Full cleanup plan/run automatically prepares bindings for built-in Codex, Claude and Pi.
+contacted. Full cleanup plan/run prepares bindings for built-in Codex, Claude, Pi and Antigravity when their native stores can be verified.
 Unproven bindings block planning. Frozen bindings drive apply and cold status/verify. See
 [Paseo boundaries](adapters.md#paseoagent-注册记录只读盘点).
 
@@ -455,7 +455,7 @@ make a serialized provider handle a native record ID. See
 
 ### 只删 Paseo 会话
 
-Windows 上的 `--paseo-only` 通过正在运行的本机 Paseo 0.15.3 daemon 删除一条
+Windows 上的 `--paseo-only` 通过正在运行的本机 Paseo daemon 删除一条
 会话。需要标准用户安装位置的 Paseo 桌面分发包、对应的 `--paseo-root` 和
 一个完整 Paseo 会话 UUID。Paseo 使用自己的删除接口关闭该会话并移除登记和时间线。
 Codex、Antigravity 等 provider 的原生会话保留。该模式覆盖 daemon 的登记与时间线，
@@ -475,7 +475,7 @@ Codex、Claude、Pi、Antigravity 共用这一流程。结果未知时执行只�
 后续目标等待核验收口。
 终验复查 daemon 与磁盘登记中的精确 ID。超时、身份不一致或回执后仍有记录时，
 执行 `operation status` 和 `operation verify`。结果为 `unknown` 的计划进入只读恢复。
-协议和版本边界见 [Paseo daemon 删除](adapters.md#paseo-daemon-删除)。
+接口检查与计划绑定见 [Paseo daemon 删除](adapters.md#paseo-daemon-删除)。
 
 ### Paseo 完整本地操作
 
@@ -834,7 +834,7 @@ python -m local_agent_manager.t3code_desktop_cleanup verify --plan residual.json
 阻挡。核验会检查同环境的会话缓存已清空，并对比保留的原始记录及 Chromium
 冷重开结果。项目、连接配置、登录存储和其他环境的记录属于保留范围。
 
-当前运行时资格为已安装的 T3 Electron 44.10.1 / Chromium 152.0.7977.169。
+计划冻结当前 T3 安装提供的 Electron 分发文件，并在副本上验证其读写实际 IndexedDB 的能力。
 可用 `plan --runtime-root` 显式指定安装目录。原安装保持原样，只复制纯 Electron
 分发文件到临时目录，替换临时 app 入口并隔离 HOME/APPDATA/userData/session，
 在 kill-on-close Job 内执行，禁用应用导入、服务启动和 session 网络。
@@ -1008,22 +1008,21 @@ T3 已卸载但桌面 profile 仍在时，从已验签的原版安装包临时�
 原生清理通过管理器自身的离线 writer 和私有副本转换执行。
 每次计划冻结当前程序的文件身份和摘要，执行前后继续核对。计划生成后发生升级时，
 旧计划会在写入前阻挡；重新运行 `delete run` 会按当前程序自动生成新计划。
-T3 的绝对 `config.binaryPath`、Paseo 的单项绝对 `agents.providers.antigravity.command`
-必须选择该实际文件；裸 `agy` 的 daemon PATH 尚无精确证明格式，当前拒绝自动猜测。`native_layout: "cli"` 的根必须对应实际 OS 用户 home 下的
+T3 的 `config.binaryPath` 或 Paseo 的 `agents.providers.antigravity.command[0]` 需给出该程序的绝对路径。
+Paseo 命令可附带 `acp` 和可选的 `--disable-telemetry`。裸 `agy` 的 daemon PATH 尚无精确证明格式。`native_layout: "cli"` 的根必须对应实际 OS 用户 home 下的
 `.gemini/antigravity-cli`；provider/逐 agent 的 home 覆盖须一致，T3 的 `GEMINI_HOME`
-不能替代该证明。包装脚本、额外命令参数和冲突 home 需要相应启动契约，不能手填目录绕过。
+不能替代该证明。包装脚本、其他命令参数和冲突 home 需要相应启动契约，不能手填目录绕过。
 
-Paseo 的已知插件格式把 `{version:1,data:{conversationId:"<UUID>"}}` 序列化成
+Paseo 的内置 ACP 将 `{version:1,data:{sessionId:"<UUID>"}}` 序列化成
 `persistence.sessionId = "plugin:" + JSON`，并在
 `persistence.metadata.pluginProviderPersistence` 保存恢复对象；`runtimeInfo.sessionId`
-若存在也必须解出同一 UUID。这里的 `version:1` 标识持久化格式；Paseo 产品版本不参与准入。
+若存在也必须解出同一 UUID。已存记录中的 `data.conversationId` 按上游重开的语义核对。这里的 `version:1` 标识持久化格式。
 字段形状及恢复关系按契约校验，裸 UUID、旧 ACP 自定义序列化、
 `nativeHandle` 变体、额外 metadata 和相互冲突的恢复句柄明确阻挡。
-核心存储附带的 `metadata.cwd` 可在它与同一 agent 的工作目录一致时保留；它不参与原生
-目录或会话身份推断，其他未知 metadata 仍阻挡。配置的 Codex 程序已不存在时，prepare
+核心存储附带的 `metadata.cwd` 须与该 agent 的工作目录一致。`metadata.mcpServers` 属于启动配置，内容不进入报告。其他未知 metadata 仍阻挡。配置的 Codex 程序已不存在时，prepare
 明确返回 `configured_codex_binary_missing`，不自动改用其他客户端或账号的程序。
-依据：[provider 持久对象](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/plugins/antigravity-provider/server/internal/session.ts)
-与 [核心序列化及恢复](https://github.com/getpaseo/paseo/blob/d91ae138cb931447635e94296023414a58bedcc5/packages/server/src/server/agent/plugin-provider.ts)。
+参见 [Paseo 内置 ACP provider](https://github.com/getpaseo/paseo/blob/v0.17.4/plugins/antigravity-provider/server/provider.ts)
+及 [ACP 会话迁移](https://github.com/getpaseo/paseo/pull/10193)。
 
 计划冻结全部原生子会话、共享摘要/cache/恢复镜像、原生会话文件，以及原有前端文件和绑定桌面闭包。
 跨客户端 guard 只允许冻结的选中前端转换：扫描其私有 after-image，其他 profile、未选记录、

@@ -29,9 +29,9 @@ FRONT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 OTHER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 
-def paseo_agent(identifier, sid, cwd):
+def paseo_agent(identifier, sid, cwd, *, handle_key='sessionId'):
     value = agent(identifier, sid, cwd)
-    persistence = {'version': 1, 'data': {'conversationId': sid}}
+    persistence = {'version': 1, 'data': {handle_key: sid}}
     handle = 'plugin:'+json.dumps(persistence, separators=(',', ':'))
     value.update(provider='antigravity', persistence={'provider': 'antigravity', 'sessionId': handle,
         'metadata': {'pluginProviderPersistence': persistence}},
@@ -45,6 +45,11 @@ class PersistenceTests(unittest.TestCase):
         self.assertTrue(row['antigravity_handle_qualified'])
         self.assertEqual({h['value'] for h in row['references']}, {TARGET})
         self.assertEqual(len(row['references']), 3)
+
+    def test_reopened_record_can_mix_legacy_and_acp_copies_of_one_id(self):
+        value = paseo_agent(FRONT, TARGET, Path.cwd(), handle_key='conversationId')
+        value['runtimeInfo'] = paseo_agent(FRONT, TARGET, Path.cwd())['runtimeInfo']
+        self.assertTrue(paseo_store._project(value)['antigravity_handle_qualified'])
 
     def test_core_metadata_cwd_qualifies_without_becoming_native_identity(self):
         value = paseo_agent(FRONT, TARGET, Path.cwd())
@@ -66,13 +71,14 @@ class PersistenceTests(unittest.TestCase):
         self.assertFalse(paseo_store._project(value)['antigravity_handle_qualified'])
 
     def test_custom_acp_raw_uuid_and_conflicting_metadata_remain_opaque(self):
-        for shape in ('scalar', 'object', 'metadata', 'runtime', 'runtime_extra', 'nativeHandle', 'version', 'duplicate'):
+        for shape in ('scalar', 'object', 'metadata', 'both', 'runtime', 'runtime_extra', 'nativeHandle', 'version', 'duplicate'):
             with self.subTest(shape=shape):
                 value = paseo_agent(FRONT, TARGET, Path.cwd())
                 p = value['persistence']
                 if shape == 'scalar': p['sessionId'] = TARGET
                 if shape == 'object': p['sessionId'] = {'conversationId': TARGET}
-                if shape == 'metadata': p['metadata']['pluginProviderPersistence']['data']['conversationId'] = KEEP
+                if shape == 'metadata': p['metadata']['pluginProviderPersistence']['data']['sessionId'] = KEEP
+                if shape == 'both': p['metadata']['pluginProviderPersistence']['data']['conversationId'] = KEEP
                 if shape == 'runtime': value['runtimeInfo']['sessionId'] = 'plugin:'+json.dumps({'version': 1, 'data': {'conversationId': KEEP}})
                 if shape == 'runtime_extra': value['runtimeInfo']['extra'] = {'resume': KEEP}
                 if shape == 'nativeHandle': p['nativeHandle'] = TARGET
@@ -132,7 +138,7 @@ class JointTests(unittest.TestCase):
             write(root/'agents'/f'{OTHER}.json', paseo_agent(OTHER, KEEP, self.base))
             (root/'server-id').write_text('srv_test')
             (root/'config.json').write_text(json.dumps({'version': 1, 'agents': {'providers': {
-                'antigravity': {'command': [str(self.agy)]}}}}))
+                'antigravity': {'command': [str(self.agy), 'acp', '--disable-telemetry']}}}}))
             identity = {'server_id': 'srv_test'}
         manifest = {'schema_version': T3 if client == 't3code' else PASEO,
             'profile_root': str(root), **identity, 'runtime_binaries': [str(self.binary), str(self.agy)],
@@ -272,9 +278,11 @@ class JointTests(unittest.TestCase):
         path = self.paseo/'agents'/f'{FRONT}.json'
         value = json.loads(path.read_bytes())
         value['persistence']['metadata']['cwd'] = value['cwd']
+        value['persistence']['metadata']['mcpServers'] = {'fixture': {'env': {'TOKEN': SECRET}}}
         write(path, value)
         plan = self.plan('paseo', adapter)
         self.assertEqual(plan['goal_status'], 'ready', plan)
+        self.assertNotIn(SECRET, json.dumps(plan))
         self.assertTrue(self.apply(plan)['goal_satisfied'])
         self.assertFalse(path.exists())
         self.assertFalse((self.native/'conversations'/f'{TARGET}.db').exists())
@@ -490,8 +498,12 @@ class JointTests(unittest.TestCase):
         adapter = self.setup_client('paseo')
         entries, _ = paseo_cleanup.files.rows(self.paseo)
         entry = next(e for e in entries if e['row']['id'] == FRONT)
-        found = _binding(entry, {'antigravity': {'command': [str(self.agy)]}}, {})
-        self.assertEqual(found, adapter.bindings[FRONT])
+        for args in ([], ['acp'], ['acp', '--disable-telemetry']):
+            with self.subTest(args=args):
+                found = _binding(entry, {'antigravity': {'command': [str(self.agy), *args]}}, {})
+                self.assertEqual(found, adapter.bindings[FRONT])
+        with self.assertRaisesRegex(ValueError, 'provider_command_unqualified'):
+            _binding(entry, {'antigravity': {'command': [str(self.agy), 'acp', '--profile', 'other']}}, {})
         with self.assertRaisesRegex(ValueError, 'runtime_resolution_unproven'):
             _binding(entry, {}, {})
 

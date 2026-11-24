@@ -58,7 +58,7 @@ def fixture():
 
 
 @unittest.skipUnless(os.name == 'nt' and (d.default_runtime() / 'T3 Code (Nightly).exe').is_file(),
-                     'requires existing pinned Electron distribution; installs nothing')
+                     'requires the installed T3 Nightly Electron distribution')
 class DesktopWriterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

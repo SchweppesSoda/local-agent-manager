@@ -60,6 +60,11 @@ def release_version(value: str) -> str | None:
     return None
 
 
+def version_label(value) -> bool:
+    """Accept a bounded product-reported label for an operation fingerprint."""
+    return isinstance(value, str) and 0 < len(value) <= 128 and all(32 < ord(char) < 127 for char in value)
+
+
 def cindy_codex_candidates(
     cindy_root: Path, probe: BoundedPathProbe
 ) -> tuple[tuple[Path, str | None, str], ...]:

@@ -1,6 +1,5 @@
 """Bounded, read-only Paseo agent registry observations.
 
-Contracts: Paseo 0.11.0-beta.3 and 0.15.3 (see SUPPORTED_COMMITS).
 AgentStorage uses unversioned JSON at agents/*.json and agents/*/*.json.
 The registry is not a provider's native store. IDs, cwd and saved status never
 establish native ownership or prove the daemon and provider writers stopped.
@@ -20,8 +19,6 @@ from .client_contracts import ClientDescriptor, ClientReference, ReferenceKind, 
 from .path_identity import is_local_absolute_locator
 from .record_identity import EngineCapability, ProjectKey, RecordClassification, RecordKey, StoreKey, canonical_path, normalize_engine
 
-UPSTREAM_COMMIT = "d91ae138cb931447635e94296023414a58bedcc5"
-SUPPORTED_COMMITS = ("05b074764dd1be4b7b04c7ab403ebeb88393aee3", UPSTREAM_COMMIT)
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 20000
@@ -29,7 +26,8 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}\Z")
 _FIELDS = frozenset((
     "id", "provider", "cwd", "workspaceId", "createdAt", "updatedAt", "lastActivityAt",
     "lastUserMessageAt", "title", "labels", "lastStatus", "lastModeId", "config", "runtimeInfo",
-    "features", "persistence", "lastError", "requiresAttention", "attentionReason",
+    "features", "metadata", "controls", "sessionMetrics", "background",
+    "persistence", "lastError", "requiresAttention", "attentionReason",
     "attentionTimestamp", "internal", "archivedAt", "owner", "resumeOnStartup", "launchEnv",
 ))
 _STATUSES = frozenset(("initializing", "idle", "running", "error", "closed"))
@@ -106,10 +104,13 @@ def _engine(provider):
 
 
 def _project(value):
-    if not isinstance(value, dict) or not set(value) <= _FIELDS:
+    # The registry is unversioned. Project only the fields we consume; a new
+    # display field does not change an exact registry ID or a daemon lookup.
+    if not isinstance(value, dict) or {"version", "schemaVersion", "schema_version"} & value.keys():
         raise PaseoInventoryError("paseo_schema_unverified")
     row = {name: _text(value.get(name), identity=name in {"id", "provider"})
            for name in ("id", "provider", "cwd", "createdAt", "updatedAt")}
+    row["unrecognized_fields_present"] = not value.keys() <= _FIELDS
     for name in ("workspaceId", "lastActivityAt", "lastUserMessageAt", "archivedAt"):
         item = value.get(name)
         row[name] = _text(item, identity=name == "workspaceId") if item is not None else None
@@ -119,6 +120,11 @@ def _project(value):
     row["lastStatus"] = status
     row["internal"] = value.get("internal", False)
     if type(row["internal"]) is not bool:
+        raise PaseoInventoryError("paseo_metadata_shape_invalid")
+    if ("metadata" in value and not isinstance(value["metadata"], dict)
+            or "background" in value and type(value["background"]) is not bool
+            or any(not isinstance(value[k], list) or not all(isinstance(v, dict) for v in value[k])
+                   for k in ("controls", "sessionMetrics") if k in value)):
         raise PaseoInventoryError("paseo_metadata_shape_invalid")
     if "resumeOnStartup" in value and type(value["resumeOnStartup"]) is not bool:
         raise PaseoInventoryError("paseo_metadata_shape_invalid")
@@ -133,6 +139,10 @@ def _project(value):
         raise PaseoInventoryError("paseo_metadata_shape_invalid")
     parent = labels.get("paseo.parent-agent-id")
     row["parent_agent_id"] = _text(parent.strip(), identity=True) if isinstance(parent, str) and parent.strip() else None
+    server = labels.get("paseo.parent-server-id", "")
+    if not isinstance(server, str):
+        raise PaseoInventoryError("paseo_metadata_shape_invalid")
+    row["parent_server_id"] = _text(server.strip(), identity=True) if server.strip() else None
     row["owner"] = None
     if "owner" in value:
         owner = value["owner"]
@@ -377,8 +387,7 @@ def build_inventory(adapters, *, engines=()):
                 if len(copies) > 1:
                     blockers.append("paseo_duplicate_agent_snapshots")
                 metadata = {
-                    "scope": "persisted_agent_registry", "upstream_commit": UPSTREAM_COMMIT,
-                    "supported_upstream_commits": list(SUPPORTED_COMMITS),
+                    "scope": "persisted_agent_registry",
                     "snapshot_count": len(copies), "snapshots": rows,
                     "coverage": {"native_root_verified": False, "writer_coverage_complete": False,
                         "saved_status_is_live_probe": False, "native_transcripts_read": False,

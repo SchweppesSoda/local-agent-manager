@@ -131,20 +131,15 @@ sending a new user message. Establish the target provider's native home and
 original working directory first. A session currently being continued by
 another frontend should not be resumed concurrently.
 
-The `environment claude-import` writer currently qualifies Paseo 0.15.3 and
-T3 Code Windows Nightly `0.1.8-nightly.20261108.4353` and
-`0.1.8-nightly.20261109.4399`. Pass the exact installed
+For `environment claude-import`, pass the exact installed
 desktop executable (`Paseo.exe` or `T3 Code (Nightly).exe`), profile and project;
 Paseo also accepts a direct native CLI executable, not a shell shim. The target
 local server must already be running, and its Claude provider must have an
 explicit binary/home binding. Paseo import requires an executable-only command
-without extra launcher flags. Unknown versions, profiles and schemas need
-qualification before this writer can use them.
-
-Import and built-in deletion maintain separate version qualifications. An import
-plan freezes the observed server version and runtime files. After an upgrade,
-prepare a fresh plan for the current server. For another version, qualify its
-import interface with synthetic history first.
+without extra launcher flags. A plan freezes the runtime files and the observed
+Paseo CLI or T3 server version. After an upgrade, prepare a fresh plan. Paseo
+checks the import options, and T3 checks the project scan and required database
+fields. Both verify the resulting mapping.
 
 ```powershell
 local-agent-manager environment claude-import prepare `
@@ -177,7 +172,7 @@ is required; a persisted mapping alone does not prove all history was replayed.
 An already active exact
 mapping is already connected. Restoring an archived frontend is a different
 state change, so stop for that scope decision unless already requested.
-[Paseo import implementation](https://github.com/getpaseo/paseo/blob/v0.15.3/packages/cli/src/commands/agent/import.ts)
+[Paseo import implementation](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/cli/src/commands/agent/import.ts)
 
 T3's qualified API accepts `projectId` and `expectedWorkspaceRoot`; it does
 not accept a Claude UUID or an engine-only filter. Its scan reports project

@@ -228,7 +228,8 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             files.fail("selector_not_found")
         # The complete descendant set is made visible in the immutable plan.
         while True:
-            expanded = agent_ids | {r["id"] for r in adapter.observations if r["parent_agent_id"] in agent_ids}
+            expanded = agent_ids | {r["id"] for r in adapter.observations
+                                    if files.local_child(r, agent_ids, adapter.manifest["server_id"])}
             if expanded == agent_ids:
                 break
             agent_ids = expanded
@@ -310,7 +311,7 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             files.fail("unselected_agent_shares_native_record")
         approved_refs = [ref for ref in references if ref.frontend_id in agent_ids]
         evidence = {"schema_version": SCHEMA, "root": str(adapter.profile_root), "binding_manifest": adapter.manifest,
-            "selected_agent_ids": agent_ids, "files": files.freeze(adapter.profile_root, agent_ids), "native_targets": targets,
+            "selected_agent_ids": agent_ids, "files": files.freeze(adapter.profile_root, agent_ids, server_id=adapter.manifest["server_id"]), "native_targets": targets,
             "references": [ref.to_dict() for ref in approved_refs], "selectors": list(selectors),
             "frontend_id": "paseo:" + digest(agent_ids)[:24], "desktop": []}
         evidence["managed_attachments"] = attachments.freeze(adapter.profile_root, agent_ids,

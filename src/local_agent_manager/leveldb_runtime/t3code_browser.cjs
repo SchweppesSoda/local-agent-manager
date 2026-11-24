@@ -13,7 +13,6 @@ const {
 =require('./t3code_cache.cjs');
 const request=JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 if (!['inspect', 'apply', 'seed'].includes(request.mode)) throw Error('mode_invalid');
-if(process.versions.electron!=='44.10.1'||process.versions.chrome!=='152.0.7977.169') throw Error('runtime_unqualified');
 app.setPath('userData', request.controlPath);
 for(const flag of ['disable-background-networking', 'disable-component-update', 'disable-sync', 'disable-gpu']) app.commandLine.appendSwitch(flag);
 protocol.registerSchemesAsPrivileged([{

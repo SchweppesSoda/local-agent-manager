@@ -22,6 +22,11 @@ receipts belong to that checkout's `.agent-manager-state`.
   do not automatically migrate or delete existing live evidence. Make the
   smallest change for demonstrated needs rather than building general
   registration or migration frameworks for hypothetical public deployments.
+- Target current client and provider releases. Check the API, required fields
+  and storage behavior used by each operation. Record observed product versions
+  for diagnosis and freeze runtime identity in approved operations. Add adapter
+  changes for demonstrated incompatibilities and avoid per-release allowlists
+  or separate implementations for obsolete formats.
 - Preserve frozen approval scope, physical store identity, confirmed native
   completion before frontend cleanup, atomic writes and interruption recovery.
   Retaining frontend references after mixed native results is acceptable.

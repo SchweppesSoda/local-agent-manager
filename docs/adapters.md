@@ -34,7 +34,7 @@ T3 从所选 profile 的 `userdata/settings.json` 中按 thread 对应的
 | Paseo / Codex | `command[0]` 为单项绝对路径时存入 `codex_binary` | `launchEnv.CODEX_HOME` → provider `env.CODEX_HOME` → `~/.codex` 候选；按 native ID 核实。 |
 | Paseo / Claude | provider `command`；逐会话清理不调用 Claude BIN | `launchEnv.CLAUDE_CONFIG_DIR` → provider `env.CLAUDE_CONFIG_DIR` → `~/.claude` 候选。 |
 | Paseo / Pi | provider `command`；当前清理绑定未保存 Pi BIN | 合并环境后分别解析 `PI_CODING_AGENT_DIR` 和 `PI_CODING_AGENT_SESSION_DIR`；缺省分别为 `~/.pi/agent`、`agentDir/sessions`。 |
-| Paseo / agy CLI | provider 单项绝对 `command` 指向已核验的 `agy.exe` | 合并 provider 环境和 `launchEnv` 后解析 `USERPROFILE`，并核对 `HOME`；使用已验证的 CLI 存储布局。裸 `agy` 尚不能证明 daemon 的 PATH 解析。 |
+| Paseo / agy CLI | `command[0]` 为已核验的 `agy.exe` 绝对路径，可附带 `acp` 或 `acp --disable-telemetry` | 合并 provider 环境和 `launchEnv` 后解析 `USERPROFILE`，并核对 `HOME`；使用已验证的 CLI 存储布局。裸 `agy` 尚不能证明 daemon 的 PATH 解析。 |
 
 BIN 的自动回退也有边界：T3 未声明 Codex BIN、Paseo 使用裸命令名而非绝对 Codex 路径时，
 原生 adapter 可能使用管理器进程 PATH 的候选；这不是前端实际启动程序的观测。
@@ -832,16 +832,14 @@ after，原生批次已完成而前端尚未开始时可冷继续。实际 Codex
 
 ### Paseo：agent 注册记录只读盘点
 
-固定依据为上游 `0.11.0-beta.3`、commit
-[`05b074764dd1be4b7b04c7ab403ebeb88393aee3`](https://github.com/getpaseo/paseo/tree/05b074764dd1be4b7b04c7ab403ebeb88393aee3)，
-以及 `0.15.3`、commit
-[`d91ae138cb931447635e94296023414a58bedcc5`](https://github.com/getpaseo/paseo/tree/d91ae138cb931447635e94296023414a58bedcc5)。
+盘点按实际注册字段解析。实体 metadata、controls 和 sessionMetrics 只检查容器形状，内容不进入输出。
+新增字段只报告其存在，仍可按完整 ID 盘点和调用 daemon。离线清理遇到无法解释的新字段时会在计划阶段停止。
 `paseo` 是独立客户端身份；记录 ID 属于 Paseo profile，不能替代提供者的 native ID。
 仅选中该客户端或显式传入 `--paseo-root` 才发现其根目录，默认 `PASEO_HOME` 或
 `~/.paseo`，不扫描其他主机或连接 daemon。相同物理 profile 的已证明路径别名合并，
 链接/reparse 根和文件在读取前拒绝。
 
-[AgentStorage](https://github.com/getpaseo/paseo/blob/05b074764dd1be4b7b04c7ab403ebeb88393aee3/packages/server/src/server/agent/agent-storage.ts)
+[AgentStorage](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/agent-storage.ts)
 保存没有独立版本字段的 JSON，读取 `agents/*.json` 与 `agents/*/*.json`；新记录位于
 cwd 编码的项目目录。reader 检查已知字段和有界元数据形状，不把缺失或损坏的目录解释为
 零记录成功。未发布的 `.tmp` 不读取，更深目录报告未覆盖。单文件上限 4 MiB、总读取
@@ -876,26 +874,26 @@ config、provider metadata、runtime extra 和 lastError 不进入输出；原�
 
 ### Paseo daemon 删除
 
-`--paseo-only` 使用 Windows Paseo 0.15.3 桌面分发包的客户端连接所选本机
-profile 的 daemon。计划冻结 profile 物理身份、`server-id`、分发文件指纹和
-唯一登记快照。执行使用同一连接验证服务器 ID 和协议实现版本，并通过
+`--paseo-only` 使用当前 Windows Paseo 桌面分发包连接所选本机
+profile 的 daemon。计划探测查询和删除接口，冻结 profile 物理身份、`server-id`、
+服务端报告的版本、分发文件指纹和唯一登记快照。执行在同一连接复核服务端身份及本次计划冻结的版本，并通过
 `delete_agent_request` 发送精确 Paseo UUID。Paseo 的查询可以匹配前缀或标题，
 所以每次都对返回的 ID 做完整比较。相关 provider 的原生历史保留。
 
-Paseo 0.15.3 的标准 daemon 保存文件登记并管理内存中的时间线。
+此操作覆盖 daemon 的文件登记和内存时间线。
 删除回执后重新检查 daemon 的精确查询和磁盘登记。旧版持久时间线目录、非本机
 端点、无法确认的运行时或重复/不可读快照会阻挡操作。调度、桌面缓存、外部副本及
 provider 历史属于其他存储范围。无法确认删除结果时保留 journal，恢复只查询，
 直到能证实两个来源均已移除对应的登记。
 
-[Paseo 0.15.3 删除请求](https://github.com/getpaseo/paseo/blob/v0.15.3/packages/server/src/server/session.ts#L3227-L3262)
+[Paseo 发布版本](https://github.com/getpaseo/paseo/releases/latest)
 · [操作命令](operation-cli.md#只删-paseo-会话)
 
 ### Paseo：Windows 显式绑定的完整清理
 
 `--paseo-bindings` 绑定一个服务端 profile、其 `server-id`、每个观察到的 agent 的实际
 Codex/Pi/Claude 根目录，以及全部相关本机桌面 profile 与运行文件。选择的是 Paseo ID；
-固定 parent-agent 标签的后代一起列入计划。cwd 不授予存储归属；未选 agent 共享同一
+属于当前服务器的 parent-agent 标签后代一起列入计划。跨服务器的同名父 ID 单独处理。cwd 不授予存储归属；未选 agent 共享同一
 原生记录、未知 provider、冲突恢复句柄或不完整清单阻挡计划。普通 provider metadata
 作为所属记录的一部分清理，不从配置内容推断路径或权限。
 若 `launchEnv` 覆盖了对应引擎的存储环境变量，其值必须与显式绑定一致。
@@ -909,7 +907,7 @@ Codex/Pi/Claude 根目录，以及全部相关本机桌面 profile 与运行文�
 删除；其他调度只将已结束且属于选中 agent 的 run 的 `agentId/output/error` 置空，
 保留执行次数、状态、时间与其他 run。运行中的相关任务、专属调度包含未选历史 run、
 旧 `agent-timelines` 或未知嵌套 schema 均阻挡。
-`0.15.3` 的 `agent-requests` 已完成回执、`creations` 已完成 agent 创建快照及其
+`agent-requests` 已完成回执、`creations` 已完成 agent 创建快照及其
 SHA-256 claim 一并冻结和移除；创建快照中的原生恢复引用必须已被注册记录覆盖。
 已完成 workspace 创建中的选中 agent 快照和 agent claim 可精确移除，保留 workspace
 描述、创建指纹及 workspace claim；`agentId` 清空，revision 递增。该路径要求已知描述
@@ -981,8 +979,7 @@ T3 数据库操作所用的 Python `sqlite3` 需链接启用 FTS5 的 SQLite 3.4
 已关闭，也不授予 native delete 或完整 verify 能力。
 
 `--t3code-only` 提供单条自带软删除，并保留原生会话及工作树，见
-[命令与核验语义](operation-cli.md#只删-t3-会话)。固定数据库结构也已在
-`0.1.8-nightly.20261108.4353` 验证；未知结构或服务版本拒绝该模式。
+[命令与核验语义](operation-cli.md#只删-t3-会话)。在线操作检查所需投影字段、服务定位信息和操作回执，并冻结本次观察到的运行时。
 
 `--t3code-bindings` 为整个 profile 的每个已观察 thread 明确绑定 Codex home、Claude
 config dir、Pi session 根及 agent 根，或已验证的 T3 Antigravity ACP 实例，
@@ -1026,13 +1023,12 @@ Windows 执行期间持有全部绑定运行文件及永久 `userdata/server-own
 | T3 Code Antigravity | 受管双文件 ACP，或自定义 `agy acp` | 启动方式与实际 profile 分别核实；传入 `GEMINI_HOME` 不证明 CLI 遵守它 |
 | Antigravity App / IDE | 独立 App / IDE 及其 profile | CLI 的 `Other` 分页可将桌面对话导入为 CLI 副本。导入关联不构成共享物理存储证据 |
 
-**CLI 与 Paseo。** 已核对 Paseo 内置 provider 的命令行采用 `stream-json`，收到
-`conversation_id` 后保留恢复引用，重启以 `--conversation` 恢复。daemon 可以通过
+**CLI 与 Paseo。** Paseo 内置 provider 通过 `agy acp --disable-telemetry` 启动 CLI，
+按持久化的 ACP session ID 恢复会话。daemon 可以通过
 `agents.providers.antigravity.command` 及 provider 环境覆盖默认选择。前端注册行、
 配置命令、运行进程与 native 根需要分别验证。同一 `agy` 路径可以在不同主机、用户或
-profile 下运行。[Paseo 内置配置](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/public-docs/supported-providers.md#antigravity)
-· [Paseo 启动与恢复](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/plugins/antigravity-provider/server/internal/process.ts#L34-L56)
-· [Paseo 持久引用](https://github.com/getpaseo/paseo/blob/ef7de3d066256901396e1f47d9e309d569589b2c/plugins/antigravity-provider/server/internal/session.ts#L218-L232)
+profile 下运行。[Paseo 内置配置](https://paseo.sh/docs/supported-providers/antigravity)
+· [Paseo 启动与恢复](https://github.com/getpaseo/paseo/blob/v0.17.4/plugins/antigravity-provider/server/provider.ts)
 
 Google CLI 在 1.0.4 加入 SQLite 会话格式。已观察到的布局包括
 `conversations/<id>.db`、SQLite 侧文件、`brain/<id>/` 和 profile 级

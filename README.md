@@ -76,7 +76,7 @@ Paseo 或 T3 Code；先生成含文件指纹的计划，再按核对过的哈希
 `environment claude-import prepare/apply/verify` 通过官方接口导入并核对前端历史。
 Paseo 支持按完整 Claude 会话 ID 导入；T3 仅支持明确接受的项目级近期历史，可能
 同时包含 Claude、Codex 和 Pi。该命令不发送续聊消息。
-T3 导入支持已验证的 Windows Nightly `4353` 和 `4399`，计划绑定实际服务版本。
+Paseo 导入检查 CLI 的导入选项，T3 Windows Nightly 导入检查项目扫描接口和数据库投影。升级后重新生成计划会绑定当前运行程序。
 
 `environment cindy-memory inspect/export` 按显式 owner 存储与项目盘点记忆元数据，
 或将精确选定的分片导出为新 Markdown 快照。导出会读取选定的记忆正文，不改源文件，
@@ -231,12 +231,12 @@ local-agent-manager records --client paseo --json
 local-agent-manager records --client paseo --paseo-root 'D:\profiles\paseo' --engine codex --json
 ```
 
-适配覆盖 Paseo `0.11.0-beta.3` 与 `0.15.3` 的已知注册格式；当前清单范围为 `persisted_agent_registry`。
+Paseo 按实际注册记录的字段盘点，范围为 `persisted_agent_registry`。
 Windows 上，[`--paseo-only` 操作](docs/operation-cli.md#只删-paseo-会话)通过正在运行的
-本机 Paseo 0.15.3 daemon 按完整 UUID 删除会话，支持 Codex、Claude、Pi、Antigravity。
+本机 Paseo daemon 按完整 UUID 删除会话，支持 Codex、Claude、Pi、Antigravity。
 批量入口自动完成逐条计划、哈希传递和结果核验。
 
-需要同时删除原生历史时，Windows 支持 Codex、Pi 和 Claude 的自动绑定及显式绑定。
+需要同时删除原生历史时，Windows 支持 Codex、Pi、Claude，以及能核实 CLI 程序、会话 UUID 和原生目录的内置 Antigravity ACP。
 
 ```powershell
 local-agent-manager delete run --client paseo --paseo-only --record-id '<Paseo ID 1>' --record-id '<Paseo ID 2>' --yes --progress --json

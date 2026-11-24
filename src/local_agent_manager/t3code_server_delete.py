@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from . import frozen_files
 from .cleaner import ScanReport
+from .discovery import version_label
 from .office_cleanup import digest
 from .planning import ActionImpact, ActionKind, CandidateAction, RiskLevel, ScanStatus, StorageLocation, TargetRef, storage_id_for_path
 from .record_identity import canonical_path
@@ -70,7 +71,7 @@ def _locator(root):
         state = json.loads(raw)
         url = urlsplit(state['origin'])
         if (state['version'] != 1 or type(state['pid']) is not int or state['pid'] <= 0
-                or not _version_label(state.get('serverVersion')) or not state.get('ownerId')
+                or not version_label(state.get('serverVersion')) or not state.get('ownerId')
                 or url.scheme != 'http' or url.hostname != '127.0.0.1'
                 or url.port != state['port'] or not 1 <= url.port <= 65535
                 or url.path not in ('', '/') or url.query or url.fragment or url.username or url.password
@@ -79,10 +80,6 @@ def _locator(root):
         return {k: state[k] for k in ('pid', 'origin', 'port', 'startedAt', 'serverVersion', 'ownerId')}
     except (KeyError, ValueError, TypeError):
         raise T3ServerError('t3code_local_server_unproven') from None
-
-
-def _version_label(value):
-    return isinstance(value, str) and 0 < len(value) <= 128 and all(32 < ord(char) < 127 for char in value)
 
 
 def _qualify_projection(db):
@@ -216,7 +213,7 @@ def approved_evidence(document):
     e = action['impact']['external_action_payload']['t3code_server_evidence']
     local_root(e['root']); identifier(e['thread_id'])
     if (e['schema_version'] != SCHEMA or list(scope['record_ids']) != [e['thread_id']]
-            or e['install'] != str(_bundled_install()) or not _version_label(e['server']['serverVersion'])
+            or e['install'] != str(_bundled_install()) or not version_label(e['server']['serverVersion'])
             or e['before']['thread_id'] != e['thread_id'] or e['before'].get('deleted_at') is not None
             or e['provider_history'] != 'preserved' or e['worktree_policy'] != 'detach_and_preserve'
             or e['deletion_semantics'] != 't3_soft_delete'):

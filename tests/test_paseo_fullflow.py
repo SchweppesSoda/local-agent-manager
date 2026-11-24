@@ -127,6 +127,7 @@ class PaseoFilesTests(unittest.TestCase):
             "kind": "agent", "idempotencyKey": "synthetic-key", "revision": 1, "phase": "completed",
             "workspaceId": None, "agentId": AGENT, "error": None,
             "agent": {k: v for k, v in agent(AGENT, NATIVE, self.root).items() if k not in {"config", "lastStatus"}}}}
+        creation["snapshot"]["agent"].update(metadata={}, controls=[], sessionMetrics=[], options={}, background=True)
         write(self.root / "creations" / (key + ".json"), creation)
         claim = self.root / "creations" / (files._request_digest(["agent", AGENT]) + ".claim")
         claim.write_text(key, encoding="utf-8")
@@ -278,6 +279,10 @@ class PaseoFullflowTests(unittest.TestCase):
         return result
 
     def test_frontend_only_cold_apply_and_verify(self):
+        # The same parent UUID on another host does not grant a local cascade.
+        keeper = agent(KEEP, OTHER, self.base)
+        keeper["labels"] = {"paseo.parent-agent-id": AGENT, "paseo.parent-server-id": "srv_other"}
+        write(self.root / "agents" / (KEEP + ".json"), keeper)
         plan = self.plan()
         self.assertEqual([a["kind"] for a in plan["actions"]], [paseo_cleanup.KIND])
         result = self.coordinator().apply_operation(operation_id=plan["operation_id"], plan_path=self.plan_path,
@@ -288,6 +293,12 @@ class PaseoFullflowTests(unittest.TestCase):
         self.assertFalse((self.root / "paseo.pid").exists())
         result = self.coordinator().verify_operation(operation_id=plan["operation_id"], plan_path=self.plan_path)
         self.assertEqual(result["goal_status"], "complete", result)
+
+    def test_unknown_registry_field_blocks_offline_cleanup(self):
+        value = {**agent(AGENT, NATIVE, self.base), "futureNativeBinding": OTHER}
+        write(self.root / "agents" / (AGENT + ".json"), value)
+        with self.assertRaisesRegex(ValueError, "agent_schema_unverified"):
+            self.adapter.snapshot_references()
 
     def test_cold_cleanup_of_workspace_creation_with_absent_native_and_retired_binary(self):
         config = self.root / "config.json"

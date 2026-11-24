@@ -176,6 +176,8 @@ def _agent(value):
     # Inventory accepts opaque provider state; mutation additionally qualifies
     # every known restoration-bearing container against the pinned schema.
     row = paseo_store._project(value)
+    if row["unrecognized_fields_present"]:
+        fail("agent_schema_unverified")
     for key in ("workspaceId", "lastActivityAt"):
         if key in value:
             _text(value[key])
@@ -372,9 +374,14 @@ def _creation(value):
             "effectiveThinkingOptionId", "createdAt", "updatedAt", "lastUserMessageAt", "status", "activeTurn",
             "capabilities", "currentModeId", "availableModes", "pendingPermissions", "persistence", "runtimeInfo",
             "lastUsage", "lastError", "title", "labels", "requiresAttention", "attentionReason", "attentionTimestamp",
-            "archivedAt", "providerUnavailable", "internal"}, {"id", "provider", "cwd", "createdAt", "updatedAt"})
+            "archivedAt", "providerUnavailable", "internal", "background", "metadata", "controls", "sessionMetrics",
+            "options", "usageScopeKey"}, {"id", "provider", "cwd", "createdAt", "updatedAt"})
         if not isinstance(agent, dict) or agent.get("id") != s["agentId"]:
             fail("creation_agent_identity_unverified")
+        if "options" in agent and not isinstance(agent["options"], dict):
+            fail("creation_schema_unverified")
+        if "usageScopeKey" in agent:
+            _text(agent["usageScopeKey"])
         # Wire snapshots contain UI-only fields. Only the known native resume
         # fields are projected, and must match the registered agent before use.
         agent = paseo_store._project({key: item for key, item in agent.items() if key in paseo_store._FIELDS})
@@ -471,12 +478,17 @@ def transform(entry, ids):
     return encode(after) if changed else entry["raw"]
 
 
-def freeze(root, ids):
+def local_child(row, parent_ids, server_id):
+    # Without a bound server, retain every possible local child in the guard.
+    return row["parent_agent_id"] in parent_ids and (server_id is None or row["parent_server_id"] in (None, server_id))
+
+
+def freeze(root, ids, *, server_id=None):
     ids = sorted(set(ids))
     entries, directories = rows(root)
     if not ids or not set(ids) <= {e["row"]["id"] for e in entries if e["kind"] == "agent"}:
         fail("selected_agent_not_found")
-    if any(e["kind"] == "agent" and e["row"]["id"] not in ids and e["row"]["parent_agent_id"] in ids for e in entries):
+    if any(e["kind"] == "agent" and e["row"]["id"] not in ids and local_child(e["row"], ids, server_id) for e in entries):
         fail("unselected_child_agent_remains")
     files = []
     for entry in entries:

@@ -19,16 +19,14 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from . import frozen_files
+from .discovery import version_label
 from .environment_paths import BoundedPathProbe, local_path
 from .paseo_store import PaseoAdapter
 from .sqlite_utils import connect_readonly
-from .t3code_store import V2, database_path, qualify, rows
+from .t3code_store import V2, database_path, rows
 
 
 SCHEMA = "larj.claude-session-import.v1"
-PASEO_VERSION = "0.15.3"
-T3_VERSION = "0.1.8-nightly.20261108.4353"
-T3_VERSIONS = (T3_VERSION, "0.1.8-nightly.20261109.4399")
 _PASEO_ARCHIVE = "resources/app.asar"
 _PASEO_RUNNER = "resources/app.asar.unpacked/dist/daemon/node-entrypoint-runner.js"
 _T3_ARCHIVE = "resources/server.asar"
@@ -156,7 +154,7 @@ def _t3_locator(profile):
         or url.port is None or not 1 <= url.port <= 65535
         or type(value.get("port")) is not int or url.port != value["port"]
         or type(value.get("version")) is not int or value["version"] != 1
-        or value.get("serverVersion") not in T3_VERSIONS
+        or not version_label(value.get("serverVersion"))
         or type(value.get("pid")) is not int or value["pid"] <= 0
         or not isinstance(value.get("startedAt"), str)
         or not isinstance(value.get("ownerId"), str) or not value["ownerId"]
@@ -221,7 +219,7 @@ def _paseo_transcript(native_transcript, config_root, native_id, cwd):
         relative = path.relative_to(root)
     except ValueError:
         raise SessionImportError("paseo_import_native_transcript_outside_claude_home") from None
-    # Paseo v0.15.3 first resolves the Claude SDK project directory from the
+    # Paseo first resolves the Claude SDK project directory from the
     # real cwd. Qualify that exact short layout, without using its UUID fallback.
     canonical = str(cwd.resolve(strict=True))
     if sys.platform == "darwin":
@@ -275,8 +273,12 @@ def prepare_paseo_import(*, executable, profile, cwd, native_id, native_transcri
                                    for part in (_PASEO_ARCHIVE, _PASEO_RUNNER))
         config, claude = _paseo_provider(profile, provider)
         source = _paseo_transcript(native_transcript, claude["config_root"], native_id, cwd)
-        return _seal({**plan, "profile_id": server_id, "locator": _paseo_locator(profile, server_id),
-                      "version": PASEO_VERSION, "bundled": bundled, "provider": provider,
+        plan.update(profile_id=server_id, locator=_paseo_locator(profile, server_id), bundled=bundled)
+        raw_version = _subprocess(subprocess.run, [*_paseo_argv(plan), "--version"], plan, bundled=bundled)
+        version = raw_version.strip().decode("ascii")
+        if not version_label(version):
+            raise SessionImportError("paseo_import_version_unverified")
+        return _seal({**plan, "version": version, "provider": provider,
                       "native_id": native_id, "scope": "exact_claude_session",
                       "settings": config, "claude": claude, "native_transcript": source})
     except SessionImportError:
@@ -292,7 +294,11 @@ def _t3_state(profile, project_id, cwd):
         deadline = time.monotonic() + 5
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
         db.execute("BEGIN")
-        qualify(db)
+        # T3 performs the write. Only the tables and columns used for readback
+        # are part of the import contract.
+        for table in ("projection_projects", V2 + "threads", V2 + "provider_threads"):
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is None:
+                raise SessionImportError("t3code_import_project_projection_unverified")
         project = rows(db, "SELECT workspace_root FROM projection_projects WHERE project_id=? AND deleted_at IS NULL",
                        (project_id,))
         if len(project) != 1 or not _same_directory(project[0]["workspace_root"], cwd):
@@ -327,7 +333,7 @@ def _t3_state(profile, project_id, cwd):
 
 
 def prepare_t3code_import(*, executable, profile, cwd, project_id):
-    """Bind T3's existing project and version-qualified whole-project import."""
+    """Bind T3's existing project and observed runtime for whole-project import."""
     try:
         if not _RECORD_ID.fullmatch(project_id):
             raise SessionImportError("t3code_import_project_id_invalid")
@@ -394,7 +400,8 @@ def _paseo_state(plan):
         if row["provider"] != plan["provider"]:
             continue
         ids = {ref["value"] for ref in row["references"] if ref["kind"] == "id"}
-        if row["opaque_session_handle_present"] or (not ids and row["opaque_native_handle_present"]):
+        if (row["unrecognized_fields_present"] or row["opaque_session_handle_present"]
+                or not ids and row["opaque_native_handle_present"]):
             raise SessionImportError("paseo_import_registry_handle_unverified")
         if plan["native_id"] not in ids:
             continue
@@ -490,14 +497,14 @@ def _paseo_argv(plan):
 
 def _run_paseo(plan, runner):
     argv = _paseo_argv(plan)
-    version = _subprocess(runner, [*argv, "--version"], plan, bundled=plan["bundled"])
-    if version.strip() != PASEO_VERSION.encode("ascii"):
-        raise SessionImportError("paseo_import_version_unverified")
     before = _paseo_state(plan)
     if before:
         if before[0]["archived"]:
             raise SessionImportError("paseo_import_archived_restore_requires_separate_scope")
         return _result(plan, "already_imported", mappings=before)
+    help_text = _subprocess(runner, [*argv, "import", "--help"], plan, bundled=plan["bundled"])
+    if not {b"--provider", b"--cwd", b"--home", b"--json"} <= set(help_text.split()):
+        raise SessionImportError("paseo_import_interface_unverified")
     if _paseo_locator(Path(plan["profile"]), plan["profile_id"]) != plan["locator"]:
         raise SessionImportError("import_preflight_changed")
     try:

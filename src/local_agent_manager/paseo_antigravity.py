@@ -1,11 +1,8 @@
 """Paseo's built-in Antigravity plugin persistence contract.
 
-Qualified against getpaseo/paseo d91ae138cb931447635e94296023414a58bedcc5
-(0.15.3) and ef7de3d066256901396e1f47d9e309d569589b2c:
-plugins/antigravity-provider/server/internal/session.ts and
-packages/server/src/server/agent/plugin-provider.ts. The outer sessionId is
-`plugin:` plus JSON, not the conversation UUID. Metadata is a second resume
-source and must agree. Custom ACP/nativeHandle variants are not this format.
+ACP saves data.sessionId. Paseo can also reopen data.conversationId in an
+existing record. Both identify the native session inside the plugin envelope.
+Every independently stored resume handle must agree.
 """
 import json
 
@@ -16,9 +13,14 @@ from .environment_config import _unique_object
 def conversation(value):
     if (not isinstance(value, dict) or set(value) != {'version', 'data'}
             or type(value['version']) is not int or value['version'] != 1
-            or not isinstance(value['data'], dict) or set(value['data']) != {'conversationId'}):
+            or not isinstance(value['data'], dict)):
         fail('paseo_handle_shape_unqualified')
-    return native_id(value['data']['conversationId'])
+    data = value['data']
+    if set(data) == {'sessionId'}:
+        return native_id(data['sessionId'])
+    if set(data) == {'conversationId'}:
+        return native_id(data['conversationId'])
+    fail('paseo_handle_shape_unqualified')
 
 
 def decode(value):
@@ -42,7 +44,8 @@ def references(value):
     metadata = persistence.get('metadata')
     if metadata is not None:
         if (not isinstance(metadata, dict) or 'pluginProviderPersistence' not in metadata
-                or set(metadata) - {'pluginProviderPersistence', 'cwd'}):
+                or set(metadata) - {'pluginProviderPersistence', 'cwd', 'mcpServers'}
+                or 'mcpServers' in metadata and not isinstance(metadata['mcpServers'], dict)):
             fail('paseo_handle_shape_unqualified')
         if 'cwd' in metadata:
             # Core AgentStorage also saves the agent's working directory beside

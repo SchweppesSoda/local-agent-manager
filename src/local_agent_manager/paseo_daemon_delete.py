@@ -1,4 +1,4 @@
-"""Journaled deletion through the local, version-qualified Paseo daemon."""
+"""Journaled deletion through the local Paseo daemon's exact-ID RPC."""
 
 from dataclasses import replace
 import json
@@ -10,13 +10,13 @@ import uuid
 
 from . import frozen_files
 from .cleaner import ScanReport
+from .discovery import version_label
 from .office_cleanup import digest
 from .paseo_store import PaseoAdapter, _engine, _plain, local_root
 from .planning import ActionImpact, ActionKind, CandidateAction, RiskLevel, ScanStatus, StorageLocation, TargetRef, storage_id_for_path
 from .record_identity import canonical_path
 
 KIND = "delete_paseo_daemon_agent"
-VERSION = "0.15.3"
 SCHEMA = "larj.paseo-daemon-delete.v1"
 _RUNNER = "resources/app.asar.unpacked/dist/daemon/node-entrypoint-runner.js"
 _ARCHIVE = "resources/app.asar"
@@ -61,8 +61,7 @@ def _server_id(root):
 
 
 def _snapshot(root, agent_id):
-    # This shipped version uses the file registry and in-memory timeline.
-    # Legacy timeline data is outside this daemon's qualified delete path.
+    # This operation covers the file registry and in-memory timeline.
     legacy = frozen_files.checked_path(root, "agent-timelines")
     if os.path.lexists(legacy):
         raise PaseoDaemonError("paseo_legacy_timeline_unqualified")
@@ -89,6 +88,7 @@ def _daemon_locator(root, server_id):
 
 
 def _rpc(evidence, verb, timeout):
+    """Return the observed daemon version for an exact match, or None for absence."""
     root = local_root(evidence["root"])
     install = local_root(evidence["install"])
     if (_identity(root) != evidence["root_identity"] or _server_id(root) != evidence["server_id"]
@@ -99,7 +99,7 @@ def _rpc(evidence, verb, timeout):
            if not k.upper().startswith(("NODE_", "ELECTRON_", "PASEO_"))}
     env.update(ELECTRON_RUN_AS_NODE="1", PASEO_NODE_ENV="production")
     request = {k: evidence[k] for k in ("root", "server_id", "agent_id", "provider")}
-    request.update(version=VERSION, verb=verb, endpoint=endpoint)
+    request.update(version=evidence.get("version"), verb=verb, endpoint=endpoint)
     try:
         result = subprocess.run(
             [str(install / "Paseo.exe"), "--disable-warning=DEP0040", str(install / _RUNNER),
@@ -108,9 +108,11 @@ def _rpc(evidence, verb, timeout):
             env=env, timeout=timeout, check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         response = json.loads(result.stdout)
-        if type(response) is not bool:
+        if (type(response) is not dict or type(response.get("present")) is not bool
+                or not version_label(response.get("version"))
+                or evidence.get("version") not in (None, response["version"])):
             raise ValueError
-        return response
+        return response["version"] if response["present"] else None
     except (OSError, subprocess.SubprocessError, ValueError):
         raise PaseoDaemonError("paseo_daemon_rpc_unverified") from None
 
@@ -130,10 +132,12 @@ def freeze(root, agent_id):
         "schema_version": SCHEMA, "root": str(root), "root_identity": _identity(root),
         "server_id": _server_id(root), "agent_id": agent_id, "provider": row["provider"],
         "record_path": source.as_posix(), "record_sha256": row["fingerprint"],
-        "install": str(install), "runtime": _runtime(install), "version": VERSION,
+        "install": str(install), "runtime": _runtime(install),
     }
-    if not _rpc(evidence, "probe", 15):
+    version = _rpc(evidence, "probe", 15)
+    if not version:
         raise PaseoDaemonError("paseo_daemon_agent_not_found")
+    evidence["version"] = version
     return evidence
 
 
@@ -173,7 +177,7 @@ def approved_evidence(document):
     root = local_root(evidence["root"])
     agent_id = evidence["agent_id"]
     record = Path(evidence["record_path"])
-    if (evidence["schema_version"] != SCHEMA or evidence["version"] != VERSION or not _full_id(agent_id)
+    if (evidence["schema_version"] != SCHEMA or not version_label(evidence.get("version")) or not _full_id(agent_id)
             or not _SERVER_ID.fullmatch(evidence["server_id"]) or list(scope["record_ids"]) != [agent_id]
             or record.parts[:1] != ("agents",) or len(record.parts) not in {2, 3}
             or record.name != f"{agent_id}.json" or evidence["install"] != str(_bundled_install())):

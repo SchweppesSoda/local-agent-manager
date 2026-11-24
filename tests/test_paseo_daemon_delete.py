@@ -29,7 +29,7 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
         self.plan_path = base / "plan.json"
         self.target = self.profile / "agents" / f"{AGENT}.json"
         self.keeper = self.profile / "agents" / f"{KEEP}.json"
-        write(self.target, agent(AGENT, NATIVE, base))
+        write(self.target, {**agent(AGENT, NATIVE, base), "futureDisplayMetadata": {"label": "PRIVATE"}})
         antigravity = agent(KEEP, OTHER, base)
         antigravity.update(provider="antigravity",
                            persistence={"provider": "antigravity", "sessionId": '{"opaque":true}'},
@@ -68,7 +68,7 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
                 (self.profile / evidence["record_path"]).unlink()
             if self.timeout_after_delete:
                 raise paseo.PaseoDaemonError("fixture request timed out")
-        return identifier in self.live
+        return "0.20.0" if identifier in self.live else None
 
     def invoke(self, *args):
         output, errors = io.StringIO(), io.StringIO()
@@ -92,6 +92,7 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
         code, plan = self.plan()
         self.assertEqual(code, 0, plan)
         self.assertEqual([action["kind"] for action in plan["actions"]], [paseo.KIND])
+        self.assertEqual(paseo.approved_evidence(plan)["version"], "0.20.0")
         self.assertNotIn(NATIVE, json.dumps(plan))
         self.assertNotIn("PRIVATE", json.dumps(plan))
         keeper = self.keeper.read_bytes()
@@ -219,7 +220,7 @@ class PaseoDaemonDeleteTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LARJ_PASEO_BUNDLE_ACCEPTANCE") == "1",
-                     "Opt in to a local temporary daemon with installed Paseo 0.15.3")
+                     "Opt in to a temporary daemon using the installed Paseo bundle")
 class PaseoBundleAcceptanceTests(unittest.TestCase):
     def test_real_daemon_deletes_four_providers_and_preserves_native(self):
         install = paseo._bundled_install()
@@ -274,6 +275,9 @@ class PaseoBundleAcceptanceTests(unittest.TestCase):
                     targets = [Path(paseo._snapshot(profile, identifier)["source"]) for identifier in selected]
                     sibling = Path(paseo._snapshot(profile, KEEP)["source"])
                     sibling_before = sibling.read_bytes()
+                    current = paseo.freeze(profile, AGENT)
+                    with self.assertRaisesRegex(paseo.PaseoDaemonError, "rpc_unverified"):
+                        paseo._rpc({**current, "version": "different-approved-build"}, "probe", 15)
                     self.exercise_operation(profile, base / "batch.json", selected)
                     self.assertFalse(any(path.exists() for path in targets))
                     self.assertEqual(sibling.read_bytes(), sibling_before)

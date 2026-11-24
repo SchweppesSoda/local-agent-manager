@@ -11,7 +11,6 @@ async function main() {
   const request = JSON.parse(fs.readFileSync(0, "utf8"));
   const fromBundle = createRequire(join(archive, "node_modules", "@getpaseo", "cli", "package.json"));
   const clientVersion = JSON.parse(fs.readFileSync(join(archive, "node_modules", "@getpaseo", "client", "package.json"), "utf8")).version;
-  if (clientVersion !== request.version) throw new Error();
   const { createHostClient } = await import(pathToFileURL(fromBundle.resolve("@getpaseo/client/node")).href);
   const { readLocalCredentialForTarget } = await import(pathToFileURL(fromBundle.resolve("@getpaseo/server/daemon-control")).href);
   const client = createHostClient(request.endpoint, {
@@ -24,10 +23,15 @@ async function main() {
   try {
     await client.connect();
     const server = client.getLastServerInfoMessage();
-    if (server?.serverId !== request.server_id || server.version !== request.version) throw new Error();
+    if (server?.serverId !== request.server_id || typeof server.version !== "string" ||
+        !/^[!-~]{1,128}$/.test(server.version) ||
+        (request.version !== null && server.version !== request.version) ||
+        typeof client.deleteAgent !== "function") throw new Error();
     const findExact = async () => {
       const result = await client.fetchAgent({ agentId: request.agent_id });
-      if (result?.agent?.id !== request.agent_id) return null;
+      if (result === null) return null;
+      if (typeof result?.agent?.id !== "string" || !result.agent.id) throw new Error();
+      if (result.agent.id !== request.agent_id) return null;
       if (result.agent.provider !== request.provider) throw new Error();
       return result.agent;
     };
@@ -41,7 +45,7 @@ async function main() {
     } else if (request.verb !== "probe") {
       throw new Error();
     }
-    process.stdout.write(JSON.stringify(Boolean(agent)));
+    process.stdout.write(JSON.stringify({ present: Boolean(agent), version: server.version }));
   } finally {
     await client.close();
   }
