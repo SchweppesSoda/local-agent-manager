@@ -79,7 +79,7 @@ class CurrentNative:
                 native.fail('current_summary_corrupt')
             if native._schema_hash(native._objects(db)) != e['summary_schema_sha256']:
                 native.fail('summary_schema_changed')
-            rows = native._rows(db)
+            rows = native._rows(db, instance_store='t3_instance' in e)
             present = set(rows)
             preserved = set(e['parents']) - ids
             if present & ids or not preserved <= present:

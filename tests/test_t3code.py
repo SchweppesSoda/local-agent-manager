@@ -142,6 +142,27 @@ class T3CodeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'schema_unverified'):
                 store.qualify(db)
 
+    def test_4928_deletes_selected_agy_rows_and_preserves_project_and_device(self):
+        home = self.root / 'nightly-4928'
+        with closing(create_store(home, objects=store.SCHEMA_CONTRACTS[3])) as db:
+            for tid in ('selected', 'keeper'):
+                add_thread(db, tid, native='native-' + tid, driver='antigravity')
+                insert(db, V2 + 'turn_items', turn_item_id='item-' + tid, thread_id=tid,
+                       inline_work_output=1, payload_json='{}')
+            insert(db, 'issue_tracker_bindings', project_id='project-1', tracker='fixture')
+            insert(db, 'auth_connect_devices', proof_key_thumbprint='device')
+            db.commit()
+            selection = database.freeze(home, ['selected'], compact=True)
+            self.assertEqual(selection['native_references'], [{'driver': 'antigravity', 'native_id': 'native-selected'}])
+            database.apply(selection, phase_callback=lambda _: None, compact=True)
+            self.assertEqual(database.remaining(selection, compact=True), 0)
+            self.assertEqual(db.execute(f'SELECT thread_id, inline_work_output FROM {V2}turn_items').fetchall(), [('keeper', 1)])
+            self.assertEqual(db.execute('SELECT tracker FROM issue_tracker_bindings').fetchall(), [('fixture',)])
+            self.assertEqual(db.execute('SELECT proof_key_thumbprint FROM auth_connect_devices').fetchall(), [('device',)])
+            db.execute(f'CREATE INDEX future_turn_index ON {V2}turn_items(inline_work_output)')
+            with self.assertRaisesRegex(ValueError, 'schema_unverified'):
+                database.freeze(home, ['keeper'])
+
     def test_titles_are_opt_in_metadata_without_message_content_or_adapter_changes(self):
         add_thread(self.db, 'named', native='native-name')
         add_thread(self.db, 'old-name', legacy=True)

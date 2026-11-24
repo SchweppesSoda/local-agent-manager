@@ -25,6 +25,7 @@ def add_connection_commands(commands) -> None:
     actions = cleanup.add_subparsers(dest="t3_cleanup_action", required=True)
     prepare = actions.add_parser("prepare", help="从配置和原生 ID 自动发现完整清理所需的绑定")
     prepare.add_argument("--t3code-root", type=_absolute)
+    prepare.add_argument("--runtime-root", type=_absolute, help="T3 已卸载时，从原安装包提取的 Electron 目录")
     prepare.add_argument("--out", type=_absolute, help="可选的绑定文件路径")
     prepare.add_argument("--json", action="store_true")
 
@@ -131,7 +132,7 @@ def run_connection_command(args: argparse.Namespace, *, stdout: TextIO, stderr: 
     try:
         if args.environment_command in {"t3-cleanup", "paseo-cleanup"}:
             if args.environment_command == "t3-cleanup":
-                manifest = discover_bindings(args.t3code_root)
+                manifest = discover_bindings(args.t3code_root, runtime_root=args.runtime_root)
             else:
                 manifest = discover_paseo(args.paseo_root)
             if args.out:

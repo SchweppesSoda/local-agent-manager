@@ -1047,41 +1047,107 @@
           "CREATE TRIGGER orchestration_v2_turn_item_counts_update\n    AFTER UPDATE OF thread_id, run_id ON orchestration_v2_projection_turn_items\n    WHEN old.thread_id IS NOT new.thread_id OR old.run_id IS NOT new.run_id\n    BEGIN\n      UPDATE orchestration_v2_projection_turn_item_counts SET item_count = item_count - 1\n      WHERE thread_id = old.thread_id AND run_key = COALESCE(old.run_id, '');\n      DELETE FROM orchestration_v2_projection_turn_item_counts\n      WHERE thread_id = old.thread_id AND run_key = COALESCE(old.run_id, '') AND item_count <= 0;\n      INSERT INTO orchestration_v2_projection_turn_item_counts (thread_id, run_key, item_count)\n      VALUES (new.thread_id, COALESCE(new.run_id, ''), 1)\n      ON CONFLICT (thread_id, run_key) DO UPDATE SET item_count = item_count + 1;\n    END"
         ]
       ]
+    },
+    {
+      "version": "0.1.11-nightly.20261119.4928",
+      "base_version": "0.1.10-nightly.20261113.4616",
+      "producer": "server.asar/apps/server/dist/ManagedEndpointRuntime-K47Q-yjv.mjs; migrations 088-099",
+      "remove": [],
+      "replace": [
+        [
+          "index",
+          "orchestration_v2_projection_turn_items_queued_input_idx",
+          "orchestration_v2_projection_turn_items",
+          "CREATE INDEX orchestration_v2_projection_turn_items_queued_input_idx\n    ON orchestration_v2_projection_turn_items(run_id)\n    WHERE type = 'user_message'\n      AND json_valid(payload_json)\n      AND json_extract(payload_json, '$.inputIntent') = 'queued_turn'\n  "
+        ],
+        [
+          "table",
+          "auth_pairing_links",
+          "auth_pairing_links",
+          "CREATE TABLE auth_pairing_links (\n      id TEXT PRIMARY KEY,\n      credential TEXT NOT NULL UNIQUE,\n      method TEXT NOT NULL,\n      scopes TEXT NOT NULL,\n      subject TEXT NOT NULL,\n      label TEXT,\n      created_at TEXT NOT NULL,\n      expires_at TEXT NOT NULL,\n      consumed_at TEXT,\n      revoked_at TEXT\n    , proof_key_thumbprint TEXT, requires_connect_approval INTEGER NOT NULL DEFAULT 0, requested_client_json TEXT, connect_denied INTEGER NOT NULL DEFAULT 0)"
+        ],
+        [
+          "table",
+          "auth_sessions",
+          "auth_sessions",
+          "CREATE TABLE auth_sessions (\n      session_id TEXT PRIMARY KEY,\n      subject TEXT NOT NULL,\n      scopes TEXT NOT NULL,\n      method TEXT NOT NULL,\n      client_label TEXT,\n      client_ip_address TEXT,\n      client_user_agent TEXT,\n      client_device_type TEXT NOT NULL DEFAULT 'unknown',\n      client_os TEXT,\n      client_browser TEXT,\n      issued_at TEXT NOT NULL,\n      expires_at TEXT NOT NULL,\n      last_connected_at TEXT,\n      revoked_at TEXT\n    , client_surface TEXT, client_app_version TEXT, proof_key_thumbprint TEXT)"
+        ],
+        [
+          "table",
+          "orchestration_v2_projection_turn_items",
+          "orchestration_v2_projection_turn_items",
+          "CREATE TABLE orchestration_v2_projection_turn_items (\n      turn_item_id TEXT PRIMARY KEY,\n      thread_id TEXT NOT NULL,\n      run_id TEXT,\n      node_id TEXT,\n      provider_thread_id TEXT,\n      provider_turn_id TEXT,\n      parent_item_id TEXT,\n      ordinal INTEGER NOT NULL,\n      type TEXT NOT NULL,\n      status TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      payload_json TEXT NOT NULL\n    , inline_work_output INTEGER NOT NULL DEFAULT 0)"
+        ]
+      ],
+      "add": [
+        [
+          "index",
+          "orchestration_v2_projection_provider_threads_pending_tasks_idx",
+          "orchestration_v2_projection_provider_threads",
+          "CREATE INDEX orchestration_v2_projection_provider_threads_pending_tasks_idx\n    ON orchestration_v2_projection_provider_threads(thread_id)\n    WHERE CASE WHEN json_valid(payload_json)\n      THEN json_array_length(payload_json, '$.pendingBackgroundTasks') > 0\n      ELSE 0 END\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_provider_turns_attempt_idx",
+          "orchestration_v2_projection_provider_turns",
+          "CREATE INDEX orchestration_v2_projection_provider_turns_attempt_idx\n    ON orchestration_v2_projection_provider_turns(run_attempt_id)\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_runs_run_status_idx",
+          "orchestration_v2_projection_runs",
+          "CREATE INDEX orchestration_v2_projection_runs_run_status_idx\n    ON orchestration_v2_projection_runs(run_id, status)\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_threads_active_shell_idx",
+          "orchestration_v2_projection_threads",
+          "CREATE INDEX orchestration_v2_projection_threads_active_shell_idx\n    ON orchestration_v2_projection_threads(\n      updated_at,\n      thread_id,\n      project_id,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.lineage.relationshipToParent') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.lineage.parentThreadId') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.lineage.rootThreadId') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.lineage.sideChat') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.settledOverride') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.settledAt') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.pinnedAt') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.pinOrderKey') END,\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.snoozedUntil') END,\n      CASE WHEN json_valid(payload_json) THEN json_type(payload_json, '$.pullRequests[0]') END\n    )\n    WHERE deleted_at IS NULL AND archived_at IS NULL\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_threads_root_thread_idx",
+          "orchestration_v2_projection_threads",
+          "CREATE INDEX orchestration_v2_projection_threads_root_thread_idx\n    ON orchestration_v2_projection_threads(\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.lineage.rootThreadId') END\n    )\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_threads_worktree_path_idx",
+          "orchestration_v2_projection_threads",
+          "CREATE INDEX orchestration_v2_projection_threads_worktree_path_idx\n    ON orchestration_v2_projection_threads(\n      CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.worktreePath') END\n    )\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_turn_items_message_ordinal_idx",
+          "orchestration_v2_projection_turn_items",
+          "CREATE INDEX orchestration_v2_projection_turn_items_message_ordinal_idx\n    ON orchestration_v2_projection_turn_items(\n      thread_id, json_extract(payload_json, '$.messageId'), ordinal\n    )\n    WHERE type IN ('user_message', 'assistant_message') AND json_valid(payload_json)\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_turn_items_thread_type_idx",
+          "orchestration_v2_projection_turn_items",
+          "CREATE INDEX orchestration_v2_projection_turn_items_thread_type_idx\n    ON orchestration_v2_projection_turn_items(thread_id, type, status)\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_turn_items_usage_limit_idx",
+          "orchestration_v2_projection_turn_items",
+          "CREATE INDEX orchestration_v2_projection_turn_items_usage_limit_idx\n    ON orchestration_v2_projection_turn_items(thread_id)\n    WHERE type = 'error' AND status = 'failed'\n      AND CASE WHEN json_valid(payload_json) THEN\n        json_extract(payload_json, '$.failure.class') = 'usage_limit'\n        ELSE 0 END\n  "
+        ],
+        [
+          "table",
+          "auth_connect_devices",
+          "auth_connect_devices",
+          "CREATE TABLE auth_connect_devices (\n      proof_key_thumbprint TEXT PRIMARY KEY,\n      client_json TEXT,\n      approved_at TEXT NOT NULL\n    )"
+        ],
+        [
+          "table",
+          "issue_tracker_bindings",
+          "issue_tracker_bindings",
+          "CREATE TABLE issue_tracker_bindings (\n      project_id TEXT PRIMARY KEY,\n      tracker TEXT NOT NULL,\n      scope TEXT NOT NULL,\n      updated_at TEXT NOT NULL\n    ) WITHOUT ROWID\n  "
+        ]
+      ]
     }
   ],
-  "reference_guard_variant": {
-    "base_version": "0.1.10-nightly.20261113.4616",
-    "objects": [
-      [
-        "table",
-        "auth_connect_devices",
-        "auth_connect_devices",
-        "CREATE TABLE auth_connect_devices (\n      proof_key_thumbprint TEXT PRIMARY KEY,\n      client_json TEXT,\n      approved_at TEXT NOT NULL\n    )"
-      ],
-      [
-        "table",
-        "auth_pairing_links",
-        "auth_pairing_links",
-        "CREATE TABLE auth_pairing_links (\n      id TEXT PRIMARY KEY,\n      credential TEXT NOT NULL UNIQUE,\n      method TEXT NOT NULL,\n      scopes TEXT NOT NULL,\n      subject TEXT NOT NULL,\n      label TEXT,\n      created_at TEXT NOT NULL,\n      expires_at TEXT NOT NULL,\n      consumed_at TEXT,\n      revoked_at TEXT\n    , proof_key_thumbprint TEXT, requires_connect_approval INTEGER NOT NULL DEFAULT 0, requested_client_json TEXT, connect_denied INTEGER NOT NULL DEFAULT 0)"
-      ],
-      [
-        "table",
-        "auth_sessions",
-        "auth_sessions",
-        "CREATE TABLE auth_sessions (\n      session_id TEXT PRIMARY KEY,\n      subject TEXT NOT NULL,\n      scopes TEXT NOT NULL,\n      method TEXT NOT NULL,\n      client_label TEXT,\n      client_ip_address TEXT,\n      client_user_agent TEXT,\n      client_device_type TEXT NOT NULL DEFAULT 'unknown',\n      client_os TEXT,\n      client_browser TEXT,\n      issued_at TEXT NOT NULL,\n      expires_at TEXT NOT NULL,\n      last_connected_at TEXT,\n      revoked_at TEXT\n    , client_surface TEXT, client_app_version TEXT, proof_key_thumbprint TEXT)"
-      ],
-      [
-        "table",
-        "issue_tracker_bindings",
-        "issue_tracker_bindings",
-        "CREATE TABLE issue_tracker_bindings (\n      project_id TEXT PRIMARY KEY,\n      tracker TEXT NOT NULL,\n      scope TEXT NOT NULL,\n      updated_at TEXT NOT NULL\n    ) WITHOUT ROWID\n  "
-      ],
-      [
-        "table",
-        "orchestration_v2_projection_turn_items",
-        "orchestration_v2_projection_turn_items",
-        "CREATE TABLE orchestration_v2_projection_turn_items (\n      turn_item_id TEXT PRIMARY KEY,\n      thread_id TEXT NOT NULL,\n      run_id TEXT,\n      node_id TEXT,\n      provider_thread_id TEXT,\n      provider_turn_id TEXT,\n      parent_item_id TEXT,\n      ordinal INTEGER NOT NULL,\n      type TEXT NOT NULL,\n      status TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      payload_json TEXT NOT NULL\n    , inline_work_output INTEGER NOT NULL DEFAULT 0)"
-      ]
-    ]
-  }
+  "reference_guard_base_version": "0.1.11-nightly.20261119.4928"
 }

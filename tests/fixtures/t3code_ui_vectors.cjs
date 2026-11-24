@@ -16,6 +16,8 @@ const keyed = [
   ['t3code:terminal-state:v1', 4, 'terminalUiStateByThreadKey'],
   ['t3code:right-panel-state:v2', 14, 'byThreadKey'],
   ['t3code:right-panel-state:v2', 14, 'threadPanelVisibilityByThreadKey'],
+  ['t3code:right-panel-state:v2', 15, 'byThreadKey'],
+  ['t3code:right-panel-state:v2', 15, 'threadPanelVisibilityByThreadKey'],
   ['t3code:diff-panel-state:v1', 2, 'byThreadKey'],
   ['t3code:diff-panel-state:v1', 2, 'branchBaseRefByThreadKey']
 ]
@@ -26,7 +28,8 @@ for (const [name, version, field] of keyed) {
   assert.equal(result.value.state[field]['env-1:thread-1'], undefined)
   assert.equal(result.value.state[field]['env-1:keeper'].text, 'keep')
   assert.deepEqual(result.value.state[field]['env-2:thread-1'], { threadId: 'thread-1' })
-  assert.throws(() => transform(name, { version: version + 1, state }), /schema_unverified/)
+  const unknownVersion = name === 't3code:right-panel-state:v2' ? 16 : version + 1
+  assert.throws(() => transform(name, { version: unknownVersion, state }), /schema_unverified/)
   assert.throws(() => transform(name, { version, state: { [field]: { 'env-1:thread-1': { files: [{}] } } } }), /attachment_closure_unqualified/)
 }
 const ui = transform('t3code:ui-state:v1', { projectOrder: ['p'], threadLastVisitedAtById: { 'env-1:thread-1': 't', 'env-2:thread-1': 'k' } }).value

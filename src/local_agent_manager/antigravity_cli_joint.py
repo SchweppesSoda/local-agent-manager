@@ -122,10 +122,15 @@ def reservation_blockers(document):
 
 def freeze_target(manifest, bound, ids, client):
     selected = binding.selection(manifest, bound, client)
+    if client == 't3code':
+        layout, _ = binding.instance_layout(manifest['profile_root'], bound['provider_instance_id'],
+                                             bound['cli_user_home'], ids)
+        if layout != bound['native_layout']:
+            native.fail('binding_root_or_runtime_unproven')
     # The frontend supplies exact native IDs even after a native deletion.
     # Full namespace/session qualification still rejects orphan files or
     # unproved restoration sources; absent IDs never authorize another record.
-    evidence = native.freeze(bound['root'], ids, binary=bound['cli_binary'], allow_absent=True)
+    evidence = native.freeze(bound['root'], ids, binary=bound['cli_binary'], allow_absent=bound['native_layout'] == 'cli')
     if evidence['runtime'] != selected['runtime']:
         native.fail('runtime_changed')
     return evidence, selected
@@ -135,6 +140,9 @@ def validate_target(target, manifest):
     binding.check_binding(manifest, target['binding'])
     evidence = target['native_files']
     native.validate(evidence)
+    if target['binding']['native_layout'] == 't3-instance-cli':
+        if evidence.get('t3_instance') != {'root': manifest['profile_root'], 'settings': target['cli_selection']['settings']}:
+            native.fail('joint_target_scope_changed')
     if (canonical_path(evidence['root']) != target['root'] or evidence['ids'] != target['ids']
             or target['paths'] or target['action_ids']
             or evidence['runtime'] != target['cli_selection']['runtime']
@@ -175,6 +183,14 @@ def freeze_guards(evidence, client, adapters):
 def recheck(evidence, client):
     selected = targets(evidence)
     if selected:
+        for target in selected:
+            bound = target['binding']
+            if client == 't3code':
+                other = (Path(bound['cli_user_home'])/'.gemini/antigravity-cli'
+                         if bound['native_layout'] == 't3-instance-cli'
+                         else binding.instance_root(evidence['root'], bound['provider_instance_id']))
+                if binding.present_ids(other, target['ids']):
+                    native.fail('ambiguous_native_store')
         if 'cli_guards' not in evidence:
             native.fail('joint_guards_required')
         owned = [s for s in evidence['cli_guards'] if s['client'] == client
@@ -214,10 +230,10 @@ def execution_scope(document, evidence, client, census=None):
         guards.require_closed(evidence['cli_guards'], census)
         reservations = []
         token = _execution.set((evidence, document, census, held, stack, reservations))
+        stack.callback(_execution.reset, token)
         try:
             yield
         finally:
-            _execution.reset(token)
             # The child dispatcher can return an unknown result without
             # raising. Only a complete native AND frontend after-state
             # releases shared-root occupancy.

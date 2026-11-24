@@ -62,10 +62,15 @@ def _scope(options):
 
 def records(root, ids=()):
     root = native.root_path(root or Path.home()/'.gemini/antigravity-cli')
+    from .antigravity_cli_binding import is_instance_path
+    instance_store = is_instance_path(root)
+    if instance_store:
+        from .antigravity_cli_binding import instance_selection
+        instance_selection(root)
     wanted = {native.native_id(s) for s in ids}
     with native.private_database(root, native.SUMMARY) as (db, _, _):
         native._check(db, native.CONTRACT)
-        rows = native._rows(db)
+        rows = native._rows(db, instance_store=instance_store)
         result = [{'record_id': sid, 'engine': 'antigravity', 'native_root': str(root),
                    'parent_record_id': row['parent_conversation_id'] or None,
                    'step_count': row['step_count'], 'native_cleanup_status': 'requires_frozen_plan'}
@@ -100,6 +105,11 @@ def plan(options):
         sessions = cindy_agy.select(selection, requested)
         requested = [s['expected_sdk_session_id'] for s in sessions]
     evidence = native.freeze(root, requested, binary=binary)
+    if 't3_instance' in evidence:
+        if sessions:
+            native.fail('cindy_instance_store_unqualified')
+        sources = guards.locations(t3code_roots=[*options.get('t3code_roots', ()), evidence['t3_instance']['root']],
+                                   paseo_roots=options.get('paseo_roots', ()), cindy_databases=guard_databases)
     dependency_keys = cindy_agy.dependency_keys(sessions) if sessions else None
     protection = guards.freeze(sources, evidence['ids'], cindy_sessions=sessions)
     _progress(options, 'inventory', 'completed', counts={'selected_session_count': len(evidence['ids'])})
@@ -228,7 +238,8 @@ def execute(document, store, options):
     scopes = [MutationScope(root, None)]
     if sessions:
         scopes.append(MutationScope(Path(sessions[0]['database']).parent, None))
-    with mutation_guard(scopes, store=store), store.mutation_lock():
+    from .antigravity_cli_binding import hold_instance_selection
+    with hold_instance_selection(evidence), mutation_guard(scopes, store=store), store.mutation_lock():
         state = _state(document)
         store.write_state(state)
         def phase(event):
@@ -244,7 +255,7 @@ def execute(document, store, options):
             guards.require_closed(document['guard_sources'], options.get('census'))
             with HeldFiles() as held, native.execution_scope(evidence):
                 guards.acquire(document['guard_sources'], held)
-                if sessions:
+                if sessions or 't3_instance' in evidence:
                     with guards.leased_reads(document['guard_sources'], held):
                         guards.recheck(document['guard_sources'], evidence['ids'], cindy_sessions=sessions)
                 guards.require_closed(document['guard_sources'], options.get('census'))

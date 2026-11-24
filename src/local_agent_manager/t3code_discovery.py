@@ -282,7 +282,7 @@ def _pi_binding(row, providers, instance, cache):
     return binding
 
 
-def _acp_binding(root, row, instance, runtime_binaries):
+def _acp_binding(root, row, instance, runtime_binaries, *, native_ids=()):
     from .antigravity_acp_cleanup import RUNTIMES
     from .environment_config import t3_acp_managed_release
     from .environment_paths import BoundedPathProbe
@@ -295,13 +295,14 @@ def _acp_binding(root, row, instance, runtime_binaries):
             raise ValueError("provider_binary_unverified")
         server = local_root(binary)
         if server.name != "agy_acp_server.exe":
-            from .antigravity_cli_binding import runtime, environment, home_for
+            from .antigravity_cli_binding import runtime, environment, home_for, instance_layout
             runtime(server, profile_root=root)
             home = home_for(environment(instance.get('environment', {})))
-            native_root = _plain_directory(home/'.gemini/antigravity-cli')
+            instance_id = identifier(row['provider_instance_id'])
+            layout, native_root = instance_layout(root, instance_id, home, native_ids)
             runtime_binaries.add(str(server))
             return {'thread_id': row['thread_id'], 'engine': 'antigravity', 'root': str(native_root),
-                    'provider_instance_id': identifier(row['provider_instance_id']), 'native_layout': 'cli',
+                    'provider_instance_id': instance_id, 'native_layout': layout,
                     'cli_binary': str(server), 'cli_user_home': str(home)}
         directory = server.parent
     else:
@@ -324,7 +325,7 @@ def _acp_binding(root, row, instance, runtime_binaries):
             "provider_instance_id": instance_id, "acp_runtime_binaries": binaries}
 
 
-def discover_bindings(root=None):
+def discover_bindings(root=None, *, runtime_root=None):
     """Prepare all profile protection bindings; grant no deletion authorization."""
     from .t3code_server_delete import _bundled_install, _RUNTIME_FILES, _environment_id
 
@@ -345,10 +346,21 @@ def discover_bindings(root=None):
         imports = _load_import_provenance(root)
     except (T3CodeError, ValueError) as exc:
         raise BindingDiscoveryError([{"blocker_code": str(exc)}]) from exc
-    install = _plain_directory(_bundled_install())
-    binary = install / _RUNTIME_FILES[0]
+    installed = _bundled_install()
+    if runtime_root is not None and canonical_path(runtime_root) != canonical_path(installed):
+        try:
+            (installed / _RUNTIME_FILES[0]).lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise BindingDiscoveryError([{'blocker_code': 't3code_installed_runtime_present'}])
     from .t3code_lifecycle import read_binary
-    read_binary(root, binary)
+    try:
+        install = _plain_directory(installed if runtime_root is None else runtime_root)
+        binary = install / _RUNTIME_FILES[0]
+        read_binary(root, binary)
+    except FileNotFoundError as exc:
+        raise BindingDiscoveryError([{'blocker_code': 't3code_desktop_runtime_missing'}]) from exc
     binaries = {str(binary)}
     bindings, blockers, cache, instances_by_thread = [], [], {}, {}
     for thread_id, copies in sorted(data["threads"].items()):
@@ -378,7 +390,9 @@ def discover_bindings(root=None):
             if thread_engine(row, data["providers"]) != engine(driver):
                 raise ValueError("provider_instance_unverified")
             if driver == "antigravity":
-                binding = _acp_binding(root, row, instance, binaries)
+                handles = {r['native_id'] for r in data['providers'] if r['thread_id'] == thread_id
+                           and r['native_id'] is not None and r['native_strength'] == 'strong'}
+                binding = _acp_binding(root, row, instance, binaries, native_ids=handles)
             else:
                 binding = _native_binding({**row, "default_provider": driver, "provider_instance_id": instance_id},
                                           data["providers"], instance, cache, imports=imports)

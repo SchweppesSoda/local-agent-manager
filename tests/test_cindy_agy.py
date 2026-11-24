@@ -61,11 +61,13 @@ class CindyAgyTests(unittest.TestCase):
                         '--plan-sha256',digest or plan['plan_sha256'],'--clients-closed')
 
     def test_plan_apply_verify(self):
-        from local_agent_manager.t3code_store import CONTRACT, SCHEMA_CONTRACTS, qualify
+        from local_agent_manager.t3code_store import SCHEMA_CONTRACTS, qualify
         from tests.t3code_support import create_store
-        # The newer T3 schema is qualified as a read-only reference source.
-        variant = {row[1]: row for row in (*SCHEMA_CONTRACTS[-1], *CONTRACT['reference_guard_variant']['objects'])}
-        with closing(create_store(self.base/'t3', objects=variant.values())) as t3:
+        # Index drift is qualified only for read-only reference checks.
+        with closing(create_store(self.base/'t3', objects=SCHEMA_CONTRACTS[-1])) as t3:
+            t3.execute('DROP INDEX orchestration_v2_projection_threads_active_shell_idx')
+            t3.commit()
+            qualify(t3, reference_guard_only=True)
             with self.assertRaisesRegex(ValueError, 'schema_unverified'):
                 qualify(t3)
         with closing(sqlite3.connect(self.db)) as source, closing(sqlite3.connect(self.db.with_name('cindy-two.db'))) as db:

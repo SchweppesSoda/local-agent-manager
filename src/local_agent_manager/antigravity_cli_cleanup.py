@@ -205,7 +205,7 @@ def read_source(root, relative, **options):
     return ff.read_file(root, relative, **options) if result is None else result
 
 
-def _rows(db):
+def _rows(db, *, instance_store=False):
     result = list(db.execute('SELECT * FROM conversation_summaries ORDER BY conversation_id').fetchmany(ff.MAX_ENTRIES+1))
     if len(result) > ff.MAX_ENTRIES:
         fail('summary_budget_exceeded')
@@ -217,7 +217,7 @@ def _rows(db):
                 native_id(row[field])
         if type(row['nesting_depth']) is not int or row['nesting_depth'] < 0:
             fail('summary_relationship_unqualified')
-        if row['app_data_dir'] not in ('', 'antigravity-cli'):
+        if row['app_data_dir'] not in (('antigravity-acp',) if instance_store else ('', 'antigravity-cli')):
             fail('summary_external_store')
         if row['battle_id'] or row['winning_conversation_id'] or row['group_id']:
             fail('summary_group_relationship_unqualified')
@@ -462,6 +462,10 @@ def freeze(root, ids, *, binary, allow_absent=False):
     root = root_path(root)
     requested = sorted({native_id(s) for s in ids})
     binary = Path(binary)
+    instance = None
+    from .antigravity_cli_binding import instance_selection, is_instance_path
+    if is_instance_path(root):
+        instance = instance_selection(root, binary)
     root_path(binary.parent)
     runtime = {'root': str(binary.parent), 'file': ff.read_file(binary.parent, binary.name)[0]}
     names = _root_names(root)
@@ -472,7 +476,7 @@ def freeze(root, ids, *, binary, allow_absent=False):
     with private_database(root, SUMMARY) as (db, summary_files, _):
         _check(db, CONTRACT)
         summary_schema_sha256 = _schema_hash(_objects(db))
-        rows = _rows(db)
+        rows = _rows(db, instance_store=instance is not None)
         absent = sorted(set(requested) - rows.keys()) if allow_absent else []
         selected = _closure(rows, requested, absent=absent)
         # Raw protobuf is not used to infer ownership. A known other session
@@ -526,6 +530,8 @@ def freeze(root, ids, *, binary, allow_absent=False):
                 'cache': cache, 'directories': directories, 'changes': changes, 'preserved': preserved}
     if absent:
         evidence['absent_ids'] = absent
+    if instance is not None:
+        evidence['t3_instance'] = instance
     remaining(evidence)
     return evidence
 
@@ -538,6 +544,11 @@ def validate(evidence):
     if not isinstance(schema_hash, str) or not re.fullmatch('[0-9a-f]{64}', schema_hash):
         fail('summary_schema_evidence_invalid')
     root = root_path(evidence['root'])
+    if 't3_instance' in evidence:
+        from .antigravity_cli_binding import instance_selection
+        binary = Path(evidence['runtime']['root'])/evidence['runtime']['file']['path']
+        if instance_selection(root, binary) != evidence.get('t3_instance'):
+            fail('instance_selection_changed')
     ids = sorted({native_id(s) for s in evidence['ids']})
     if ids != evidence['ids'] or not set(evidence['requested_ids']) <= set(ids):
         fail('scope_invalid')

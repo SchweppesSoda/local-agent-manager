@@ -615,6 +615,17 @@ def execute(evidence, *, phase_callback):
         files.fail("native_dependency_remains")
     with ExitStack() as stack:
         prepared = []
+        for desktop in evidence['desktop']:
+            storage = desktop['localstorage']
+            prepared.append((storage, stack.enter_context(t3code_localstorage.prepared(storage))))
+        for target in evidence['native_targets']:
+            if target['engine'] == 'antigravity':
+                if is_cli(target['binding']):
+                    cli_joint.execute(target, phase_callback=phase_callback)
+                else:
+                    antigravity.apply(target['native_files'], phase_callback=phase_callback)
+                if native_remaining(target):
+                    files.fail("native_dependency_remains")
         for desktop in evidence["desktop"]:
             indexeddb = desktop['localstorage'].get('indexeddb')
             if indexeddb is not None:
@@ -622,17 +633,8 @@ def execute(evidence, *, phase_callback):
                 phase_callback('mutation_started')
                 idb.apply_plan(indexeddb, indexeddb['plan_sha256'], clients_closed=True,
                                phase_callback=lambda phase: phase_callback('mutation_started'))
-            for key, module in (("localstorage", t3code_localstorage),):
-                family = stack.enter_context(module.prepared(desktop[key]))
-                prepared.append((module, desktop[key], family))
-        for target in evidence['native_targets']:
-            if target['engine'] == 'antigravity':
-                if is_cli(target['binding']):
-                    cli_joint.execute(target, phase_callback=phase_callback)
-                else:
-                    antigravity.apply(target['native_files'], phase_callback=phase_callback)
-        for module, item, family in prepared:
-            module.install(item, family, phase_callback=phase_callback)
+        for item, family in prepared:
+            t3code_localstorage.install(item, family, phase_callback=phase_callback)
         schema = evidence["binding_manifest"]["schema_version"]
         if schema in DATABASE_SCHEMAS:
             t3code_database.apply(evidence["files"]["database"], phase_callback=phase_callback,

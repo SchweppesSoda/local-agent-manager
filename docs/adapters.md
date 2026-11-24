@@ -30,7 +30,7 @@ T3 从所选 profile 的 `userdata/settings.json` 中按 thread 对应的
 | T3 / Codex | `config.binaryPath` 单独存入 `codex_binary` | `config.homePath` 优先；未声明时读实例环境 `CODEX_HOME`；再以 `~/.codex` 为待验证候选。不会强制关联 Cindy。 |
 | T3 / Claude | 配置中的 `config.binaryPath`；逐会话清理不调用 Claude BIN | `config.homePath` 优先；未声明时读实例环境 `CLAUDE_CONFIG_DIR`；再以 `~/.claude` 为待验证候选。 |
 | T3 / Pi | 当前清理绑定未保存 Pi BIN；非空 `config.launchArgs` 要求显式绑定 | 实例环境 `PI_CODING_AGENT_DIR`，否则 `~/.pi/agent`；session 根读 `PI_CODING_AGENT_SESSION_DIR`，否则 `agentDir/sessions`。 |
-| T3 / agy CLI | 绝对 `config.binaryPath`，与受管 ACP 的双文件运行时分开 | 已验证 Windows CLI 布局为实际用户 home 下的 `.gemini/antigravity-cli`；解析实例环境 `USERPROFILE`，冲突 `HOME` 拒绝。不能把 T3 传入的 `GEMINI_HOME` 当作 CLI 原生根。 |
+| T3 / agy CLI | 实例配置中的绝对 `config.binaryPath` | 根据强引用核对实际用户的 `.gemini/antigravity-cli` 和 T3 实例的 `antigravity-acp`。实例库还须匹配实例 ID 哈希、摘要行的 `app_data_dir` 和逐会话数据库身份。跨根重复或混合的 ID 阻挡清理。 |
 | Paseo / Codex | `command[0]` 为单项绝对路径时存入 `codex_binary` | `launchEnv.CODEX_HOME` → provider `env.CODEX_HOME` → `~/.codex` 候选；按 native ID 核实。 |
 | Paseo / Claude | provider `command`；逐会话清理不调用 Claude BIN | `launchEnv.CLAUDE_CONFIG_DIR` → provider `env.CLAUDE_CONFIG_DIR` → `~/.claude` 候选。 |
 | Paseo / Pi | provider `command`；当前清理绑定未保存 Pi BIN | 合并环境后分别解析 `PI_CODING_AGENT_DIR` 和 `PI_CODING_AGENT_SESSION_DIR`；缺省分别为 `~/.pi/agent`、`agentDir/sessions`。 |
@@ -961,7 +961,10 @@ macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平�
 [`4cb6945dc60ed03f567dc5daafd083e52308e82b`](https://github.com/pingdotgg/t3code/tree/4cb6945dc60ed03f567dc5daafd083e52308e82b)。
 `--client t3code` 或显式 `--t3code-root` 才发现其存储，默认 `T3CODE_HOME`，否则
 `~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持原有结构和
-`0.1.10-nightly.20261112.4580`、`0.1.10-nightly.20261113.4616` 的 v1/v2 元数据投影。
+`0.1.10-nightly.20261112.4580`、`0.1.10-nightly.20261113.4616` 和
+`0.1.11-nightly.20261119.4928` 的 v1/v2 元数据投影与数据库清理。
+4928 的 088–099 迁移更新了会话查询索引与回合条目的内联输出标记。清理按 thread ID
+处理这些条目，保留设备配对、登录会话和项目 issue tracker 绑定。
 安装包 `server.asar` 的 081–083 迁移加入搜索字段和索引，084–087 迁移加入回合条目计数、
 相关触发器与项目标题标记。删除会话时按会话核验并清除条目计数。每套完整结构分别校验，
 遇到混合迁移或未知表、列、索引和触发器时返回阻挡。SQLite 只读事务保留 WAL 可见性；文件/侧文件禁止链接、
@@ -1074,6 +1077,8 @@ T3 的临时探测清理会在进程关闭后，以 UUIDv4 和 `.meta` 中的唯
 `AGY_ACP_FORCE_FILE_STORAGE=1` 时仍于 `<USERPROFILE>/.gemini/antigravity-cli` 创建共享摘要数据库。
 清理以实际数据目录、native ID、存储格式和启动绑定核对归属。
 原生数据可能与独立 CLI 共用，旧 ACP 实例按自己的绑定核验。
+4928 的服务端也从实例的 `antigravity-acp/conversations` 查找原生记录。配置选择
+`agy.exe` 且实际原生记录在这个目录时，使用 [隔离实例绑定](operation-cli.md#t3paseo-与-antigravity-cli-联合清理)。
 当前程序的存储、清理与重开行为通过 [临时 profile 验收](../tests/test_t3code_runtime_acceptance.py)
 检查，产品版本和预设编译摘要不参与准入。
 

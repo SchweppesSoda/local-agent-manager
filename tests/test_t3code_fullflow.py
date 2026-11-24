@@ -4,7 +4,7 @@ from pathlib import Path as _BootstrapPath
 _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
 from tests import bootstrap as _test_bootstrap
 import copy
-from contextlib import closing, contextmanager, ExitStack
+from contextlib import closing, contextmanager, ExitStack, nullcontext
 import json
 import os
 from pathlib import Path
@@ -212,6 +212,25 @@ class T3CodeFullflowTests(unittest.TestCase):
         return T3CodeBoundAdapter({**self.manifest, "schema_version": DATABASE_ONLY_SCHEMA,
             "native_stores": [], "provider_instance_id": "antigravity"})
 
+    def test_unverified_native_result_preserves_desktop_and_service(self):
+        from local_agent_manager import t3code_desktop_cleanup as idb
+        target = {'engine': 'antigravity', 'binding': {'native_layout': 't3-instance-cli'}}
+        evidence = {'root': str(self.root), 'native_targets': [target],
+                    'desktop': [{'localstorage': {'indexeddb': {'plan_sha256': 'fixture'}}}]}
+        with (patch.object(cleanup, '_ticket') as ticket,
+              patch.object(lifecycle, 'current_boundary', return_value=evidence),
+              patch.object(cleanup.t3code_localstorage, 'prepared', return_value=nullcontext(None)),
+              patch.object(cleanup.cli_joint, 'execute') as run_native,
+              patch.object(cleanup, 'native_remaining', return_value=1),
+              patch.object(idb, 'apply_plan') as desktop,
+              patch.object(files, 'apply') as service):
+            ticket.get.return_value = (evidence, True)
+            with self.assertRaisesRegex(ValueError, 'native_dependency_remains'):
+                cleanup.execute(evidence, phase_callback=lambda _: None)
+            run_native.assert_called_once()
+            desktop.assert_not_called()
+            service.assert_not_called()
+
     def test_online_desktop_plan_rejects_source_change_during_copy_rehearsal(self):
         from local_agent_manager import t3code_desktop_cleanup as d
 
@@ -237,7 +256,7 @@ class T3CodeFullflowTests(unittest.TestCase):
 
         # Stub Chromium's interpretation of the copy while exercising the
         # real file snapshots, rehearsal copy, and post-rehearsal drift check.
-        with (patch.object(d, 'default_runtime', return_value=installed),
+        with (patch.object(d, 'default_runtime', side_effect=AssertionError('must use the bound desktop runtime')),
               patch.object(d, 'observe', return_value={'counts': {'thread': 1}, 'missing': []}),
               patch.object(d, 'prepared', side_effect=concurrent_writer),
               self.assertRaisesRegex(ValueError, 'desktop_planning_source_changed')):

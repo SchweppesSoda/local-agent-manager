@@ -988,6 +988,18 @@ CLI 绑定在各自 `native_stores` 项增加以下字段；T3 使用 `thread_id
 }
 ```
 
+T3 的隔离 CLI 实例可使用 `native_layout: "t3-instance-cli"`。其 `root` 为
+`<T3Home>/userdata/providers/antigravity/<SHA256(instance ID)>/antigravity-acp`。
+自动绑定按实际强引用查找会话文件。写入前核对实例配置、程序、摘要表中的
+`app_data_dir=antigravity-acp`、会话数据库和恢复文件。共享 CLI 库中出现同一
+ID 会阻挡联合计划。仅剩原生记录时，可按[独立原生清理](#独立-antigravity-cli-原生清理)显式指定该实例根、
+配置中的 `agy.exe` 和每个 UUID。保留的前端引用仍参与保护。
+
+T3 已卸载但桌面 profile 仍在时，从已验签的原版安装包临时提取 Electron 分发文件，
+运行 `environment t3-cleanup prepare --runtime-root <解包目录> --out <绑定文件> --json`。
+将生成的文件传给 `delete plan/run --t3code-bindings`。绑定包含同一份桌面运行程序及相应的原生存储。
+缓存预演只在副本运行，并核对 Electron 与 Chromium 版本。右侧面板布局支持 v14 和 v15。
+
 `cli_binary` 也必须列入顶层 `runtime_binaries`。准入核验实际存储格式、native ID、
 前端强引用与启动绑定。兼容的 CLI 和托管 ACP 升级可直接使用，产品版本和预设二进制
 摘要不参与准入。新增索引和等价 SQL 排版可继续使用，已有表、约束、关系字段及未知恢复对象仍按格式校验。

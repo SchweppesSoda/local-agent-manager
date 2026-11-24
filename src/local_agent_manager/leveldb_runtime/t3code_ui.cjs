@@ -33,7 +33,9 @@ module.exports = ({ decodeString, encodeString, mapEntries, fail }) => {
       let state = value
       if (version !== null) {
         object(value, ['version', 'state'])
-        if (value.version !== version) bad()
+        // Nightly 4928 adds a project issues panel. Both persisted thread
+        // maps keep the v14 ownership keys and the same outer shape.
+        if (value.version !== version && !(name === 't3code:right-panel-state:v2' && value.version === 15)) bad()
         state = value.state
       }
       object(state, fields)

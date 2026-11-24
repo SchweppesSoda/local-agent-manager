@@ -455,11 +455,17 @@ def new_full_plan(manifest, database, profile):
     enters held_lifecycle in apply_plan, including a fresh closed-process check.
     """
     from .record_identity import canonical_path
-    if not any(canonical_path(p['root']) == canonical_path(profile) for p in manifest['desktop_profiles']):
+    bound_profile = next((p for p in manifest['desktop_profiles'] if canonical_path(p['root']) == canonical_path(profile)), None)
+    if bound_profile is None:
         fail('desktop_profile_not_bound')
     life = {'root': manifest['profile_root'], 'binding_manifest': manifest,
             'lifecycle': lifecycle.freeze(manifest)}
-    installed = default_runtime()
+    # A retired installation can supply its exact Electron distribution from
+    # the signed installer. Bind the same executable in the startup fence.
+    executables = [Path(b) for b in bound_profile['runtime_binaries'] if Path(b).name.casefold() == 't3 code (nightly).exe']
+    if len(executables) > 1:
+        fail('desktop_runtime_unqualified')
+    installed = executables[0].parent if executables else default_runtime()
     admission(profile)
     from .t3code_database import remaining
     if not remaining(database):

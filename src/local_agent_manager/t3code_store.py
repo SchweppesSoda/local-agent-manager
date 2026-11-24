@@ -1,6 +1,6 @@
 """Bounded T3 Code v1/v2 metadata; native provider IDs never imply a home.
 
-Qualified against explicit legacy and 0.1.10 schema contracts. SQL projections exclude
+Qualified against explicit Nightly schema contracts. SQL projections exclude
 titles, event/message payloads, runtime credentials and authentication tables.
 """
 from __future__ import annotations
@@ -131,10 +131,9 @@ def qualify(db, *, reference_guard_only=False):
     if reference_guard_only:
         # Read every retained table including the new auth and issue-tracker
         # columns. Secondary indexes carry no independent conversation rows.
-        variant = CONTRACT['reference_guard_variant']
         versions = [CONTRACT['version'], *(v['version'] for v in CONTRACT['compatible_variants'])]
-        base = SCHEMA_CONTRACTS[versions.index(variant['base_version'])]
-        expected = {(r[0], r[1]): r for r in (*base, *variant['objects']) if r[0] != 'index'}
+        base = SCHEMA_CONTRACTS[versions.index(CONTRACT['reference_guard_base_version'])]
+        expected = {(r[0], r[1]): r for r in base if r[0] != 'index'}
         if {(r[0], r[1]): r for r in objects if r[0] != 'index'} == expected:
             return
     fail("schema_unverified")

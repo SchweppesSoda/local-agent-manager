@@ -155,6 +155,31 @@ class T3DiscoveryTests(unittest.TestCase):
         self.assertEqual(before, (self.home / "state_5.sqlite").read_bytes())
         self.assertNotIn("PRIVATE_SECRET", out.getvalue())
 
+    def test_prepare_cli_can_bind_an_extracted_runtime_after_uninstall(self):
+        provider = self.base/'codex.exe'
+        provider.write_bytes(b'independent provider, never executed')
+        self.settings['providerInstances']['codex']['config']['binaryPath'] = str(provider)
+        self.write_settings()
+        extracted = self.base/'extracted'
+        self.install.rename(extracted)
+        desktop = self.base/'appdata/t3code-v2'
+        desktop.mkdir(parents=True)
+        out = StringIO()
+        dest = self.base/'bindings.json'
+        code = main(['environment','t3-cleanup','prepare','--runtime-root',str(extracted),
+                     '--out',str(dest),'--json'], stdout=out, stderr=StringIO())
+        self.assertEqual(code, 0, out.getvalue())
+        manifest = json.loads(dest.read_text())
+        self.assertEqual(manifest['native_stores'][0]['codex_binary'], str(provider))
+        exe = str(extracted/'T3 Code (Nightly).exe')
+        self.assertIn(exe, manifest['runtime_binaries'])
+        self.assertEqual(manifest['desktop_profiles'], [{'root':str(desktop), 'runtime_binaries':[exe]}])
+        self.install.mkdir()
+        (self.install/'T3 Code (Nightly).exe').touch()
+        with self.assertRaises(BindingDiscoveryError) as error:
+            discover_bindings(self.root, runtime_root=extracted)
+        self.assertEqual(error.exception.blockers[0]['blocker_code'], 't3code_installed_runtime_present')
+
     def test_installer_directory_alias_resolves_to_the_physical_runtime(self):
         alias = self.base / 'installer-current'
         if os.name == 'nt':

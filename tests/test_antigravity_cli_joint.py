@@ -170,6 +170,65 @@ class JointTests(unittest.TestCase):
     def test_t3_fullflow_cold_apply_child_closure_and_no_replay(self):
         self.assert_fullflow('t3code')
 
+    def test_instance_cli_requires_unique_physical_history_and_uses_joint_writer(self):
+        adapter = self.setup_client('t3code')
+        private = binding.instance_root(self.t3, 'antigravity')
+        private.parent.mkdir(parents=True)
+        self.native.rename(private)
+        self.native.mkdir()
+        with closing(sqlite3.connect(private/native.SUMMARY)) as summary:
+            summary.execute("UPDATE conversation_summaries SET app_data_dir='antigravity-acp'")
+            summary.commit()
+        from local_agent_manager.t3code_discovery import _acp_binding
+        manifest = copy.deepcopy(adapter.manifest)
+        settings = json.loads((self.t3/'userdata/settings.json').read_text())['providerInstances']['antigravity']
+        for entry, sid in zip(manifest['native_stores'], (TARGET, KEEP)):
+            entry.update(_acp_binding(self.t3, entry, settings, set(), native_ids=[sid]))
+            self.assertEqual((entry['native_layout'], Path(entry['root'])), ('t3-instance-cli', private))
+        (self.native/'conversations').mkdir()
+        other = self.native/'conversations'/(TARGET+'.db')
+        other.touch()
+        with self.assertRaisesRegex(ValueError, 'ambiguous_native_store'):
+            _acp_binding(self.t3, manifest['native_stores'][0], settings, set(), native_ids=[TARGET])
+        other.unlink()
+        plan = self.plan('t3code', T3CodeBoundAdapter(manifest))
+        self.assertEqual(plan['goal_status'], 'ready', plan)
+        other.touch()
+        blocked = self.apply(plan)
+        self.assertEqual(blocked['goal_status'], 'blocked', blocked)
+        self.assertTrue((private/'conversations'/(TARGET+'.db')).is_file())
+        other.unlink()
+        result = self.apply(plan)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertTrue((private/'conversations'/(KEEP+'.db')).is_file())
+        self.assertFalse((private/'conversations'/(TARGET+'.db')).exists())
+        verified = self.coordinator().verify_operation(operation_id=plan['operation_id'], plan_path=self.plan_path)
+        self.assertEqual(verified['goal_status'], 'complete', verified)
+
+    def test_standalone_instance_orphan_requires_matching_app_data_and_preserves_frontend_guards(self):
+        self.setup_client('t3code')
+        private = binding.instance_root(self.t3, 'antigravity')
+        private.parent.mkdir(parents=True)
+        self.native.rename(private)
+        self.native.mkdir()
+        with closing(sqlite3.connect(self.t3/'userdata/statev2.sqlite')) as db:
+            db.execute(f'DELETE FROM {V2}provider_threads WHERE thread_id=?', (OTHER,))
+            db.commit()
+        def plan(sid):
+            return self.coordinator().plan_operation(client='antigravity', record_ids=[sid],
+                antigravity_root=str(private), antigravity_bin=str(self.agy), plan_path=self.plan_path)
+        self.assertEqual(plan(KEEP)['blockers'][0]['blocker_code'], 'antigravity_cli_summary_external_store')
+        with closing(sqlite3.connect(private/native.SUMMARY)) as summary:
+            summary.execute("UPDATE conversation_summaries SET app_data_dir='antigravity-acp'")
+            summary.commit()
+        self.assertEqual(plan(TARGET)['blockers'][0]['blocker_code'], 'antigravity_cli_t3code_native_or_restore_reference')
+        ready = plan(KEEP)
+        self.assertEqual(ready['goal_status'], 'ready', ready)
+        result = self.apply(ready)
+        self.assertEqual(result['goal_status'], 'complete', result)
+        self.assertTrue((private/'conversations'/(TARGET+'.db')).is_file())
+        self.assertFalse((private/'conversations'/(KEEP+'.db')).exists())
+
     def test_t3_joint_cleanup_preserves_known_audit_text(self):
         adapter = self.setup_client('t3code')
         payloads = [
