@@ -1009,7 +1009,7 @@ T3 已卸载但桌面 profile 仍在时，从已验签的原版安装包临时�
 每次计划冻结当前程序的文件身份和摘要，执行前后继续核对。计划生成后发生升级时，
 旧计划会在写入前阻挡；重新运行 `delete run` 会按当前程序自动生成新计划。
 T3 的绝对 `config.binaryPath`、Paseo 的单项绝对 `agents.providers.antigravity.command`
-必须选择该实际文件；裸 `agy` 的 daemon PATH 尚无精确证明格式，当前拒绝自动猜测。CLI 根必须对应实际 OS 用户 home 下的
+必须选择该实际文件；裸 `agy` 的 daemon PATH 尚无精确证明格式，当前拒绝自动猜测。`native_layout: "cli"` 的根必须对应实际 OS 用户 home 下的
 `.gemini/antigravity-cli`；provider/逐 agent 的 home 覆盖须一致，T3 的 `GEMINI_HOME`
 不能替代该证明。包装脚本、额外命令参数和冲突 home 需要相应启动契约，不能手填目录绕过。
 

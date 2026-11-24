@@ -59,8 +59,9 @@ provider 名称不能证明原生数据归属；未验证的原生格式和完�
 已知 T3/Paseo 历史或恢复引用、未知关系和格式会阻挡。此入口不替代前端完整清理，
 也不沿用旧托管 ACP 的目录绑定。用法与限制见 [独立 CLI 原生清理](docs/operation-cli.md#独立-antigravity-cli-原生清理)。
 
-安装 skill 时将完整 `skills/agent-management` 目录复制到当前 Codex skills 目录；保留
-仓库安装，以便调用 CLI 和读取与该版本相匹配的操作契约。重新加载技能后即可使用。
+Codex 已通过目录联接发现 `skills/agent-management` 时，直接维护仓库源文件即可。
+手工复制安装时，将整个 Skill 目录复制到 Codex 的 skills 目录，并在源更新后同步副本。
+保留配套的管理器安装，以便调用 CLI 和读取与该版本匹配的操作契约。
 
 ### 已有授权复用
 
