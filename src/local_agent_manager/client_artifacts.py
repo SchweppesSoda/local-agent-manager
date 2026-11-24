@@ -23,9 +23,9 @@ from local_agent_manager import t3code_diagnostics
 from local_agent_manager.discovery import CINDY_PROFILE_NAMES, default_appdata, default_codex_home, default_local_appdata
 
 CLIENTS = ('cindy', 'codex', 'codex-desktop', 'claude', 'pi', 't3code', 'paseo',
-           'antigravity-cli', 'antigravity-desktop', 'workbuddy', 'orca', 'herdr', 'qwenwork', 'browser-skill')
+           'antigravity-cli', 'antigravity-desktop', 'workbuddy', 'orca', 'herdr', 'qwenwork')
 CATEGORIES = ('caches', 'logs', 'backups', 'downloads', 'runtimes')
-DESKTOP = frozenset(CLIENTS) - {'codex', 'claude', 'pi', 'antigravity-cli', 'browser-skill'}
+DESKTOP = frozenset(CLIENTS) - {'codex', 'claude', 'pi', 'antigravity-cli'}
 _LOG = re.compile(r'(?:agent-\d{4}-\d{2}-\d{2}\.ndjson|[A-Za-z][A-Za-z0-9_-]*\.log\.\d+|[A-Za-z][A-Za-z0-9_-]*[.-]\d{4}-\d{2}-\d{2}\.log|\d{4}-\d{2}-\d{2}\.log)\Z')
 _CINDY_BACKUP = re.compile(r'(cindy-[A-Za-z0-9_-]+\.db)\.bak\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\Z')
 _CODEX_TEMP = re.compile(r'\.\.codex-global-state\.json(?:\.bak)?\.tmp-(\d{13})-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
@@ -62,7 +62,6 @@ def default_profiles(clients, *, include_runtime_roots=False):
         'orca': [Path(os.environ.get('ORCA_USER_DATA_PATH', roaming / 'orca'))],
         'herdr': [roaming / 'herdr', roaming / 'herdr-dev'],
         'qwenwork': [roaming / name for name in ('QwenWorkCN', 'QwenWorkCNDev', 'QwenWorkCNCanary')],
-        'browser-skill': [home / '.bsk'],
     }
     if include_runtime_roots:
         roots['claude'].append(home / '.local')
@@ -208,14 +207,8 @@ def _json(raw):
 def _diagnostic(root, relative, client):
     raw = _prefix(root, relative, 64 * 1024)
     if not raw:
-        return bool(client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative))
+        return False
     first = raw.splitlines()[0]
-    if client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative):
-        value = _json(first)
-        return (isinstance(value, dict) and isinstance(value.get('fields'), dict)
-                and value.get('level') in {'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR'}
-                and isinstance(value.get('timestamp'), str) and value['timestamp'].startswith(relative[-10:] + 'T')
-                and isinstance(value.get('target'), str) and value['target'].startswith('bsk::'))
     if client == 'workbuddy' and re.fullmatch(r'logs/\d{4}-\d{2}-\d{2}/[^/]+\.log', relative):
         name = Path(relative).name
         day = relative.split('/')[1]
@@ -478,13 +471,7 @@ def _log_entries(root, directory, client):
     if client == 'codex-desktop':
         yield from _dated_codex_logs(root, directory)
         return
-    if client == 'browser-skill':
-        ff._plain(root.lstat(), directory=True)
-        names = sorted(p.name for p in islice(root.iterdir(), ff.MAX_ENTRIES + 1))
-        if len(names) > ff.MAX_ENTRIES:
-            raise ff.FrozenFilesError('maintenance_entry_budget')
-    else:
-        names = _names(root, directory)
+    names = _names(root, directory)
     visited = len(names)
     for name in names:
         relative = directory + '/' + name if directory else name
@@ -639,7 +626,7 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
         if discard_crash_group:
             proofs = workbuddy_diagnostics.discarded_crash_group(root, discard_diagnostics, cutoff_ns, _names)
             candidate('logs/Crash-Log', 'logs', 'user_explicitly_discarded_crash_diagnostics', expected_files=proofs, exact_files=True)
-        directories = [''] if client == 'browser-skill' else ['logs', 'log', 'userdata/logs']
+        directories = ['logs', 'log', 'userdata/logs']
         if client == 'codex':
             directories.append('.sandbox')
         if client == 'codex-desktop':
@@ -677,7 +664,6 @@ def inspect_profile(client, value, *, categories=CATEGORIES, cutoff_ns=0, freeze
                     # Session/terminal transcripts retain their owning record authority.
                     observations.append(_row(root, relative, 'logs', 'retain', 'nested_or_session_diagnostics'))
                 elif ((_LOG.fullmatch(name) and relative == directory + '/' + name)
-                      or client == 'browser-skill' and re.fullmatch(r'daemon\.log\.\d{4}-\d{2}-\d{2}', relative)
                       or client == 'workbuddy' and relative in {'logs/' + n for n in _WORKBUDDY_ROOT_LOGS}
                       or dated_layout) and info.st_mtime_ns < cutoff_ns and _past_log_date(date_name, cutoff_ns):
                     try:

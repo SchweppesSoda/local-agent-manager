@@ -809,6 +809,11 @@ class GlobalDeleteInventoryTests(unittest.TestCase):
                 # Compatibility delivery is opt-in for ordinary mounting, but
                 # global deletion must still inventory an existing owned link.
                 _apply_v3_mount(fixture, ["codex-compat"])
+                # A discovery root can also expose the same mount through a
+                # junction. Removing alpha changes that mount's directory mtime.
+                observer = fixture.mounts["report-root"]
+                observer.mkdir(parents=True, exist_ok=True)
+                create_real_directory_link(fixture.mounts["codex-compat"], observer / "shared-skills")
                 options = fixture.options(
                     ["report-only"],
                     delete_skills=["alpha"],

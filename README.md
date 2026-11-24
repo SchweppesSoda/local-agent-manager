@@ -23,7 +23,7 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 | 客户端会话记录 | Cindy、Paseo、T3 Code、Orca、Herdr、WorkBuddy、千问办公中国版。各客户端可执行的动作见[支持范围](#支持范围) |
 | 关联记录 | Magpie 可显式绑定到受支持的原生记录清理计划，纳入解析缓存、网关历史和回收站等数据。见 [Magpie 关联清理](docs/operation-cli.md#magpie-关联清理) |
 | 环境盘点与诊断 | Codex CLI、Codex Desktop、Claude Code、Pi Agent、Antigravity CLI、Antigravity Desktop／IDE、Cindy、Paseo、T3 Code |
-| 客户端运行数据维护 | 上述九个环境盘点对象，以及 Orca、Herdr、WorkBuddy、千问办公中国版和 browser-skill。browser-skill 支持清理过期的 daemon 轮转日志 |
+| 客户端运行数据维护 | 上述九个环境盘点对象，以及 Orca、Herdr、WorkBuddy 和千问办公中国版 |
 | Skill 部署 | 每个 Skill 源的配置声明其部署目标、挂载点和使用这些 Skill 的客户端 |
 
 所有现有和以后接入的对象都以所用发布渠道的最新版为适配目标。升级后按具体操作核对接口、字段和存储行为，能继续工作的沿用原适配，遇到实际不兼容再修改。

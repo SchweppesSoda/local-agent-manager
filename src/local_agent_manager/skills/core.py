@@ -3203,6 +3203,7 @@ def apply_plan(plan: Plan, options: RuntimeOptions) -> None:
         prune_staging: list[tuple[Path, Path]] = []
         created_recovery_directories: list[Path] = []
         removed_consumer_paths: set[str] = set()
+        changed_directory_stats: dict[str, os.stat_result] = {}
 
         def ensure_recovery_directory(kind: str) -> Path:
             parent_state = inspect_path(recovery_parent)
@@ -3304,6 +3305,15 @@ def apply_plan(plan: Plan, options: RuntimeOptions) -> None:
                         if lexical_norm_path(Path(path).parent) == key
                     }
                     expected_children = expected.get("children") if isinstance(expected, dict) else None
+                    # Another discovery root can contain a junction to a directory
+                    # from which this transaction just removed an approved link.
+                    # Only its size and mtime change. Its identity, the link chain
+                    # and the backing directory's own member scan still have to match.
+                    for child in expected_children or ():
+                        for hop in child.get("resolution", {}).get("hops", ()):
+                            changed = changed_directory_stats.get(hop["path"])
+                            if changed is not None and hop["kind"] == "directory":
+                                hop.update(size=changed.st_size, mtimeNs=changed.st_mtime_ns)
                     if removed_names and isinstance(expected_children, list):
                         removed_expected = {
                             item.get("name") for item in expected_children
@@ -3360,6 +3370,7 @@ def apply_plan(plan: Plan, options: RuntimeOptions) -> None:
                             f"recreate consumer {action.path}",
                             lambda path=action.path, snapshot=previous_snapshot: restore_link_snapshot(path, snapshot),
                         )
+                        changed_directory_stats[lexical_norm_path(action.path.parent)] = action.path.parent.stat()
                         print(f"Removed managed consumer: {action.path}")
                     unregister_consumer(manifest, action.target, skill)
                 elif action.kind == "GLOBAL_DELETE_REPO_SKILL" and action.path:

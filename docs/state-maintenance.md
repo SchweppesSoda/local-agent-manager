@@ -103,9 +103,7 @@ coordination domain for current commands.
 artifacts through the shared operation store and mutation admission. Inventory
 supports explicit profiles and known default or environment roots for Cindy,
 Codex, Codex desktop, Claude, Pi, T3, Paseo, Antigravity CLI and desktop,
-WorkBuddy, Orca, Herdr and QwenWork. Browser-skill diagnostics are discovered
-separately at the actual user's `.bsk` root; daemon locks and control directories
-remain retained. A missing candidate reports its observation scope.
+WorkBuddy, Orca, Herdr and QwenWork. A missing candidate reports its observation scope.
 Cindy discovery includes its SDK `codex-home`, qualified
 `codex-accounts/<owner>/<account>` homes (reported as client `codex`), and the
 Windows updater WebView profile. Custom and other portable profiles require
@@ -188,12 +186,7 @@ Xlog framing follows Tencent Mars's
 and [magic values](https://github.com/Tencent/mars/blob/master/mars/xlog/crypt/log_magic_num.h).
 Only the registered dated WorkBuddy diagnostic path is eligible, not arbitrary
 binary files with a matching prefix.
-
-Browser-skill `daemon.log.YYYY-MM-DD` requires its dated
-Rust tracing envelope and `bsk::` target, or a verified empty file. Date and mtime
-must both pass retention. Root locks, current/recent files and unknown bodies
-do not qualify. These producers still require normal closure/file exclusion;
-an inactive app's old diagnostic log can qualify even without a rotation suffix.
+Diagnostic cleanup still requires writer closure and file exclusion.
 
 Native discovery catalogs under the four known `cache/` namespaces require
 recognized JSON schemas, hashed filenames and retention. Plugin exclusion

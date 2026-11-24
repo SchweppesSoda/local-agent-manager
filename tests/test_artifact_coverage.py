@@ -127,19 +127,6 @@ class ArtifactCoverageTests(unittest.TestCase):
         self.file('.sandbox/session.jsonl', b'conversation')
         self.assertEqual(self.selected(self.inspect('codex', ['logs'])), [path])
 
-    def test_browser_skill_dated_diagnostics_preserve_lock_recent_and_unknown_files(self):
-        body = json.dumps({'timestamp': '2020-01-01T12:00:00Z', 'level': 'INFO',
-                           'fields': {'message': 'diagnostic'}, 'target': 'bsk::daemon::start'}).encode()
-        self.file('daemon.log.2020-01-01', body)
-        self.file('daemon.log.2020-01-02', body)
-        self.file('daemon.log', body)
-        self.file('daemon.log.2020-01-03', b'')
-        self.file('daemon.lock', b'')
-        self.file('session.json', body)
-        self.assertEqual(self.selected(self.inspect('browser-skill', ['logs'])), ['daemon.log.2020-01-01', 'daemon.log.2020-01-03'])
-        os.utime(self.root / 'daemon.log.2020-01-01', ns=(self.cutoff + 1, self.cutoff + 1))
-        self.assertEqual(self.selected(self.inspect('browser-skill', ['logs'])), ['daemon.log.2020-01-03'])
-
     def test_workbuddy_stale_root_diagnostics_require_the_known_envelope(self):
         self.file('logs/main.log', b'{"timestamp":"2020-01-01T00:00:00Z","level":"info","scope":"window","message":[]}\n')
         self.file('logs/daemon.log', b'{"role":"user","content":"keep"}\n')
