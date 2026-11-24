@@ -76,7 +76,10 @@ when needed; this Skill does not add an `auth` CLI command.
 - **Already shared and working:** verify the target; make no redundant copy.
 - **Supported credential reuse/import:** use the client's native mechanism or
   the matching provider's qualified credential-file route. Keep the target's
-  configuration, skills, history and sessions independent by default.
+  configuration, skills, history and sessions independent by default. For a
+  ChatGPT subscription used in two independent Codex homes, follow the
+  [Codex sign-in guidance](references/codex.md#choose-where-the-chatgpt-sign-in-will-be-refreshed)
+  before writing credentials or starting another login.
 - **Whole-home binding:** use only when sharing that home's settings and data is
   intended. Explain that scope before selecting it; an authentication-only
   request does not authorize replacing `CODEX_HOME` or `CLAUDE_CONFIG_DIR` with

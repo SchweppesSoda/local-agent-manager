@@ -79,7 +79,7 @@ Codex 已通过目录联接发现 `skills/agent-management` 时，直接维护�
 
 ### 已有授权复用
 
-已有账号的授权复用使用 [Agent 授权管理](skills/agent-auth-management/SKILL.md)，以本机单账号、Codex 优先，覆盖凭据来源确认、必要的目标配置和实际登录验证。Claude Code 与 AGY 按各自的存储方式和客户端能力选择复用或官方登录。默认保留目标配置与历史独立；共享整个 home 需要明确的数据共享意图。该 Skill 由 Agent 使用原生接口及经核实的文件流程执行，不新增通用 `auth` 命令；配置保存、登录识别和模型调用成功分别报告。
+已有账号的授权复用使用 [Agent 授权管理](skills/agent-auth-management/SKILL.md)，以本机单账号、Codex 优先，覆盖凭据来源确认、必要的目标配置和实际登录验证。两个要长期独立使用的 Codex Home 应分别登录 ChatGPT。同一份 `auth.json` 的两个副本共用刷新令牌，一端刷新后另一端可能掉线。Claude Code 与 AGY 按各自的存储方式和客户端能力选择复用或官方登录。默认保留目标配置与历史独立；共享整个 home 需要明确的数据共享意图。该 Skill 由 Agent 使用原生接口及经核实的文件流程执行，不新增通用 `auth` 命令；配置保存、登录识别和模型调用成功分别报告。
 
 ### Claude 与 Cindy 接入
 

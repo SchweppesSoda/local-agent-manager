@@ -184,6 +184,8 @@ spec、文件清单及哈希绑定的 `entry.py`；这是本机既定迁移范�
 目标两库分别持 `BEGIN IMMEDIATE`，每次提交都验证未选行；产品配置使用父目录 namespace
 租约、实际单 writer 启动排除和 manager root 锁完成原子替换。目标库不整库复制，运行中
 T3 的未选数据及随后增量留在原处。认证先赋原权限后写入独立普通文件，不输出凭据。
+这一步只隔离本地文件，副本最初仍持有同一刷新令牌。若两个 Home 都要继续独立使用订阅，
+按[独立 Home 登录说明](../skills/agent-auth-management/references/codex.md#choose-where-the-chatgpt-sign-in-will-be-refreshed)处理。
 T3 同样可刷新旧 Home 的认证。准备器从所选 Cindy profile 的托管布局选择本次操作使用的 Codex，
 另行识别正在使用源或目标 Home 的 Codex 进程。对每个实际程序，在临时 Home 中用回环服务和模拟数据
 验证跨进程刷新。写入须等待管理器的 `auth.lock`，释放后须成功提交，等待期间已有新凭据时须保留该更新。

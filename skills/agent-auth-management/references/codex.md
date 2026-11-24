@@ -34,16 +34,38 @@ unverified cached labels, not proof of current validity or subscription. An
 unresolved account remains unknown. Classify explicit no-login separately from
 load/configuration/keyring errors before deciding any repair.
 
-## Reuse file-backed authentication only
+## Choose where the ChatGPT sign-in will be refreshed
 
-Use this route when both selected runtimes consume compatible file-backed Codex
-authentication, the source account is the intended one, and the target is an
-identified native Codex home. Official guidance permits copying an existing
-file-backed auth cache; this does not qualify an arbitrary third-party import
-format. Follow [transfer and verification](transfer.md).
+When two Codex homes will stay in use, use each target's supported sign-in
+flow for an independent login. Copying `auth.json` gives both homes the same
+refresh token. When one rotates it, the other can lose access. A successful
+initial account check can occur before either copy needs a refresh. If a copy
+already exists, follow the [reauthentication precautions](#reauthentication-can-revoke-the-copied-source-grant)
+before starting a login that might revoke the source grant.
 
-1. Check source login locally and locate its native `auth.json` or a verified
-   frontend store that holds the complete native Codex credential payload.
+**Magpie.** With subscription discovery enabled, Magpie v0.1.4758 looks for
+additional Codex homes in the user directory and beside its configured Codex
+home. It recognizes `codex*` and `.codex*` directories by `auth.json` or
+`sessions/` and checks one level below a matching name when necessary. It
+records the home where it found a login and checks that home again on switch.
+For an account held there, use that home to run Codex, or enable the account
+for Magpie's gateway requests. Honor the switch refusal. Signing in again
+through Magpie can write the new credentials back to that same home when
+the account matches. Check the effective home before claiming an independent login.
+[Home discovery](https://github.com/yetone/magpie/blob/v0.1.4758/internal/appdir/codex.go#L53-L103)
+· [Account switch](https://github.com/yetone/magpie/blob/v0.1.4758/internal/provider/logins.go#L1538-L1543)
+· [Sign-in destination](https://github.com/yetone/magpie/blob/v0.1.4758/internal/provider/signin.go#L963-L995)
+
+## One-time transfer of a file-backed Codex login
+
+OpenAI documents copying the native auth cache as a fallback for headless
+login. Use a transfer when the target will be the sole active consumer of
+that grant and the source will stop using or refreshing it. Account for
+background consumers such as Magpie. For an explicit backup or export, stop
+at the private artifact. Follow [transfer and verification](transfer.md).
+[Codex headless authentication](https://developers.openai.com/codex/auth/#login-on-headless-devices)
+
+1. Check source login locally and locate its native file-backed `auth.json`.
    Check target backend, provider and account/workspace restrictions first.
    Resolve conflicting environment/helper authentication rather than assuming
    this file will take precedence. Preserve restrictions; do not bypass them.
@@ -59,19 +81,6 @@ format. Follow [transfer and verification](transfer.md).
    actual frontend's account/provider status through its supported interface.
    Record whether that check was local recognition or a remote authenticated
    response. Report source and target outcomes separately.
-
-A copied OAuth cache is a snapshot. Do not promise that two copies will remain
-valid independently forever: token refresh and revocation behavior must be
-verified for the selected version/backend. On a refresh conflict, inspect which
-copy is current. Follow the login precautions below before reauthentication;
-never repeatedly overwrite with an older snapshot or run a two-way sync loop.
-
-For example, Magpie v0.1.4717 stores native Codex credentials as the saved
-account's raw `auth` object and passes that object to its Codex writer. Check
-that the installed version does likewise and that the selected login qualifies
-for native reuse, including Magpie's checks for access-only accounts and grants
-already held by another Codex home.
-[Magpie's versioned saved-login implementation](https://github.com/yetone/magpie/blob/v0.1.4717/internal/provider/logins.go#L1499-L1644)
 
 ## Cindy account registration
 
