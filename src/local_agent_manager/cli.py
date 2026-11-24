@@ -473,10 +473,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _ChineseArgumentParser(
         prog="local-agent-manager",
         description=(
-            "只读盘点和诊断 Agent 运行环境。"
-            "检查前端残留，只读盘点本地 Agent 记录（Codex thread、"
-            "Pi Agent/Claude Code session），"
-            "并保守清理明确选择且重验证通过的目标。"
+            "盘点和诊断 Agent 运行环境，管理 Skill 来源与部署，"
+            "检查本地会话记录、前端引用和运行数据，并清理选定且复核通过的目标。"
         ),
     )
     subparsers = parser.add_subparsers(
@@ -506,12 +504,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     records = subparsers.add_parser(
         "records",
-        help="只读列出本地 Agent 记录（Codex thread、Pi/Claude session）",
-        description=(
-            "只读聚合 Codex 本地记录、Cindy 引用以及 "
-            "Pi Agent/Claude Code 会话；"
-            "不会启动 app-server，也不会修改任何数据库或文件。"
-        ),
+        help="只读列出本地会话记录及前端引用",
+        description="只读列出原生引擎和客户端的本地会话记录及引用，可用 --client 选择盘点对象。",
     )
     _add_common_arguments(records, progress=True)
     _add_operation_scope_arguments(records)
@@ -520,12 +514,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     delete = subparsers.add_parser(
         "delete",
-        help="逐项永久删除 Codex thread 或 Pi/Claude Code session",
+        help="按所选引擎或客户端的能力永久删除指定的本地记录",
         description=(
             "列出正常和异常的本地 Agent 记录，逐项选择存储身份明确的目标，"
-            "经客户端关闭确认和执行前精确重验证后调用官方删除接口；"
-            "仅 --platform pi 时删除精确批准的 Pi 会话文件；"
-            "仅 --platform claude 时删除精确批准的 Claude 会话文件清单。"
+            "按所选引擎或客户端的删除流程复核并执行。"
         ),
     )
     # ``delete`` keeps the historical interactive action-selector surface,
@@ -597,10 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument(
         "--clients-closed",
         action="store_true",
-        help=(
-            "确认使用所选 Codex thread 或 Pi/Claude Code session 的"
-            "相关客户端均已关闭"
-        ),
+        help="确认使用所选记录的相关客户端均已关闭",
     )
     delete.add_argument(
         "--timeout",
@@ -1127,7 +1116,7 @@ def _add_operation_scope_arguments(
 
     parser.add_argument(
         "--client",
-        choices=("native", "codex-native", "cindy", "pi", "claude", "orca", "herdr", "workbuddy", "qwenwork", "paseo", "t3code", "antigravity"),
+        choices=tuple(_CLIENT_PLATFORM_MAP),
         required=client_required,
         help=(
             "选择一个客户端所有者；codex-native 表示官方 ChatGPT UI/Codex CLI "
@@ -1189,7 +1178,6 @@ def _configure_standard_stream_utf8(stream: TextIO) -> None:
 
 
 _CLIENT_PLATFORM_MAP = {
-    "antigravity": "antigravity",
     "native": "native",
     "codex-native": "native",
     "cindy": "cindy",
@@ -1201,6 +1189,7 @@ _CLIENT_PLATFORM_MAP = {
     "qwenwork": "qwenwork",
     "paseo": "paseo",
     "t3code": "t3code",
+    "antigravity": "antigravity",
 }
 _OPERATION_BODY_KEYS = frozenset(
     {
@@ -1235,8 +1224,7 @@ def _normalize_client_name(value: object) -> str:
         return _CLIENT_PLATFORM_MAP[normalized]
     except KeyError as exc:
         raise ValueError(
-            "--client 必须指定一个受支持的客户端："
-            "native、codex-native、cindy、pi、claude、orca、herdr、workbuddy、qwenwork、paseo 或 t3code"
+            "--client 必须指定一个受支持的客户端：" + "、".join(_CLIENT_PLATFORM_MAP)
         ) from exc
 
 

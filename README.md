@@ -15,6 +15,19 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 
 完整设计和入口边界见 [整合设计](docs/manager-integration.md)。
 
+## 当前管理对象
+
+| 入口 | 覆盖对象 |
+|---|---|
+| 原生会话记录 | Codex（含使用同一原生库的 ChatGPT／Codex 桌面本地记录）、Claude Code、Pi Agent、Antigravity CLI（`agy`） |
+| 客户端会话记录 | Cindy、Paseo、T3 Code、Orca、Herdr、WorkBuddy、千问办公中国版。各客户端可执行的动作见[支持范围](#支持范围) |
+| 关联记录 | Magpie 可显式绑定到受支持的原生记录清理计划，纳入解析缓存、网关历史和回收站等数据。见 [Magpie 关联清理](docs/operation-cli.md#magpie-关联清理) |
+| 环境盘点与诊断 | Codex CLI、Codex Desktop、Claude Code、Pi Agent、Antigravity CLI、Antigravity Desktop／IDE、Cindy、Paseo、T3 Code |
+| 客户端运行数据维护 | 上述九个环境盘点对象，以及 Orca、Herdr、WorkBuddy、千问办公中国版和 browser-skill。browser-skill 支持清理过期的 daemon 轮转日志 |
+| Skill 部署 | 每个 Skill 源的配置声明其部署目标、挂载点和使用这些 Skill 的客户端 |
+
+所有现有和以后接入的对象都以所用发布渠道的最新版为适配目标。升级后按具体操作核对接口、字段和存储行为，能继续工作的沿用原适配，遇到实际不兼容再修改。
+
 ## Agent 环境管理
 
 `environment inventory` 盘点已支持布局中的 Agent 程序、客户端和数据根候选，
@@ -296,11 +309,10 @@ T3、Paseo 和独立 Antigravity CLI 的写入使用已验证的 Windows 路径�
 | Cindy | 完整本地清理 | 完整本地清理 | 完整本地清理 | [本机 Agy ACP 插件会话及原生记录](docs/operation-cli.md#cindy-agy-acp-会话删除) |
 | 原生客户端／CLI | Codex 本地历史清理 | Claude 本地历史清理 | Pi JSONL 清理 | Windows 原生会话清理 |
 | Paseo | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线会话删除、完整本地清理 | 在线删除、已验证内置插件的 CLI 联合清理 |
-| WorkBuddy | — | — | — | — |
 
 完整本地清理需验证实际存储、引用和写入进程。原生 Codex 范围包括可定位的 ChatGPT／Codex
-桌面本地历史，ChatGPT 云端聊天需要服务自身的管理入口。WorkBuddy 的会话清理使用独立适配器，
-具体范围见下方能力表。[Antigravity CLI 联合清理](docs/operation-cli.md#t3paseo-与-antigravity-cli-联合清理)
+桌面本地历史，ChatGPT 云端聊天需要服务自身的管理入口。Orca、Herdr、WorkBuddy 和千问办公的记录操作见[支持范围](#支持范围)。
+[Antigravity CLI 联合清理](docs/operation-cli.md#t3paseo-与-antigravity-cli-联合清理)
 要求实际 CLI 构建、原生 home 和完整引用闭包证明；在线会话删除的回执单独报告前端范围。
 
 ### 术语与身份边界
@@ -357,8 +369,9 @@ OpenAI 稳定 API。
 | Orca | 本机 journal、profile 界面及恢复副本、已证明的 managed Codex home | 限定 Windows/Codex 组合支持完整操作及冷验证；未知恢复、其他引擎、runtime home 与远端写入关闭 |
 | Herdr | 持久化 current/restore 引用及显式本机 live metadata | Windows 显式绑定支持原生记录、窗格、历史和恢复副本清理；默认无绑定盘点仍只读 |
 | 千问办公 CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
-| Paseo | agent 登记、提供者记录、调度和绑定桌面缓存 | Windows 在线批量删除支持四种引擎；Codex/Pi/Claude 支持自动绑定后的原生、服务端及桌面清理 |
-| T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 在线批量删除支持四种引擎；完整清理支持 Codex/Claude/Pi 及限定托管 Antigravity ACP |
+| Antigravity CLI | 独立 CLI 的会话数据库、摘要、恢复镜像和已知前端引用 | Windows 上按原生会话 ID 清理已核实归属的会话及其产物 |
+| Paseo | agent 登记、提供者记录、调度和绑定桌面缓存 | Windows 在线批量删除支持四种引擎。Codex、Claude、Pi 可联合清理原生和前端记录，Antigravity CLI 需绑定已验证的内置插件 |
+| T3 Code | thread 元数据、事件/投影、搜索索引、终端和绑定桌面缓存 | 在线批量删除支持四种引擎。完整清理支持 Codex、Claude、Pi 及已验证的 Antigravity 托管 ACP 或 CLI |
 | Codex：index-only | thread 列表记录存在，但 rollout 内容文件不存在 | 删除整个 thread，通常为 `low` |
 | Codex：rollout-only | rollout 内容文件存在，但 thread 列表记录不存在 | 删除整个 thread，属于 `high`，必须明确选择 |
 | Codex：重复内容文件 | 同一 thread ID 有多份可验证 rollout 内容文件 | 保留，或把全部已确认副本作为整条 thread 的 `high` 风险删除范围；不提供隔离动作 |

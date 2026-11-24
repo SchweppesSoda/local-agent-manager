@@ -22,11 +22,13 @@ receipts belong to that checkout's `.agent-manager-state`.
   do not automatically migrate or delete existing live evidence. Make the
   smallest change for demonstrated needs rather than building general
   registration or migration frameworks for hypothetical public deployments.
-- Target current client and provider releases. Check the API, required fields
-  and storage behavior used by each operation. Record observed product versions
-  for diagnosis and freeze runtime identity in approved operations. Add adapter
-  changes for demonstrated incompatibilities and avoid per-release allowlists
-  or separate implementations for obsolete formats.
+- For every existing and future integration, target the latest release on the
+  configured channel.
+  Check the API, required fields and storage behavior used by each operation.
+  Record observed product versions for diagnosis and freeze runtime identity
+  in approved operations. A new product version alone must not block an
+  operation. Change adapters for demonstrated incompatibilities and avoid
+  separate implementations for obsolete formats.
 - Preserve frozen approval scope, physical store identity, confirmed native
   completion before frontend cleanup, atomic writes and interruption recovery.
   Retaining frontend references after mixed native results is acceptable.
@@ -41,11 +43,10 @@ receipts belong to that checkout's `.agent-manager-state`.
   runtime deletion. Keep installation evidence, active runtime selection, native
   store identity, and authentication state distinct. Inject host facts in tests.
 - Resolve each frontend/provider's BIN, Agent home and session directory
-  independently from its actual per-machine/account configuration. This applies
-  to Codex, Claude Code, Antigravity (agy) and Pi across T3, Paseo, Cindy and other
-  adapters. Never turn a handoff's local paths or shared Cindy/T3 homes into fixed
-  relationships. Account bindings and successful login do not prove historical
-  session ownership; record unsupported mappings explicitly. See
+  independently from its actual per-machine/account configuration. Never infer
+  a fixed relationship from a handoff's local paths or from frontends sharing
+  a home on one machine. Account bindings and successful login do not prove
+  historical session ownership; record unsupported mappings explicitly. See
   [BIN and data-root boundaries](docs/adapters.md#bin-与数据目录的配置边界).
 - Report commit, validation and unresolved limits. Push/release/live cleanup
   follows the user's existing authorization; prepare local work before asking

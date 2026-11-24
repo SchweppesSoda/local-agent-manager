@@ -118,7 +118,7 @@ class MultiEngineCliTests(unittest.TestCase):
         self.assertIn("Claude Code", records_help)
         self.assertIn("--platform", delete_help)
         self.assertIn("--session-id ID", delete_help)
-        self.assertIn("Codex thread 或 Pi/Claude Code session", delete_help)
+        self.assertIn("确认使用所选记录的相关客户端均已关闭", delete_help)
         self.assertIn("逐项选择存储身份明确的目标", delete_help)
 
     def test_claude_records_json_and_human_are_metadata_only_and_all_totals_are_separate(self) -> None:
