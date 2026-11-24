@@ -184,11 +184,13 @@ spec、文件清单及哈希绑定的 `entry.py`；这是本机既定迁移范�
 目标两库分别持 `BEGIN IMMEDIATE`，每次提交都验证未选行；产品配置使用父目录 namespace
 租约、实际单 writer 启动排除和 manager root 锁完成原子替换。目标库不整库复制，运行中
 T3 的未选数据及随后增量留在原处。认证先赋原权限后写入独立普通文件，不输出凭据。
-T3 同样可刷新旧 Home 的认证。冻结实际运行的 Codex binary／版本／hash，按已核实的
-[0.166.0](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/login/src/auth/storage.rs)
-和 [0.167.2](https://github.com/openai/codex/blob/rust-v0.167.2/codex-rs/login/src/auth/storage.rs)
-跨进程 `auth.lock` 协议，在源和目标 Home 同时持原生认证写锁，再租约凭据并原子替换
-链接；未知 provider home／runtime 保持阻塞。三个 journal／apply 锁及持久化 intent 先于
+T3 同样可刷新旧 Home 的认证。准备器从所选 Cindy profile 的托管布局选择本次操作使用的 Codex，
+另行识别正在使用源或目标 Home 的 Codex 进程。对每个实际程序，在临时 Home 中用回环服务和模拟数据
+验证跨进程刷新。写入须等待管理器的 `auth.lock`，释放后须成功提交，等待期间已有新凭据时须保留该更新。
+准备器冻结通过检查的程序哈希。执行时复核实际进程、Home 和程序，在源和目标 Home 同时持原生认证写锁，
+再租约凭据并原子替换链接。见[隔离刷新检查](../src/local_agent_manager/cindy_auth_lock_probe.py)和
+[Codex 写锁实现](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/login/src/auth/storage.rs)。
+三个 journal／apply 锁及持久化 intent 先于
 边界取得。原生协议缺失的空 `auth.lock` 可在固定 Home 新建并永久保留，已有锁及 ACL
 不修改。T3 进程继续运行，其凭据提交在短暂离线窗口后恢复。凭据 generation／权限变化
 在复制历史前即阻止执行；恢复只在现有账号身份和权限均已核实时保留目标刷新后的凭据。
@@ -267,6 +269,18 @@ Claude／Antigravity driver。它验证的是 `homePath/skillsSubdir` 与挂载�
 下面的 Codex `Finding` 接口是既有 compatibility adapter，不是所有引擎的必选接口。
 
 ### 现有组合与兼容基线
+
+各入口默认采用当前发布渠道的最新产品。环境盘点和 Skill 部署记录观测版本，记录操作按实际 API、
+字段、引用和存储判断兼容性。Pi 的 JSONL 头、Herdr 的线协议、WorkBuddy 和千问办公的 SQLite
+结构、Magpie 的解析缓存和网关文件都有各自的格式检查。升级后只要这些条件仍成立即可沿用。
+例如 WorkBuddy 的 5.6.2 和千问办公 CN 的 1.2.5 标记了 SQLite 样本的来源，实际读取会核对所选数据库的结构。
+同一项已批准操作仍需复核原来的文件和运行程序，程序更换后可重新生成计划。
+
+三种操作依赖已验证的程序构建或写入工具。
+
+- [Orca 原生删除](#orca精确原生删除的限定组合)会启动 Codex 并写入共享数据库，运行时哈希对应已验收的迁移和启动副作用。
+- [Antigravity 的隐式恢复数据](../src/local_agent_manager/antigravity_cli_implicit.py)在限定的恢复流程中需要从特定构建读取已验证的二进制偏移和格式描述，常规 CLI 会话清理按磁盘格式判断。
+- Paseo 桌面 IndexedDB 和千问办公草稿写入分别使用已验收的 Electron 分发包和 classic-level 依赖。它们在私有副本上读写数据，升级客户端无需同步更换这些工具。见 [Paseo 清理说明](operation-cli.md#paseo-完整本地操作)和[办公版操作说明](operation-cli.md#office-local-sessions)。
 
 | 客户端与引擎 | 已有写入路径 | 必要限制 |
 |---|---|---|
@@ -660,6 +674,9 @@ hooks 根、已知生产/开发 namespace、status、authority、spool 和临时
 依据为官方 `rust-v0.160.0` 的 Windows standalone 包及固定源码
 [`a956835d`](https://github.com/openai/codex/tree/a956835d020762cb2b570053af06f643a11c0ecc)。
 相同版本字符串不替代文件哈希；先前登记的同版本 binary 不继承本次资格。
+此限制只用于启动 Codex 的 Orca 原生删除。即使 `thread/delete` 接口相同，新程序仍可能在
+启动期间迁移未选记录所在的共享数据库。例如 0.170.0 在空的临时 Home 中以相同启动参数
+创建了含 62 条迁移的 state 库，超出下述已验证的 58 条。接入新构建需验证其启动写入范围。
 要求 `state_5.sqlite` 的 SQLx 58 项及四个辅助 DB 各 2 项 migration/schema 与登记元数据
 一致，backfill 为已完成单行，rollout migration 两表为空；缺 state DB、空 DB、旧/未知
 schema 均不授予 writer，缺辅助 DB 仅允许固定运行时创建。所有共享 DB/index、已知
@@ -763,8 +780,7 @@ reader 读到，但不输出或执行，也不由 argv 补造 native ID。`agent
 `records --inspect-clients` 才读取各已知 default/named session 的 `herdr.sock` metadata API。
 每次连接只发送一个 JSON 行请求：先 `ping`，再另连 `session.snapshot`，`params={}`；
 只接受 protocol22 和一致的 version，验证 public ID、交叉关联、layout 与 pane/tab 计数。
-已知 `0.9.3` 及合法后缀仅提供兼容观察，不证明二进制 SHA；其他 base version 即使
-shape 可读，也保留引用并报告 `live_version_unverified`。依据：
+新版沿用这些接口和字段时可直接读取。两次响应的产品版本发生变化会中止本次读取。接口依据见
 [wire protocol](https://github.com/herdrdev/herdr/blob/d6b40d4edd550ccea081f089605a64314f8c8b27/src/protocol/wire.rs)、
 [session snapshot](https://github.com/herdrdev/herdr/blob/d6b40d4edd550ccea081f089605a64314f8c8b27/src/app/api/session.rs)。
 

@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, TextIO
 
+from . import __version__
 
 class CodexAppServerError(RuntimeError):
     """Base class for failures while talking to Codex app-server."""
@@ -69,7 +70,7 @@ class CodexAppServer:
         codex_binary: Path | str | None = None,
         command: Sequence[str] | None = None,
         timeout: float = 30.0,
-        client_version: str = "0.1.0",
+        client_version: str = __version__,
         environment: Mapping[str, str] | None = None,
         working_directory: Path | str | None = None,
     ) -> None:

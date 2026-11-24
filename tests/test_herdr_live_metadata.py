@@ -53,17 +53,17 @@ class HerdrLiveMetadataTests(unittest.TestCase):
                 self.assertTrue(observed.errors)
                 self.assertTrue(observed.observations)
 
-    def test_conflicting_agent_value_is_preserved_separately_and_unknown_version_is_not_verified(self):
+    def test_conflicting_agent_value_is_preserved_separately_and_compatible_releases_are_accepted(self):
         value = live_snapshot("snapshot")
         value["result"]["snapshot"]["agents"][0]["agent_session"]["value"] = "other-id"
         result = self.parse(value)
         self.assertEqual(len(result.observations), 3)
         self.assertIn("live_agent_reference_conflict", result.errors)
-        for version, incomplete in (("99.0.0", True), ("0.9.3-preview.1+build.2", False)):
+        for version in ("99.0.0", "0.9.3-preview.1+build.2"):
             value = live_snapshot("snapshot", version=version)
             result = parse_live_snapshot(decode_response(wire(value), "snapshot"), version)
             self.assertEqual(len(result.observations), 2)
-            self.assertEqual("live_version_unverified" in result.errors, incomplete)
+            self.assertEqual(result.errors, ())
 
     def test_plain_shell_pane_is_not_required_to_have_an_agent_info(self):
         value = live_snapshot("snapshot")

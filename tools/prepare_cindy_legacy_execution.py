@@ -20,7 +20,11 @@ from local_agent_manager import frozen_files as ff
 from local_agent_manager.cindy_isolation_plan import (binding_changes, directory_identity, fingerprint, legacy_destination, readonly_sqlite, physical_descendant)
 from local_agent_manager.cindy_isolation_recovery import digest, q
 from local_agent_manager.cindy_isolation_merge import TABLES, merge_selected_rows
-from local_agent_manager.cindy_isolation_windows import auth_permissions, closure_in_transaction, current_user_sid
+from local_agent_manager.cindy_isolation_windows import (
+    AUTH_LOCK_PROTOCOL, ReadLeases, auth_permissions, closure_in_transaction, current_user_sid,
+)
+from local_agent_manager.cindy_auth_lock_probe import verify_refresh_lock
+from local_agent_manager.discovery import discover_cindy_codex
 from local_agent_manager.cindy_isolation_controller import TASK, protected_snapshot, supported_account
 from local_agent_manager.operation_store import write_new_json
 from local_agent_manager.cindy_isolation_ui import window_behavior
@@ -40,17 +44,23 @@ def installed_source(package):
             node = tree
             for part in relative.split("/"): node = node["files"][part]
             stream.seek(base + int(node["offset"])); return stream.read(node["size"]).decode()
-        boot = read(".vite/build/bootstrap-electron-DrVGBz1v.js")
-        match = re.search(r'\bindex\$b=require\("\./([^"/]+)"\)', boot)
-        if not match: raise RuntimeError("Installed deep-link module unavailable")
-        index = read(".vite/build/" + match[1])
-        # Follow the actual branded constant, not DATA_URL_PREFIX's suffix.
-        if 'URL_PREFIX=index$b.DEEP_LINK_URL_PREFIX' not in boot: raise RuntimeError("Deep-link binding changed")
+        build = tree["files"][".vite"]["files"]["build"]["files"]
+        names = [name for name in build if re.fullmatch(r"bootstrap-electron(?:-[\w-]+)?\.js", name)]
+        if len(names) != 1: raise RuntimeError("Installed Cindy bootstrap is ambiguous or missing")
+        boot = read(".vite/build/" + names[0])
+        # Resolve the import used by the actual URL_PREFIX binding in this build.
+        owners = set(re.findall(r'(?<![\w$])URL_PREFIX=([\w$]+)\.DEEP_LINK_URL_PREFIX\b', boot))
+        if len(owners) != 1: raise RuntimeError("Deep-link binding changed")
+        owner = re.escape(owners.pop())
+        modules = set(re.findall(rf'(?<![\w$]){owner}=require\("\./([\w.$-]+\.js)"\)', boot))
+        if len(modules) != 1: raise RuntimeError("Installed deep-link module unavailable")
+        module = modules.pop()
+        index = read(".vite/build/" + module)
         schemes = set(re.findall(r'primaryScheme:\s*"([^"\s]+)"', index))
         if "cindy" not in schemes or 'DEEP_LINK_URL_PREFIX=`${DEEP_LINK_PRIMARY_SCHEME}://`' not in index:
             raise RuntimeError("Installed primary deep-link scheme unqualified")
         return {"package_sha256": digest(package), "deep_link_prefix": "cindy://",
-                "brand_module": match[1], "bootstrap_sha256": hashlib.sha256(boot.encode()).hexdigest(),
+                "brand_module": module, "bootstrap_sha256": hashlib.sha256(boot.encode()).hexdigest(),
                 "buildSessionDeepLink": boot[boot.index("function buildSessionDeepLink("):boot.index("function buildSessionDeepLink(") + 250]}
 
 
@@ -189,7 +199,9 @@ def prepare():
     package = Path(r"C:\Program Files\Cindy\resources\app.asar")
     executable = package.parents[1] / "Cindy.exe"
     product = installed_source(package)
-    native_binary = profile / "codex-package/0.166.0/bin/codex.exe"
+    native_binary = discover_cindy_codex(profile)
+    if native_binary is None or native_binary.name.casefold() != "codex.exe":
+        raise RuntimeError("No Windows Codex executable found for the selected Cindy profile")
     version = subprocess.run([str(native_binary), "--version"], capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
     if version.returncode or not version.stdout.strip(): raise RuntimeError("Actual native binary smoke failed")
     startup = []
@@ -255,10 +267,13 @@ def prepare():
     auth_runtimes = {}
     for binary in sorted(binaries):
         ff._plain(binary.lstat())
-        probe = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-        if probe.returncode or probe.stdout.strip() not in {'codex-cli 0.166.0','codex-cli 0.167.2'}:
-            raise RuntimeError('Native auth writer release does not have this qualified auth.lock protocol')
-        auth_runtimes[str(binary)] = {'version': probe.stdout.strip(), 'sha256': digest(binary)}
+        with ReadLeases() as leases:
+            leases.acquire(binary)
+            probe = subprocess.run([str(binary), '--version'], capture_output=True, text=True,
+                                   timeout=10, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            verify_refresh_lock(binary)
+            auth_runtimes[str(binary)] = {'version': probe.stdout.strip(), 'sha256': digest(binary),
+                                          'lock_protocol': AUTH_LOCK_PROTOCOL}
     spec['controller']['auth_lock_runtimes'] = auth_runtimes
     spec['controller']['auth_runtime_aliases'] = binary_aliases
     spec['controller']['native_auth_lock_paths'] = [str(root / 'auth.lock') for root in (source, target)]
@@ -284,6 +299,12 @@ def prepare():
     manifest = {"task": TASK, "spec_sha256": spec["plan_sha256"], "source_path": str(ROOT / "src"),
                 'python_executable': sys.executable,
                 "files": [{"path": str(p), "sha256": digest(p), "size": p.stat().st_size} for p in sorted(files, key=str)]}
+    file_hashes = {Path(item["path"]): item["sha256"] for item in manifest["files"]}
+    for alias, physical in binary_aliases.items():
+        if Path(alias).resolve(strict=True) != Path(physical) or file_hashes[Path(physical)] != auth_runtimes[physical]["sha256"]:
+            raise RuntimeError("Qualified auth writer changed before sealing the bundle")
+    if file_hashes[native_binary] != auth_runtimes[binary_aliases[str(native_binary)]]["sha256"]:
+        raise RuntimeError("Selected native runtime changed before sealing the bundle")
     write_new_json(bundle / "execution-manifest.json", manifest)
     manifest_hash = digest(bundle / "execution-manifest.json")
     command = [sys.executable, "-I", str(bundle / "entry.py"), 'direct-execute' if direct else 'execute', "--manifest-sha256", manifest_hash, "--uac-authorized"]

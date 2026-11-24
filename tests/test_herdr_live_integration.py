@@ -126,8 +126,8 @@ class HerdrLiveIntegrationTests(unittest.TestCase):
         with Endpoint(self.profile / "herdr.sock", future):
             code, result = self.invoke("--inspect-clients")
             self.assertEqual(len(result["targets"]), 5, result)
-            self.assertIn("live_version_unverified", [e["message"] for e in result["store_errors"]])
-            self.assertFalse(result["client_ownership"][0]["probe_complete"])
+            self.assertNotIn("live_version_unverified", [e["message"] for e in result["store_errors"]])
+            self.assertTrue(result["client_ownership"][0]["probe_complete"])
             self.assertFalse(result["client_ownership"][0]["coverage_complete"])
 
     def test_plain_records_and_native_inspection_never_query_herdr_endpoints(self):

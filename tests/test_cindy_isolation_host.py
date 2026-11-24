@@ -5,6 +5,7 @@ _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.pare
 from tests import bootstrap
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -132,12 +133,37 @@ raise SystemExit(0 if ok else 23 if error==33 else 24)
             capture_output=True,timeout=5,creationflags=subprocess.CREATE_NO_WINDOW)
         self.assertEqual(result.returncode,0)
         spec={'source':{'path':str(source)},'target':{'path':str(target)},'controller':{'auth_lock_runtimes':{
-            str(binary):{'version':'codex-cli 0.167.2','sha256':digest(binary)}}}}
+            str(binary):{'version':'codex-cli 99.0.0','sha256':digest(binary)}}}}
         with patch('local_agent_manager.cindy_isolation_windows.auth_protocol_census',return_value=[
             {'name':'codex.exe','codex_home':str(target),'executable_path':str(alias/'codex.exe')}]):
+            with self.assertRaisesRegex(ValueError, 'protocol_unqualified'): qualify_auth_writers(spec)
+            from local_agent_manager.cindy_isolation_windows import AUTH_LOCK_PROTOCOL
+            spec['controller']['auth_lock_runtimes'][str(binary)]['lock_protocol'] = AUTH_LOCK_PROTOCOL
             qualify_auth_writers(spec)
             spec['controller']['auth_lock_runtimes'][str(binary)]['sha256']='0'*64
             with self.assertRaises(ValueError): qualify_auth_writers(spec)
+
+    def test_refresh_probe_rejects_a_writer_that_skips_the_native_lock(self):
+        from contextlib import contextmanager
+        from urllib.request import ProxyHandler, build_opener
+        from local_agent_manager.cindy_auth_lock_probe import verify_refresh_lock
+
+        @contextmanager
+        def uncoordinated_server(*, codex_home, environment, **kwargs):
+            class Server:
+                def request(self, method, params):
+                    path = codex_home / "auth.json"
+                    auth = json.loads(path.read_bytes())
+                    body = json.dumps({"refresh_token": auth["tokens"]["refresh_token"]}).encode()
+                    url = environment["CODEX_REFRESH_TOKEN_URL_OVERRIDE"]
+                    with build_opener(ProxyHandler({})).open(url, data=body, timeout=3) as response:
+                        auth["tokens"].update(json.load(response))
+                    path.write_text(json.dumps(auth))
+            yield Server()
+
+        with patch("local_agent_manager.cindy_auth_lock_probe.CodexAppServer", uncoordinated_server):
+            with self.assertRaisesRegex(ValueError, "auth_probe_writer_did_not_wait"):
+                verify_refresh_lock(self.root / "unused.exe")
 
 
 if __name__ == '__main__': unittest.main()

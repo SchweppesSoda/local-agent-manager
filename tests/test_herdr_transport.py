@@ -176,7 +176,7 @@ class HerdrTransportTests(unittest.TestCase):
                 self.assertTrue(operation.completed)
                 _retiring.clear()
 
-    def test_version_change_and_unknown_base_never_upgrade_complete_runtime_evidence(self):
+    def test_version_change_during_probe_blocks_but_compatible_new_release_is_readable(self):
         def changed(request):
             return pong(request["id"]) if request["method"] == "ping" else live_snapshot(request["id"], version="0.9.4")
         with Endpoint(self.locator, changed):
@@ -188,4 +188,4 @@ class HerdrTransportTests(unittest.TestCase):
         with Endpoint(self.locator, future):
             result = probe_runtime(str(self.locator), RuntimeBudget())
             self.assertEqual(len(result.metadata.observations), 2)
-            self.assertIn("live_version_unverified", result.errors)
+            self.assertEqual(result.errors, ())

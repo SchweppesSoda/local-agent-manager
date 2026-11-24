@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
-import re
 from typing import Any
 
 from .herdr_metadata import HerdrMetadataError, HerdrObservation, _agent_session, _integer, _text, _unique_object
@@ -118,10 +117,6 @@ def parse_live_snapshot(result: dict[str, Any], pong_version: str) -> HerdrLiveM
     if version != pong_version:
         raise HerdrLiveMetadataError("live_version_changed")
     observations, states, errors = [], [], []
-    # Protocol/shape are checked independently. A matching version string is
-    # only compatibility evidence and never establishes a binary revision.
-    if not re.fullmatch(r"0\.9\.3(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", version):
-        errors.append("live_version_unverified")
     try:
         rows = {name: _rows(snapshot.get(name)) for name in ("workspaces", "tabs", "panes", "layouts", "agents")}
         workspaces = _index(rows["workspaces"], "workspace_id")

@@ -23,6 +23,8 @@ from .operation_store import write_new_json, _atomic_replace_with_retry
 from .operation_store import utc_now
 from .windows_held_files import HeldFiles, ensure_descriptor_capacity
 
+AUTH_LOCK_PROTOCOL = 'auth.lock-refresh-commit.v1'
+
 
 def fail(code):
     raise IsolationPlanError(code)
@@ -40,7 +42,7 @@ def auth_protocol_census():
 
 
 class NativeAuthLocks:
-    """The native 0.166/0.167 auth.lock protocol, not a destination file lease.
+    """The native cross-process auth.lock protocol.
 
     This preserves T3 while serializing its credential commits with the one
     atomic auth-link replacement. Empty native coordination files persist;
@@ -89,7 +91,7 @@ def qualify_auth_writers(spec):
         physical = Path(binary).resolve(strict=True)
         if not os.path.samefile(binary, physical): fail('native_auth_writer_alias_changed')
         entry = approved.get(str(physical))
-        if not entry or entry.get('version') not in {'codex-cli 0.166.0', 'codex-cli 0.167.2'}:
+        if not entry or entry.get('lock_protocol') != AUTH_LOCK_PROTOCOL:
             fail('native_auth_writer_protocol_unqualified')
         ff._plain(physical.lstat())
         if digest(physical) != entry['sha256']: fail('native_auth_writer_binary_changed')
@@ -136,6 +138,25 @@ def current_user_sid():
     finally:kernel.CloseHandle(token)
 
 
+def read_shared_fd(path):
+    """Open just this file for reading with FILE_SHARE_READ."""
+    import msvcrt
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+
+
 class ReadLeases:
     """Read sharing only, including namespace fences; handles never inherited."""
     def __init__(self):
@@ -160,17 +181,8 @@ class ReadLeases:
             if ff._identity(os.fstat(self.parents[name])) != ff._identity(before):
                 fail("source_parent_replaced")
         # ff's delete=True also requests DELETE; source needs READ only.
-        import msvcrt
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                      ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
-        kernel.CreateFileW.restype = wintypes.HANDLE
-        handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x200000, None)
-        if handle == ctypes.c_void_p(-1).value:
-            raise ctypes.WinError(ctypes.get_last_error())
-        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
-        os.set_inheritable(fd, False); self.stack.callback(os.close, fd)
+        fd = read_shared_fd(path)
+        self.stack.callback(os.close, fd)
         if ff._identity(os.fstat(fd)) != ff._identity(identity): fail("source_file_replaced")
         self.files[key] = fd
 
