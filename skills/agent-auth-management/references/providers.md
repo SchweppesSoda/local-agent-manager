@@ -1,4 +1,4 @@
-# Claude Code and Antigravity login reuse
+# Claude Code and Antigravity login
 
 ## Claude Code
 
@@ -21,17 +21,9 @@ Check field availability and avoid raw output. The exit status/local report
 alone does not prove a successful remote model call.
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)
 
-For credential-only reuse, prefer a supported import/binding. Before copying
-`.credentials.json`, qualify the source/target runtime formats and effective
-credential precedence using the installed implementation or documented support.
-A documented storage path alone does not prove transfer compatibility. Follow
-[transfer and verification](transfer.md) for a qualified file transfer; otherwise
-use `claude auth login` in the target context. Do not copy `.claude.json`, an entire
-profile, or fabricated onboarding flags to suppress a login prompt. Diagnose
-the prompt with the native status and current authentication guidance.
-Before reauthentication, check the selected version's replacement/revocation
-behavior and shared consumers under the transfer procedure. A separate config
-directory does not prove that copied OAuth credentials are independent grants.
+For a requested sign-in, use `claude auth login` in the target context.
+Check the selected version's replacement effects and which clients share its
+credential store before reauthenticating.
 
 Official guidance supports multiple accounts through separate configuration
 directories, with exceptions for some Console sign-ins stored elsewhere. This
@@ -53,19 +45,10 @@ installed versions and chosen launch context actually participate; this does
 not establish that a third-party managed ACP instance shares the same store.
 [Antigravity authentication](https://antigravity.google/docs/install?tab=cli)
 
-First use the target's supported account/status interface to see whether the
-existing login is already reusable. Check installed help for available commands;
-do not invent an `agy auth export` or status subcommand. If necessary, run its
-official login flow after checking shared-keyring effects, and let the user
-complete consent. Do not dump Windows Credential Manager, transplant encrypted
-credential-store files, or move an old
-managed token into the CLI profile as a generic repair. A file-backed managed
-ACP transfer needs separately verified source/target format and account binding
-before following the transfer procedure.
-
-Check the actual target frontend after reuse. A signed-in App, cached model list,
-or account label is not proof that its CLI/ACP backend can authenticate. Do not
-use `/logout` as a test or remove old instance data as part of login reuse.
+Check installed help for a supported account/status interface. If a sign-in
+is requested, use the official flow for the selected surface and let the user
+complete consent. Check the actual frontend afterwards. An App sign-in or a
+cached model list alone cannot confirm that the CLI/ACP backend can authenticate.
 
 ## Version evidence
 

@@ -9,7 +9,7 @@ local-agent-manager resources --json
 local-agent-manager state inventory --root '<Agent 数据根>' --json
 ```
 
-权威管理 Skill 分别是 [agent-management](skills/agent-management/SKILL.md)（环境与记录）、[agent-auth-management](skills/agent-auth-management/SKILL.md)（已有登录授权的定位、复用、复制与验证）和 [skill-management](skills/skill-management/SKILL.md)（各类 Skill 的创建、内容维护、发现、导入、部署、同步、验证与恢复）。`work-skills` 作为独立源接入，`mount-work-skills` 保留该源的兼容入口。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。各源维护自身内容、运行时与客户端配置；普通 Skill 内容修改无需先登记部署。
+权威管理 Skill 分别是 [agent-management](skills/agent-management/SKILL.md)（环境与记录）、[agent-auth-management](skills/agent-auth-management/SKILL.md)（登录状态诊断、官方登录与账号验证）和 [skill-management](skills/skill-management/SKILL.md)（各类 Skill 的创建、内容维护、发现、导入、部署、同步、验证与恢复）。`work-skills` 作为独立源接入，`mount-work-skills` 保留该源的兼容入口。安装包包含完整 Skill、操作契约及引用文档，`resources` 给出当前安装的实际路径。各源维护自身内容、运行时与客户端配置；普通 Skill 内容修改无需先登记部署。
 
 主命令与 Python 模块统一使用 `local-agent-manager` 和 `local_agent_manager`。现行 `larj.*` journal/schema、`LARJ_*` 运行时变量和恢复证据保持原契约。每机使用一个 Python 安装登记的权威 editable 仓库，记录操作的协调状态固定在该仓库 `.agent-manager-state`；运行其他 checkout 或设置状态目录环境变量不会另起锁与日志。详见[状态维护](docs/state-maintenance.md)。
 
@@ -77,9 +77,9 @@ Codex 已通过目录联接发现 `skills/agent-management` 时，直接维护�
 手工复制安装时，将整个 Skill 目录复制到 Codex 的 skills 目录，并在源更新后同步副本。
 保留配套的管理器安装，以便调用 CLI 和读取与该版本匹配的操作契约。
 
-### 已有授权复用
+### 登录状态与账号验证
 
-已有账号的授权复用使用 [Agent 授权管理](skills/agent-auth-management/SKILL.md)，以本机单账号、Codex 优先，覆盖凭据来源确认、必要的目标配置和实际登录验证。两个要长期独立使用的 Codex Home 应分别登录 ChatGPT。同一份 `auth.json` 的两个副本共用刷新令牌，一端刷新后另一端可能掉线。Claude Code 与 AGY 按各自的存储方式和客户端能力选择复用或官方登录。默认保留目标配置与历史独立；共享整个 home 需要明确的数据共享意图。该 Skill 由 Agent 使用原生接口及经核实的文件流程执行，不新增通用 `auth` 命令；配置保存、登录识别和模型调用成功分别报告。
+[Agent 授权管理](skills/agent-auth-management/SKILL.md) 用于定位所选客户端的认证来源、核对账号登记和验证登录状态。需要登录时，使用目标客户端的官方流程。
 
 ### Claude 与 Cindy 接入
 

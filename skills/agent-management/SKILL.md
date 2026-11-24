@@ -13,10 +13,8 @@ Identify the host, Windows user or other OS account, Agent client, and intended 
 
 Skill deployment and source maintenance use `skill-management`. Client installation and runtime repair remain here.
 
-Existing login discovery, credential export/copy/reuse, and target authentication
-verification use `agent-auth-management`. Keep runtime/home selection here;
-binding a whole home also shares data and does not itself prove working login.
-Locate the authentication Skill with `local-agent-manager resources --json`.
+For account diagnosis, official sign-in and verification, use
+`agent-auth-management`. Locate it with `local-agent-manager resources --json`.
 
 ## Choose the workflow
 

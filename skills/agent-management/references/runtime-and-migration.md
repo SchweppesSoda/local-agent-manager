@@ -93,7 +93,7 @@ For Windows launch failures after an installation or PATH update, use the [inher
    for that host and account. Multiple T3 instances may intentionally use that
    one home. The home supplies native Codex configuration and session storage;
    T3 stores its frontend records in the selected T3 profile. Use
-   `agent-auth-management` for sign-in or credential reuse, and migrate only
+   `agent-auth-management` for sign-in and account verification, and migrate only
    the state the user selected. Changing the setting directs new launches to
    the new home. Existing native records still need their original store and
    exact IDs resolved for history or cleanup.
@@ -105,7 +105,7 @@ For Windows launch failures after an installation or PATH update, use the [inher
 
 ## Migrate the selected state
 
-Classify the source and destination per task as settings, sessions/history, attachments, cache, credentials, or shared databases. Confirm the actual source and destination roots, product versions, ownership, and whether an existing destination requires merge or replacement. Use the product's supported export/import or documented migration. Carry only the fields and data selected by the user. Prefer supported sign-in on the destination if credentials are device-bound or outside the migration scope.
+Classify the source and destination per task as settings, sessions/history, attachments, cache, or shared databases. Confirm the actual source and destination roots, product versions, ownership, and whether an existing destination requires merge or replacement. Use the product's supported export/import or documented migration. Carry only the fields and data selected by the user. Use the destination client's official flow for sign-in.
 
 For a file-level move, use a consistent snapshot or stop relevant writers before copying and verify the destination before switching its binding. Use proportional temporary rollback for a changed shared database or configuration, with rollback tied to the exact originals and retained until validation succeeds. Rebuildable cache and confirmed discarded residue do not require backup. Remove temporary rollback artifacts after successful validation when consistent with the task's retention scope.
 
