@@ -252,6 +252,15 @@ Claude／Antigravity driver。它验证的是 `homePath/skillsSubdir` 与挂载�
 
 ## 通用接入契约
 
+### 会话适配的模块边界
+
+按谁持有会话、谁能修改记录来选择适配模块。
+
+- **Agent 编排前端**。Cindy、Paseo、T3 Code、Orca、Herdr 各自维护前端会话、窗格或恢复引用。前端适配器解析这些引用，绑定到具体引擎、物理存储和原生会话 ID。涉及原生记录的操作复用相应引擎的实现。比如 Orca 完整清理通过 Codex 删除原生 thread，确认完成后再清理 Orca 的界面与恢复引用。
+- **集成式 Agent 应用**。WorkBuddy 用 `(profile root, session UUID)` 定位本地会话，由产品适配器核对数据库、会话文件及侧栏引用。千问办公中国版从 `chats.id` 经 `sub_chats.session_id` 找到 SDK 会话，核实归属后分别处理 SDK 根和产品 profile。两者各自实现存储读写和残留验证。见 [WorkBuddy 适配器](../src/local_agent_manager/workbuddy_store.py)和[千问办公适配器](../src/local_agent_manager/office_store.py)。
+
+两类接入共用操作协调器，由它冻结批准范围、锁定物理存储、记录批次回执并协调中断恢复。某个产品同时支持内置运行时与外部 Agent 时，按本次操作实际涉及的记录选择模块。见[操作协调器](../src/local_agent_manager/operation_coordinator.py)。
+
 | 角色 | 必须提供的证据 | 不得推导的结论 |
 |---|---|---|
 | 客户端发现与引用 | client/profile、数据库或状态文件、原始 backend、current/history/restore 引用及稳定定位 | 无当前 UI 引用不等于孤儿；显示 ID 不能跨数据库去重 |

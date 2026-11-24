@@ -20,7 +20,8 @@ local-agent-manager state inventory --root '<Agent 数据根>' --json
 | 入口 | 覆盖对象 |
 |---|---|
 | 原生会话记录 | Codex（含使用同一原生库的 ChatGPT／Codex 桌面本地记录）、Claude Code、Pi Agent、Antigravity CLI（`agy`） |
-| 客户端会话记录 | Cindy、Paseo、T3 Code、Orca、Herdr、WorkBuddy、千问办公中国版。各客户端可执行的动作见[支持范围](#支持范围) |
+| Agent 编排前端 | Cindy、Paseo、T3 Code、Orca、Herdr。按客户端会话或窗格找到对应引擎的原生记录，各前端支持的引擎与动作见[支持范围](#支持范围) |
+| 集成式 Agent 应用 | WorkBuddy、千问办公中国版。各产品的适配器管理其会话库、运行记录和界面引用。见[会话适配的模块边界](docs/adapters.md#会话适配的模块边界) |
 | 关联记录 | Magpie 可显式绑定到受支持的原生记录清理计划，纳入解析缓存、网关历史和回收站等数据。见 [Magpie 关联清理](docs/operation-cli.md#magpie-关联清理) |
 | 环境盘点与诊断 | Codex CLI、Codex Desktop、Claude Code、Pi Agent、Antigravity CLI、Antigravity Desktop／IDE、Cindy、Paseo、T3 Code |
 | 客户端运行数据维护 | 上述九个环境盘点对象，以及 Orca、Herdr、WorkBuddy 和千问办公中国版 |
@@ -319,8 +320,8 @@ T3、Paseo 和独立 Antigravity CLI 的写入使用已验证的 Windows 路径�
 
 | 层 | 本项目中的含义 |
 |---|---|
-| Frontend namespace | Cindy 自己的 owner、数据库、对话或会话 ID，以及它们到原生记录的 frontend reference/mapping |
-| Harness runtime | 实际运行的 Codex、Pi Agent 或 Claude Code harness、二进制路径和版本 |
+| Frontend namespace | 编排前端用来区分会话或窗格的标识，例如 Cindy 的 owner、数据库和会话 ID。前端引用把这些标识关联到具体引擎的原生记录 |
+| Harness runtime | 实际执行任务的 Agent 运行时，例如 Codex、Pi Agent、Claude Code 或 Antigravity CLI。接入时分别核实程序位置和数据目录 |
 | Native store | `CODEX_HOME`、Pi `session_root`、Claude Code config root 或独立 WorkBuddy profile root |
 | Native record | Codex 的 `(codex_home, thread_id)`、Pi 的 storage-qualified JSONL session、Claude Code 的 config-qualified session manifest、WorkBuddy 的 profile-qualified session |
 
