@@ -76,7 +76,8 @@ class NumberSelectionTests(unittest.TestCase):
         root_help = parser.format_help()
         self.assertEqual(parser.prog, "local-agent-manager")
         self.assertIn("local-agent-manager", root_help)
-        self.assertIn("检查前端残留", root_help)
+        self.assertIn("本地会话记录", root_help)
+        self.assertIn("前端引用", root_help)
         self.assertIn("用法：", root_help)
         self.assertIn("命令", root_help)
         self.assertIn("选项", root_help)
@@ -126,7 +127,7 @@ class NumberSelectionTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         rendered = completed.stdout.decode("utf-8", errors="strict")
         self.assertIn("用法：", rendered)
-        self.assertIn("检查前端残留", rendered)
+        self.assertIn("显示此帮助信息并退出", rendered)
 
     def test_invalid_explicit_codex_binary_is_rejected_before_scan(
         self,

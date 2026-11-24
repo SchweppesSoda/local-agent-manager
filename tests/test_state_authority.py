@@ -94,6 +94,7 @@ class StateAuthorityTests(unittest.TestCase):
         registration.mkdir(parents=True)
         (registration / "METADATA").write_text("Name: local-agent-manager\nVersion: 0.3.0\n", encoding="utf-8")
         (registration / "direct_url.json").write_text('{"url":"file:///missing"}', encoding="utf-8")
+        installation_stat = registration.parent.stat()
         distribution = metadata.PathDistribution(registration)
         with patch.object(metadata, "distribution", return_value=distribution):
             with self.assertRaisesRegex(OperationStoreError, "editable"):
@@ -106,6 +107,9 @@ class StateAuthorityTests(unittest.TestCase):
             duplicate = registration.parent / "local_agent_manager-0.4.0.dist-info"
             duplicate.mkdir()
             (duplicate / "METADATA").write_text("Name: local-agent-manager\nVersion: 0.4.0\n", encoding="utf-8")
+            (registration / "direct_url.json").write_bytes((bootstrap.DIST / "direct_url.json").read_bytes())
+            # Two installs can be observed within one directory timestamp tick.
+            os.utime(registration.parent, ns=(installation_stat.st_atime_ns, installation_stat.st_mtime_ns))
             with self.assertRaisesRegex(OperationStoreError, "exactly one"):
                 state_paths.manager_state_base()
         self.assertEqual(list(self.home.iterdir()), [])

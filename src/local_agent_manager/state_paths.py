@@ -43,7 +43,11 @@ def authoritative_checkout() -> Path:
             if distribution is None:
                 raise ValueError("an installed editable dist-info registration is required")
         location = Path(distribution.locate_file("")).resolve(strict=True)
-        matches = [item for item in metadata.distributions(path=[str(location)])
+        # Metadata discovery caches directory listings by mtime. Count the
+        # registrations on disk even if two installs share one timestamp.
+        registrations = (metadata.Distribution.at(path) for path in location.iterdir()
+                         if path.suffix.lower() in {".dist-info", ".egg-info"})
+        matches = [item for item in registrations
                    if re.sub(r"[-_.]+", "-", item.metadata.get("Name", "")).lower() == "local-agent-manager"]
         if len(matches) != 1:
             raise ValueError("exactly one local-agent-manager registration is required in the selected installation")
