@@ -12,6 +12,8 @@ surface its stderr phase/count events while keeping stdout as the JSON result.
   [Output](operation-cli.md#output), including its linked result contract.
   For official native stores, also read
   [Official Desktop inventory and completion](operation-cli.md#official-desktop-inventory-and-completion).
+- For records owned by another computer, use the [SSH execution-host workflow](operation-cli.md#remote-provider-records).
+  Review the owner, exact target, native dependencies and completion scope returned by its plan.
 - Native local-environment registrations: also read
   [native project cleanup](native-project-cleanup.md); project IDs are not thread IDs.
 - Standalone Antigravity CLI: read [native CLI cleanup](operation-cli.md#独立-antigravity-cli-原生清理).
@@ -103,7 +105,10 @@ and unknown Magpie children use the same status/verify and no-replay contract.
 7. Further work after verification needs a fresh plan and must remain within
    the user's authorized scope. Newly discovered actions are not authorized by
    an old plan. Report residuals only from authoritative discovery evidence;
-   otherwise report the capability boundary. `remote_delete=false` permits no remote writes.
+   otherwise report the capability boundary. `remote_delete=false` limits the adapter to its local stores.
+   An SSH operation requires a separately approved plan in the execution host's own checkout.
+   Its receipt covers the named physical stores on that host. A Cindy controller plan may read back
+   that receipt to authorize its own local frontend transaction.
 
 Keep the record, or delete the whole verified record and every approved copy;
 never offer `repair_index_path` or `quarantine_artifacts`. Shared-file rollback

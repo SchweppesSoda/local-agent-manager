@@ -264,8 +264,9 @@ def reference_from_session(session: Any, binding_key: str) -> ClientReference:
     )
     engine = normalize_engine(session.backend) if session.backend else None
     raw_backend = details.get("agent_kind", session.backend)
+    host = details.get("execution_host", "local")
     native_record = None
-    if engine == "codex" and session.thread_id:
+    if host == "local" and engine == "codex" and session.thread_id:
         native_record = RecordKey(StoreKey(engine, session.codex_home, kind="codex_home"), session.thread_id, kind="session")
     boundary = details.get("boundary_id")
     return ClientReference(
@@ -273,15 +274,18 @@ def reference_from_session(session: Any, binding_key: str) -> ClientReference:
         session.thread_id, raw_backend if isinstance(raw_backend, str) else None, engine, binding_key,
         native_record=native_record, kind=kind, lifecycle=lifecycle,
         source_locator=str(boundary or session.platform_session_id),
-        evidence_complete=True,
+        evidence_complete=host == "local", host=host,
+        path_namespace="local" if host == "local" else "opaque",
+        opaque_native_locator=details.get("remote_native_locator"),
     )
 
 
 def frontend_binding_key(session: Any) -> str:
-    """The existing v1 binding identity, shared without changing its encoding."""
-    return json.dumps(
-        (normalize_client(session.platform), canonical_path(session.database),
-         session.platform_session_id, normalize_engine(session.backend or "codex"), session.thread_id,
-         session.details.get("reference_kind", "current"), session.details.get("boundary_id")),
-        separators=(",", ":"),
-    )
+    """Keep local v1 keys stable and qualify foreign handles by the execution host."""
+    details = session.details
+    identity = (normalize_client(session.platform), canonical_path(session.database),
+                session.platform_session_id, normalize_engine(session.backend or "codex"), session.thread_id,
+                details.get("reference_kind", "current"), details.get("boundary_id"))
+    if details.get("execution_host", "local") != "local":
+        identity += (details["execution_host"], details.get("remote_native_locator"))
+    return json.dumps(identity, separators=(",", ":"))

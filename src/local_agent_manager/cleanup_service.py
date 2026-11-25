@@ -282,6 +282,7 @@ class CleanupContext:
         repr=False,
         compare=False,
     )
+    cindy_nonlocal_sessions: tuple[Any, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def report(self) -> ScanReport:

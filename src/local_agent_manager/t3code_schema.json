@@ -1147,7 +1147,281 @@
           "CREATE TABLE issue_tracker_bindings (\n      project_id TEXT PRIMARY KEY,\n      tracker TEXT NOT NULL,\n      scope TEXT NOT NULL,\n      updated_at TEXT NOT NULL\n    ) WITHOUT ROWID\n  "
         ]
       ]
+    },
+    {
+      "version": "0.1.13-nightly.20261125.5245",
+      "base_version": "0.1.11-nightly.20261119.4928",
+      "producer": "pingdotgg/t3code@1c3f0ee88fc75440e173704cf45eae4d15f2cf95, server migrations 100-118",
+      "remove": [],
+      "replace": [
+        [
+          "table",
+          "issue_tracker_bindings",
+          "issue_tracker_bindings",
+          "CREATE TABLE issue_tracker_bindings (\n      project_id TEXT PRIMARY KEY,\n      tracker TEXT NOT NULL,\n      scope TEXT NOT NULL,\n      updated_at TEXT NOT NULL\n    , additional_scopes TEXT NOT NULL DEFAULT '[]', account_id TEXT) WITHOUT ROWID\n  "
+        ],
+        [
+          "table",
+          "orchestration_v2_projection_threads",
+          "orchestration_v2_projection_threads",
+          "CREATE TABLE orchestration_v2_projection_threads (\n      thread_id TEXT PRIMARY KEY,\n      project_id TEXT NOT NULL,\n      title TEXT NOT NULL,\n      default_provider TEXT NOT NULL,\n      runtime_mode TEXT NOT NULL,\n      interaction_mode TEXT NOT NULL,\n      active_provider_thread_id TEXT,\n      created_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      archived_at TEXT,\n      deleted_at TEXT,\n      payload_json TEXT NOT NULL\n    , provider_instance_id TEXT, fork_run_ids_json TEXT)"
+        ],
+        [
+          "table",
+          "projection_projects",
+          "projection_projects",
+          "CREATE TABLE projection_projects (\n      project_id TEXT PRIMARY KEY,\n      title TEXT NOT NULL,\n      workspace_root TEXT NOT NULL,\n      scripts_json TEXT NOT NULL,\n      created_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      deleted_at TEXT\n    , default_model_selection_json TEXT, default_thread_env_mode TEXT, favicon_path TEXT, auto_pull INTEGER NOT NULL DEFAULT 0, project_icon_json TEXT, pinned_at TEXT, archived_at TEXT, has_custom_title INTEGER NOT NULL DEFAULT 0, tracked_folders_json TEXT NOT NULL DEFAULT '[]')"
+        ]
+      ],
+      "add": [
+        [
+          "index",
+          "agent_feedback_run_idx",
+          "agent_feedback",
+          "CREATE INDEX agent_feedback_run_idx ON agent_feedback(run_id, user_requested)"
+        ],
+        [
+          "index",
+          "idx_task_folders_real_root",
+          "task_folders",
+          "CREATE INDEX idx_task_folders_real_root ON task_folders (real_root)"
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_context_transfers_fork_idx",
+          "orchestration_v2_projection_context_transfers",
+          "CREATE INDEX orchestration_v2_projection_context_transfers_fork_idx\n    ON orchestration_v2_projection_context_transfers(target_thread_id)\n    WHERE type = 'fork'\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_messages_deferred_command_idx",
+          "orchestration_v2_projection_messages",
+          "CREATE INDEX orchestration_v2_projection_messages_deferred_command_idx\n    ON orchestration_v2_projection_messages(thread_id, created_at, message_id)\n    WHERE role = 'user' AND trim(json_extract(payload_json, '$.text'), ' \t\n\r\u000b\f                 　﻿') GLOB '/*'\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_messages_delegated_task_idx",
+          "orchestration_v2_projection_messages",
+          "CREATE INDEX orchestration_v2_projection_messages_delegated_task_idx\n    ON orchestration_v2_projection_messages(thread_id, created_at, message_id)\n    WHERE role = 'user' AND json_valid(payload_json) AND (\n  json_extract(payload_json, '$.notification.source.kind') = 'monitor'\n  OR json_extract(payload_json, '$.delegatedCompletion') IS NOT NULL\n)\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_run_attempts_superseded_idx",
+          "orchestration_v2_projection_run_attempts",
+          "CREATE INDEX orchestration_v2_projection_run_attempts_superseded_idx\n    ON orchestration_v2_projection_run_attempts(thread_id, run_id, root_node_id)\n    WHERE status = 'superseded'\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_runs_delegated_task_idx",
+          "orchestration_v2_projection_runs",
+          "CREATE INDEX orchestration_v2_projection_runs_delegated_task_idx\n    ON orchestration_v2_projection_runs(thread_id, json_extract(payload_json, '$.delegatedTaskId'))\n    WHERE json_valid(payload_json) AND json_extract(payload_json, '$.delegatedTaskId') IS NOT NULL\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_runs_hidden_items_idx",
+          "orchestration_v2_projection_runs",
+          "CREATE INDEX orchestration_v2_projection_runs_hidden_items_idx\n    ON orchestration_v2_projection_runs(thread_id, status, run_id)\n    WHERE status IN ('rolled_back', 'queued', 'cancelled')\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_subagents_routable_idx",
+          "orchestration_v2_projection_subagents",
+          "CREATE INDEX orchestration_v2_projection_subagents_routable_idx\n    ON orchestration_v2_projection_subagents(thread_id, subagent_id)\n    WHERE origin = 'provider_native' AND status = 'completed'\n  "
+        ],
+        [
+          "index",
+          "orchestration_v2_projection_threads_worktree_path_key_idx",
+          "orchestration_v2_projection_threads",
+          "CREATE INDEX orchestration_v2_projection_threads_worktree_path_key_idx\n    ON orchestration_v2_projection_threads(\n      CASE WHEN json_valid(payload_json)\n        THEN lower(rtrim(replace(trim(json_extract(payload_json, '$.worktreePath')), '\\', '/'), '/'))\n      END\n    )\n  "
+        ],
+        [
+          "index",
+          "workflow_mail_address",
+          "workflow_mail",
+          "CREATE INDEX workflow_mail_address ON workflow_mail (address)"
+        ],
+        [
+          "index",
+          "workflow_pool_places_pool",
+          "workflow_pool_places",
+          "CREATE INDEX workflow_pool_places_pool ON workflow_pool_places (pool, state, seq)"
+        ],
+        [
+          "index",
+          "workflow_runs_key",
+          "workflow_runs",
+          "CREATE UNIQUE INDEX workflow_runs_key ON workflow_runs (workflow, idempotency_key)"
+        ],
+        [
+          "index",
+          "workflow_runs_listed",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_listed ON workflow_runs (started_at)\n    WHERE NOT (status = 'skipped' AND parent_run_id IS NULL)\n  "
+        ],
+        [
+          "index",
+          "workflow_runs_parent",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_parent ON workflow_runs (parent_run_id)"
+        ],
+        [
+          "index",
+          "workflow_runs_skipped",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_skipped\n    ON workflow_runs (workflow, started_at)\n    WHERE status = 'skipped' AND parent_run_id IS NULL\n  "
+        ],
+        [
+          "index",
+          "workflow_runs_status_started",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_status_started ON workflow_runs (status, started_at)\n  "
+        ],
+        [
+          "index",
+          "workflow_runs_unfinished",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_unfinished ON workflow_runs (workflow, version)\n    WHERE ended_at IS NULL\n  "
+        ],
+        [
+          "index",
+          "workflow_runs_unpruned",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_unpruned ON workflow_runs (ended_at)\n    WHERE ended_at IS NOT NULL AND engine_pruned_at IS NULL\n  "
+        ],
+        [
+          "index",
+          "workflow_waits_key",
+          "workflow_waits",
+          "CREATE INDEX workflow_waits_key ON workflow_waits (workflow, key)"
+        ],
+        [
+          "table",
+          "agent_feedback",
+          "agent_feedback",
+          "CREATE TABLE agent_feedback (\n    id TEXT PRIMARY KEY, thread_id TEXT, run_id TEXT, created_at TEXT NOT NULL,\n    kind TEXT NOT NULL, subject TEXT NOT NULL, expected TEXT NOT NULL,\n    actual TEXT NOT NULL, workaround TEXT NOT NULL,\n    user_requested INTEGER NOT NULL DEFAULT 0, trace TEXT, source TEXT NOT NULL,\n    sent INTEGER NOT NULL DEFAULT 0\n  )"
+        ],
+        [
+          "table",
+          "issue_tracker_accounts",
+          "issue_tracker_accounts",
+          "CREATE TABLE issue_tracker_accounts (\n      tracker TEXT NOT NULL,\n      account_id TEXT NOT NULL,\n      created_at TEXT NOT NULL,\n      PRIMARY KEY (tracker, account_id)\n    ) WITHOUT ROWID\n  "
+        ],
+        [
+          "table",
+          "layout_command_approvals",
+          "layout_command_approvals",
+          "CREATE TABLE layout_command_approvals (\n      project_id TEXT NOT NULL,\n      kind TEXT NOT NULL,\n      command_hash TEXT NOT NULL,\n      approved_at TEXT NOT NULL,\n      PRIMARY KEY (project_id, kind)\n    )"
+        ],
+        [
+          "table",
+          "orchestration_v2_projection_thread_item_counts",
+          "orchestration_v2_projection_thread_item_counts",
+          "CREATE TABLE orchestration_v2_projection_thread_item_counts (\n      thread_id TEXT PRIMARY KEY,\n      item_count INTEGER NOT NULL\n    ) WITHOUT ROWID\n  "
+        ],
+        [
+          "table",
+          "task_folders",
+          "task_folders",
+          "CREATE TABLE task_folders (\n      root TEXT PRIMARY KEY,\n      real_root TEXT NOT NULL,\n      project_id TEXT NOT NULL,\n      project_root TEXT NOT NULL,\n      anchor TEXT NOT NULL,\n      project_path TEXT NOT NULL,\n      project_is_worktree INTEGER NOT NULL,\n      repositories_json TEXT NOT NULL DEFAULT '[]',\n      created_at TEXT NOT NULL\n    )"
+        ],
+        [
+          "table",
+          "workflow_hooks",
+          "workflow_hooks",
+          "CREATE TABLE workflow_hooks (\n      hook_id TEXT PRIMARY KEY,\n      token TEXT NOT NULL\n    )"
+        ],
+        [
+          "table",
+          "workflow_mail",
+          "workflow_mail",
+          "CREATE TABLE workflow_mail (\n      signal_id TEXT PRIMARY KEY,\n      address TEXT NOT NULL,\n      value_json TEXT NOT NULL,\n      expires_at TEXT NOT NULL\n    , sender_json TEXT)"
+        ],
+        [
+          "table",
+          "workflow_marks",
+          "workflow_marks",
+          "CREATE TABLE workflow_marks (\n      run_id TEXT NOT NULL,\n      name TEXT NOT NULL,\n      count INTEGER NOT NULL,\n      PRIMARY KEY (run_id, name)\n    )"
+        ],
+        [
+          "table",
+          "workflow_pool_places",
+          "workflow_pool_places",
+          "CREATE TABLE workflow_pool_places (\n      seq INTEGER PRIMARY KEY AUTOINCREMENT,\n      pool TEXT NOT NULL,\n      size INTEGER NOT NULL,\n      run_id TEXT NOT NULL,\n      name TEXT NOT NULL,\n      state TEXT NOT NULL,\n      UNIQUE (run_id, name)\n    )"
+        ],
+        [
+          "table",
+          "workflow_run_references",
+          "workflow_run_references",
+          "CREATE TABLE workflow_run_references (\n      run_id TEXT NOT NULL,\n      kind TEXT NOT NULL,\n      key TEXT NOT NULL,\n      address_json TEXT NOT NULL,\n      title TEXT NOT NULL,\n      url TEXT,\n      state TEXT,\n      steps_json TEXT NOT NULL,\n      origin TEXT NOT NULL,\n      noted_at TEXT NOT NULL,\n      PRIMARY KEY (run_id, kind, key)\n    )"
+        ],
+        [
+          "table",
+          "workflow_runs",
+          "workflow_runs",
+          "CREATE TABLE workflow_runs (\n      run_id TEXT PRIMARY KEY,\n      workflow TEXT NOT NULL,\n      version INTEGER NOT NULL,\n      engine_tag TEXT NOT NULL,\n      idempotency_key TEXT NOT NULL,\n      title TEXT NOT NULL,\n      status TEXT NOT NULL,\n      detail TEXT,\n      result_json TEXT,\n      pauses INTEGER NOT NULL DEFAULT 0,\n      started_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      ended_at TEXT,\n      -- What a run was started with, for the cleanup of a cancelled run whose body is gone.\n      input_json TEXT,\n      -- The run that invoked this one and the wait it sits in, so it hears how this one ended.\n      parent_run_id TEXT,\n      parent_wait TEXT,\n      -- A run its agent gave up on waits for a person: resuming starts the agent's whole job again.\n      held INTEGER NOT NULL DEFAULT 0,\n      -- When an ended run's engine journal was deleted; the run's own rows stay.\n      engine_pruned_at TEXT\n    , tags_json TEXT NOT NULL DEFAULT '[]')"
+        ],
+        [
+          "table",
+          "workflow_signals",
+          "workflow_signals",
+          "CREATE TABLE workflow_signals (\n      signal_id TEXT PRIMARY KEY,\n      kept_until TEXT NOT NULL\n    )"
+        ],
+        [
+          "table",
+          "workflow_steps",
+          "workflow_steps",
+          "CREATE TABLE workflow_steps (\n      run_id TEXT NOT NULL,\n      name TEXT NOT NULL,\n      kind TEXT NOT NULL,\n      status TEXT NOT NULL,\n      attempts INTEGER NOT NULL DEFAULT 0,\n      detail TEXT,\n      thread_id TEXT,\n      started_at TEXT NOT NULL,\n      ended_at TEXT,\n      -- The linked environment an agent step's thread is in; null for this one.\n      environment_id TEXT,\n      -- What a step produced, for a person reading the run. The engine keeps its own copy to replay.\n      result_json TEXT,\n      -- An agent that returns data also says something at the end; a person reads that first.\n      said TEXT,\n      -- The agent step's own turn, so cancelling its run stops that turn and not the whole thread.\n      turn_id TEXT,\n      PRIMARY KEY (run_id, name)\n    )"
+        ],
+        [
+          "table",
+          "workflow_store",
+          "workflow_store",
+          "CREATE TABLE workflow_store (\n      key TEXT PRIMARY KEY,\n      value_json TEXT NOT NULL,\n      updated_at TEXT NOT NULL\n    )"
+        ],
+        [
+          "table",
+          "workflow_triggers",
+          "workflow_triggers",
+          "CREATE TABLE workflow_triggers (\n      trigger_id TEXT PRIMARY KEY,\n      next_at TEXT NOT NULL\n    )"
+        ],
+        [
+          "table",
+          "workflow_waits",
+          "workflow_waits",
+          "CREATE TABLE workflow_waits (\n      run_id TEXT NOT NULL,\n      name TEXT NOT NULL,\n      workflow TEXT NOT NULL,\n      token TEXT NOT NULL,\n      key TEXT,\n      schema_json TEXT NOT NULL,\n      request_json TEXT,\n      deadline TEXT,\n      opened_at TEXT NOT NULL,\n      signalled_at TEXT,\n      -- What the engine itself looks at to end this wait, such as a pull request's checks.\n      watch_json TEXT,\n      -- What a wait was woken with, kept until the run is past it, so a wake lost to a crash is redone.\n      woke_json TEXT,\n      PRIMARY KEY (run_id, name)\n    )"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_thread_item_counts_count_delete",
+          "orchestration_v2_projection_turn_item_counts",
+          "CREATE TRIGGER orchestration_v2_thread_item_counts_count_delete\n    AFTER DELETE ON orchestration_v2_projection_turn_item_counts\n    WHEN old.run_key = ''\n      OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE run_id = old.run_key)\n    BEGIN\n      UPDATE orchestration_v2_projection_thread_item_counts\n      SET item_count = item_count - old.item_count\n      WHERE thread_id = old.thread_id;\n      DELETE FROM orchestration_v2_projection_thread_item_counts\n      WHERE thread_id = old.thread_id AND item_count <= 0;\n    END"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_thread_item_counts_count_insert",
+          "orchestration_v2_projection_turn_item_counts",
+          "CREATE TRIGGER orchestration_v2_thread_item_counts_count_insert\n    AFTER INSERT ON orchestration_v2_projection_turn_item_counts\n    WHEN new.run_key = ''\n      OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE run_id = new.run_key)\n    BEGIN\n      INSERT INTO orchestration_v2_projection_thread_item_counts (thread_id, item_count)\n      VALUES (new.thread_id, new.item_count)\n      ON CONFLICT (thread_id) DO UPDATE SET item_count = item_count + excluded.item_count;\n    END"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_thread_item_counts_count_update",
+          "orchestration_v2_projection_turn_item_counts",
+          "CREATE TRIGGER orchestration_v2_thread_item_counts_count_update\n    AFTER UPDATE ON orchestration_v2_projection_turn_item_counts\n    BEGIN\n      UPDATE orchestration_v2_projection_thread_item_counts\n      SET item_count = item_count - old.item_count\n      WHERE thread_id = old.thread_id\n        AND (old.run_key = ''\n          OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE run_id = old.run_key));\n      INSERT INTO orchestration_v2_projection_thread_item_counts (thread_id, item_count)\n      SELECT new.thread_id, new.item_count\n      WHERE new.run_key = ''\n        OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE run_id = new.run_key)\n      ON CONFLICT (thread_id) DO UPDATE SET item_count = item_count + excluded.item_count;\n      DELETE FROM orchestration_v2_projection_thread_item_counts\n      WHERE thread_id = old.thread_id AND item_count <= 0;\n    END"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_thread_item_counts_run_delete",
+          "orchestration_v2_projection_runs",
+          "CREATE TRIGGER orchestration_v2_thread_item_counts_run_delete\n    AFTER DELETE ON orchestration_v2_projection_runs\n    BEGIN\n      UPDATE orchestration_v2_projection_thread_item_counts\n      SET item_count = item_count - (\n        SELECT COUNT(*)\n        FROM orchestration_v2_projection_turn_items item\n        WHERE item.run_id = old.run_id\n          AND item.thread_id = orchestration_v2_projection_thread_item_counts.thread_id\n      )\n      WHERE thread_id IN (\n        SELECT thread_id FROM orchestration_v2_projection_turn_items WHERE run_id = old.run_id\n      );\n      DELETE FROM orchestration_v2_projection_thread_item_counts\n      WHERE item_count <= 0 AND thread_id IN (\n        SELECT thread_id FROM orchestration_v2_projection_turn_items WHERE run_id = old.run_id\n      );\n    END"
+        ],
+        [
+          "trigger",
+          "orchestration_v2_thread_item_counts_run_insert",
+          "orchestration_v2_projection_runs",
+          "CREATE TRIGGER orchestration_v2_thread_item_counts_run_insert\n    AFTER INSERT ON orchestration_v2_projection_runs\n    BEGIN\n      INSERT INTO orchestration_v2_projection_thread_item_counts (thread_id, item_count)\n      SELECT thread_id, COUNT(*)\n      FROM orchestration_v2_projection_turn_items\n      WHERE run_id = new.run_id\n      GROUP BY thread_id\n      ON CONFLICT (thread_id) DO UPDATE SET item_count = item_count + excluded.item_count;\n    END"
+        ]
+      ]
     }
   ],
-  "reference_guard_base_version": "0.1.11-nightly.20261119.4928"
+  "reference_guard_versions": ["0.1.11-nightly.20261119.4928", "0.1.13-nightly.20261125.5245"]
 }

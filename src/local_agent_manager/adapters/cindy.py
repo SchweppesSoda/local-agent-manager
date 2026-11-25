@@ -130,6 +130,9 @@ class CindyAdapter(FrontendAdapter):
                     "created_at": (reference.session_details or {}).get("created_at"),
                     "parent_session_id": (reference.session_details or {}).get("parent_session_id"),
                     "working_dir": reference.working_dir,
+                    **({"execution_host": reference.execution_host,
+                        "remote_native_locator": reference.remote_native_locator}
+                       if reference.execution_host != "local" else {}),
                     "reference_kind": reference.reference_kind,
                     "historical": reference.is_historical,
                     "boundary_id": reference.boundary_id,
@@ -300,13 +303,15 @@ class CindyAdapter(FrontendAdapter):
         if not self.database.is_file():
             return []
         references = self._references()
+        unresolved = {r.remote_native_locator for r in references
+                      if r.execution_host == "unknown" and r.remote_native_locator}
         live_references = [
             reference
             for reference in references
             if reference.is_live and reference.native_session_id is not None
         ]
         self._replace_live_thread_ids(
-            {reference.native_session_id for reference in live_references if reference.native_session_id}
+            {reference.native_session_id for reference in live_references if reference.native_session_id} | unresolved
         )
         rows = [
             reference
@@ -362,6 +367,7 @@ class CindyAdapter(FrontendAdapter):
             blocked_reasons = [
                 reason
                 for reason in (
+                    "Cindy retains this ID under an unresolved execution host." if thread_id in unresolved else None,
                     (
                         "Cindy identifies the session as Codex, but the rollout "
                         "has a foreign originator."
@@ -391,6 +397,7 @@ class CindyAdapter(FrontendAdapter):
             blocker_codes = [
                 code
                 for code, blocked in (
+                    ("cindy_execution_host_required", thread_id in unresolved),
                     (IDENTITY_CONFLICT, ownership_conflict),
                     (LIVE_FRONTEND_REFERENCE, bool(live_reference_count)),
                     (CASCADE_REQUIRES_EXPLICIT_SCOPE, bool(descendants)),
@@ -398,11 +405,7 @@ class CindyAdapter(FrontendAdapter):
                 )
                 if blocked
             ]
-            cleanable = (
-                not ownership_conflict
-                and live_reference_count == 0
-                and cascade_safe
-            )
+            cleanable = not blocker_codes
             frontend_reference = _cindy_reference_evidence(reference)
             findings.append(
                 Finding(
@@ -513,7 +516,8 @@ def _cindy_reference_evidence(
 ) -> dict[str, object]:
     historical = reference.reference_kind == "agent_switch"
     exact = bool(
-        reference.session_schema_fingerprint
+        reference.execution_host == "local"
+        and reference.session_schema_fingerprint
         and reference.session_row_fingerprint
         and (
             not historical
@@ -565,7 +569,7 @@ def _cindy_session_evidence(
     status = _normalized_string(reference.session_status)
     terminal = status == "deleted"
     exact = bool(
-        terminal
+        reference.execution_host == "local" and terminal
         and reference.session_schema_fingerprint
         and reference.session_row_fingerprint
     )

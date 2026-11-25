@@ -8,6 +8,9 @@ def main(argv=None):
         print("This command has been removed. Use local-agent-manager.", file=sys.stderr)
         return 2
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["remote-worker"]:
+        from .remote_records import worker
+        return worker(sys.stdin.buffer, sys.stdout.buffer)
     if arguments == ["--version"]:
         from . import __version__
         print(__version__)

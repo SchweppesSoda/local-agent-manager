@@ -8,7 +8,6 @@ returning fewer references.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import stat
 from contextlib import closing
@@ -17,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .sqlite_utils import connect_readonly, table_exists
-from .providers.t3 import _unique_object
+from .providers.t3 import strict_json
 from .sqlite_identity import (
     row_fingerprint,
     schema_fingerprint,
@@ -64,6 +63,8 @@ class CindyNativeReference:
     message_schema_fingerprint: str | None = None
     message_row_fingerprint: str | None = None
     message_content_sha256: str | None = None
+    execution_host: str = "local"
+    remote_native_locator: str | None = None
 
     @property
     def is_live(self) -> bool:
@@ -84,6 +85,8 @@ class CindyNativeReference:
             "session_updated_at_ms": self.session_updated_at_ms,
             "backend": self.backend,
             "native_session_id": self.native_session_id,
+            **({"execution_host": self.execution_host, "remote_native_locator": self.remote_native_locator}
+               if self.execution_host != "local" else {}),
             "reference_kind": self.reference_kind,
             "agent_kind": self.agent_kind,
             "boundary_id": self.boundary_id,
@@ -216,7 +219,7 @@ def build_cindy_reference_catalog(
                     SELECT *
                     FROM messages
                     WHERE role = 'agent_switch'
-                    ORDER BY created_at, id
+                    ORDER BY created_at, rowid
                     """
                 ).fetchall()
             else:
@@ -254,28 +257,21 @@ def build_cindy_reference_catalog(
             )
 
         seen_message_ids: set[str] = set()
-        for row in switch_rows:
+        for row, payload, host in switch_hosts(sessions, switch_rows):
             message_id = _required_string(row["id"], "messages.id")
             if message_id in seen_message_ids:
                 raise CindyReferenceError("messages.id is duplicated")
             seen_message_ids.add(message_id)
             session_id = _required_string(row["session_id"], "messages.session_id")
             session = sessions.get(session_id)
-            if session is None:
-                raise CindyReferenceError(
-                    "agent_switch row refers to a missing Cindy session"
-                )
-            payload = _switch_payload(row["content"])
             kind = _agent_kind(payload.get("fromAgentKind"), "agent_switch.fromAgentKind")
-            if "fromSdkSessionId" not in payload:
-                # Exact cleanup deliberately removes this one binding field
-                # while retaining the switch message and its other metadata.
-                continue
             native_id = _optional_native_id(
                 payload.get("fromSdkSessionId"), "agent_switch.fromSdkSessionId"
             )
             backend = backend_for_agent_kind(kind)
-            if native_id is None:
+            # A cleared local binding has no native target. A foreign boundary
+            # still records a device move even when no native ID survived.
+            if native_id is None and host == "local":
                 continue
             references.append(
                 _reference(
@@ -285,6 +281,7 @@ def build_cindy_reference_catalog(
                     backend=backend,
                     agent_kind=kind,
                     native_session_id=native_id,
+                    host=host,
                     reference_kind="agent_switch",
                     boundary_id=message_id,
                     boundary_created_at_ms=_optional_int(row["created_at"], "messages.created_at"),
@@ -329,10 +326,13 @@ def _reference(
     message_row: sqlite3.Row | None = None,
     message_schema_hash: str | None = None,
     message_column_order: tuple[str, ...] = (),
+    host: str | None = None,
 ) -> CindyNativeReference:
     message_content = (
         message_row["content"] if message_row is not None else None
     )
+    if host is None:
+        host = execution_host(session)
     return CindyNativeReference(
         database=database,
         profile_root=root,
@@ -347,7 +347,9 @@ def _reference(
             "sessions.updated_at",
         ),
         backend=backend,
-        native_session_id=native_session_id,
+        native_session_id=native_session_id if host == "local" else None,
+        execution_host=host,
+        remote_native_locator=native_session_id if host != "local" else None,
         reference_kind=reference_kind,
         agent_kind=agent_kind,
         boundary_id=boundary_id,
@@ -382,11 +384,59 @@ def _row_value(row: sqlite3.Row, name: str) -> Any:
     return row[name] if name in row.keys() else None
 
 
+def execution_host(session: sqlite3.Row, switch: Mapping[str, Any] | None = None,
+                   *, relocated: bool = False) -> str:
+    """The task's frontend location and its provider's execution location can differ."""
+    ssh = _row_value(session, "remote_host_id")
+    device = _row_value(session, "agent_device_id")
+    if ssh is not None:
+        if device is not None or switch is not None:
+            return "unknown"
+        return "ssh:" + _required_string(ssh, "sessions.remote_host_id")
+    if switch is not None:
+        if "fromAgentDeviceId" not in switch:
+            return "unknown" if relocated or device is not None else "local"
+        device = switch["fromAgentDeviceId"]
+    if device is None:
+        return "local"
+    device = _required_string(device, "agent device ID")
+    return device if device.startswith("share:") else "device:" + device
+
+
+def switch_hosts(sessions, switch_rows):
+    """Walk parked handles newest first to locate older, unqualified boundaries."""
+    relocated = set()
+    for row in reversed(switch_rows):
+        sid = row["session_id"]
+        if sid not in sessions:
+            raise CindyReferenceError("agent_switch row refers to a missing Cindy session")
+        payload = _switch_payload(row["content"])
+        if "toAgentDeviceId" in payload or payload.get("fromAgentDeviceId") is not None:
+            relocated.add(sid)
+        yield row, payload, execution_host(sessions[sid], payload, relocated=sid in relocated)
+
+
+def nonlocal_bindings(db, sessions):
+    """Recheck execution location inside the writer's own SQLite transaction."""
+    result = {(sid, None) for sid, row in sessions.items() if execution_host(row) != "local"}
+    if not sessions or not table_exists(db, "messages"):
+        return result
+    marks = ",".join("?" for _ in sessions)
+    switches = db.execute(
+        f"SELECT id, session_id, content FROM messages WHERE role='agent_switch' "
+        f"AND session_id IN ({marks}) ORDER BY created_at, rowid", tuple(sessions),
+    ).fetchall()
+    for row, _, host in switch_hosts(sessions, switches):
+        if host != "local":
+            result.add((row["session_id"], row["id"]))
+    return result
+
+
 def _switch_payload(value: object) -> Mapping[str, Any]:
     if not isinstance(value, str):
         raise CindyReferenceError("agent_switch content is not JSON text")
     try:
-        payload = json.loads(value, object_pairs_hook=_unique_object)
+        payload = strict_json(value)
     except (ValueError, UnicodeError) as exc:
         raise CindyReferenceError("agent_switch content is malformed JSON") from exc
     if not isinstance(payload, Mapping):

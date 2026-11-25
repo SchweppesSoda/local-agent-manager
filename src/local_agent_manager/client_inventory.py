@@ -1880,6 +1880,8 @@ def _retarget_target(
     target: ClientTarget,
     capability: EngineCapability,
 ) -> ClientTarget:
+    if "cindy_execution_host_required" in target.blocker_codes:
+        return target
     native_action_prefixes = (
         "record:v1:",
         "pi-session:v1:",
@@ -2082,6 +2084,8 @@ def _session_project(
     session: FrontendSessionRecord,
 ) -> ProjectKey | None:
     details = dict(session.details)
+    if str(details.get("execution_host", "")).startswith("ssh:") or details.get("execution_host") == "unknown":
+        return None
     project_id = _first_string(
         details, "project_id", "projectId", "project_key", "projectKey"
     )
@@ -2286,6 +2290,20 @@ def _target_from_frontend(
     record_key = None
     project = _session_project(client, session)
     capability = _capability_for(client, engine)
+    if session.details.get("execution_host", "local") != "local":
+        reason = "Cindy native history belongs to the provider's execution host"
+        capability = EngineCapability(client, engine, verify=False, reason=reason,
+            blockers=({"blocker_code": "cindy_execution_host_required", "message": reason},))
+        key = _frontend_binding_key(session)
+        return ClientTarget(
+            client=client, engine=engine, record_key=None, project_key=project, native_thread_id=None,
+            frontend_reference_ids=(f"{session.platform}:{session.platform_session_id}",),
+            frontend_selection_id=session.platform_session_id, frontend_binding_keys=(key,),
+            references=(reference_from_session(session, key),), classification=RecordClassification.UNVERIFIED,
+            capability=capability, blocker_codes=capability.blocker_codes, blockers=capability.blockers,
+            record_metadata={"execution_host": session.details["execution_host"], "session_status": session.status,
+                             "working_dir": session.details.get("working_dir"), "boundary_id": session.details.get("boundary_id")},
+        )
     return ClientTarget(
         client=client,
         engine=engine,

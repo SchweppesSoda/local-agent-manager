@@ -155,7 +155,8 @@ class OrcaAdapter:
                     native_record=RecordKey(store, handle.native_id) if store is not None else None,
                     kind=kind, lifecycle=ReferenceLifecycle.HISTORICAL if kind is ReferenceKind.HISTORY else ReferenceLifecycle.UNKNOWN,
                     source_locator=locator, evidence_complete=complete,
-                    host=record.host, path_namespace="wsl" if record.wsl_distro is not None else "local",
+                    host=record.host, path_namespace=("wsl" if record.wsl_distro is not None else
+                                                     "opaque" if record.host != "local" else "local"),
                     opaque_native_locator=record.home_locator if store is None else None,
                 ))
 

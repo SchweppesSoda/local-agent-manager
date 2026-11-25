@@ -18,6 +18,7 @@ from typing import Any
 from .sqlite_identity import row_fingerprint, schema_fingerprint, table_schema
 from .sqlite_utils import connect_readonly
 from .cindy_schema import CindySchemaError, guard_cindy_session_schema
+from .cindy_references import nonlocal_bindings
 
 
 # Retained rows require explicit per-session authorization frozen in the plan.
@@ -68,6 +69,7 @@ class CindySessionDeleteEvidence:
     table: str = "sessions"
     explicit_unbound_active: bool = False
     explicitly_selected: bool = False
+    remote_native: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         database = Path(self.database).expanduser().absolute()
@@ -119,6 +121,7 @@ class CindySessionDeleteEvidence:
             "expected_status": self.expected_status,
             "explicit_unbound_active": self.explicit_unbound_active,
             "explicitly_selected": self.explicitly_selected,
+            **({"remote_native": self.remote_native} if self.remote_native else {}),
             "session_schema_fingerprint": self.session_schema_fingerprint,
             "session_row_fingerprint": self.session_row_fingerprint,
             "stable_session_row_fingerprint": self.stable_session_row_fingerprint,
@@ -187,7 +190,8 @@ def build_cindy_session_delete_evidence(
     with closing(_connect(database, readonly=True, vector_extension=vector_extension)) as db:
         current = _snapshot(db, ids, explicit_active_ids={
             seed["session_id"] for seed in seeds if seed.get("explicit_unbound_active") is True
-        }, explicitly_selected_ids={seed["session_id"] for seed in seeds if seed["explicitly_selected"]})
+        }, explicitly_selected_ids={seed["session_id"] for seed in seeds if seed["explicitly_selected"]},
+            remote_proofs={s["session_id"]: s["remote_native"] for s in seeds if s.get("remote_native")})
     for item in current:
         seed = by_id[item.session_id]
         if item.expected_status != seed["expected_status"]:
@@ -218,9 +222,14 @@ def guard_cindy_session_rows(
     with closing(_connect(database, readonly=True, vector_extension=vector_extension)) as db:
         current = _snapshot(db, ids, explicit_active_ids={
             item.session_id for item in evidence if item.explicit_unbound_active
-        }, explicitly_selected_ids={item.session_id for item in evidence if item.explicitly_selected})
+        }, explicitly_selected_ids={item.session_id for item in evidence if item.explicitly_selected},
+            remote_proofs={i.session_id: i.remote_native for i in evidence if i.remote_native})
         _assert_same(evidence, current)
         _guard_non_cascade_references(db, ids)
+    for item in evidence:
+        if item.remote_native:
+            from .cindy_remote import verify_native
+            verify_native(item.remote_native)
     return current
 
 
@@ -257,6 +266,8 @@ def execute_cindy_session_cleanup(
         raise FrontendSessionGuardError(
             "Cindy session deletion requires owner_client=cindy"
         )
+    if any(item.remote_native and process_root != Path(item.remote_native["profile_root"]) for item in evidence):
+        raise FrontendSessionGuardError("cindy_ssh_controller_scope_mismatch")
     guard_cindy_session_rows(evidence, vector_extension=vector_extension)
     # Take one operation/client process snapshot after the complete read-only
     # evidence guard and before creating a rollback copy or opening a write
@@ -277,7 +288,8 @@ def execute_cindy_session_cleanup(
         db.execute("BEGIN IMMEDIATE")
         _assert_same(evidence, _snapshot(db, ids, explicit_active_ids={
             item.session_id for item in evidence if item.explicit_unbound_active
-        }, explicitly_selected_ids={item.session_id for item in evidence if item.explicitly_selected}))
+        }, explicitly_selected_ids={item.session_id for item in evidence if item.explicitly_selected},
+            remote_proofs={i.session_id: i.remote_native for i in evidence if i.remote_native}))
         _guard_non_cascade_references(db, ids)
         messages, vector_rows = _dependent_ids(db, ids)
         if transaction_guard is not None:
@@ -473,6 +485,7 @@ def _snapshot(
     ids: Sequence[str],
     *, explicit_active_ids: set[str] | None = None,
     explicitly_selected_ids: set[str] | frozenset[str] = frozenset(),
+    remote_proofs: Mapping[str, Any] | None = None,
 ) -> tuple[CindySessionDeleteEvidence, ...]:
     try:
         guard_cindy_session_schema(db)
@@ -490,6 +503,14 @@ def _snapshot(
     bundle_hash = _schema_hash(db)
     if not _has(db, "messages"):
         raise FrontendSessionGuardError("Unsupported Cindy schema: messages is missing")
+    remote_proofs = remote_proofs or {}
+    if remote_proofs:
+        from .cindy_remote import guard_row
+        if set(remote_proofs) != set(ids) or len(ids) != 1 or set(ids) != explicitly_selected_ids:
+            raise FrontendSessionGuardError("cindy_ssh_exact_frontend_scope_required")
+        guard_row(db, rows[0], remote_proofs[ids[0]])
+    elif nonlocal_bindings(db, {row["id"]: row for row in rows}):
+        raise FrontendSessionGuardError("cindy_execution_host_required")
     marks = ",".join("?" for _ in ids)
     message_rows = tuple(
         db.execute(
@@ -590,6 +611,7 @@ def _snapshot(
                 database=database,
                 session_id=session_id,
                 expected_status=status,
+                remote_native=remote_proofs.get(session_id),
                 explicit_unbound_active=explicit_active,
                 explicitly_selected=session_id in explicitly_selected_ids,
                 session_schema_fingerprint=schema_hash,
@@ -749,6 +771,7 @@ def _normalize_seeds(records: Sequence[Mapping[str, Any]]) -> tuple[dict[str, An
             "expected_status": status,
             "explicit_unbound_active": explicit_active,
             "explicitly_selected": explicit,
+            "remote_native": raw.get("remote_native"),
             "session_schema_fingerprint": raw.get("session_schema_fingerprint"),
             "session_row_fingerprint": raw.get("session_row_fingerprint"),
         }
@@ -775,6 +798,7 @@ def _normalize_evidence(
                 expected_status=str(raw.get("expected_status") or ""),
                 explicit_unbound_active=raw.get("explicit_unbound_active") is True,
                 explicitly_selected=raw.get("explicitly_selected") is True,
+                remote_native=raw.get("remote_native"),
                 session_schema_fingerprint=str(raw.get("session_schema_fingerprint") or ""),
                 session_row_fingerprint=str(raw.get("session_row_fingerprint") or ""),
                 stable_session_row_fingerprint=str(

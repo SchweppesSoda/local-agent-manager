@@ -84,6 +84,30 @@ class CindyReferenceTests(unittest.TestCase):
         self.root = Path(temporary_directory.name)
         self.database = self.root / "cindy.db"
 
+    def test_executor_identity_survives_moves_rewinds_and_shared_handles(self) -> None:
+        create_database(self.database, [("moved", "same", "active", "codex"), ("ssh", "same", "deleted", "codex"),
+                                        ("local", "same", "active", "codex"), ("shared", "pi-id", "active", "pi")],
+                        [("old", "moved", {"fromAgentKind": "codex", "fromSdkSessionId": "same"}, 10, None),
+                         ("left", "moved", {"fromAgentKind": "pi", "fromSdkSessionId": "/foreign/file.jsonl",
+                          "fromAgentDeviceId": "laptop", "toAgentDeviceId": None}, 20, 40),
+                         ("back", "moved", {"fromAgentKind": "cc", "fromSdkSessionId": "cc-id",
+                          "fromAgentDeviceId": None, "toAgentDeviceId": "desk"}, 30, None)])
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("ALTER TABLE sessions ADD COLUMN remote_host_id TEXT")
+            db.execute("ALTER TABLE sessions ADD COLUMN agent_device_id TEXT")
+            db.execute("UPDATE sessions SET remote_host_id='lab' WHERE id='ssh'")
+            db.execute("UPDATE sessions SET agent_device_id='desk' WHERE id='moved'")
+            db.execute("UPDATE sessions SET agent_device_id='share:invitation' WHERE id='shared'")
+            db.commit()
+        catalog = build_cindy_reference_catalog(self.database)
+        self.assertFalse(catalog.failures)
+        actual = {(r.cindy_session_id, r.boundary_id): (r.execution_host, r.native_session_id, r.remote_native_locator)
+                  for r in catalog.references}
+        self.assertEqual(actual, {("moved", None): ("device:desk", None, "same"),
+            ("moved", "old"): ("unknown", None, "same"), ("moved", "left"): ("device:laptop", None, "/foreign/file.jsonl"),
+            ("moved", "back"): ("local", "cc-id", None), ("ssh", None): ("ssh:lab", None, "same"),
+            ("shared", None): ("share:invitation", None, "pi-id"), ("local", None): ("local", "same", None)})
+
     def test_current_and_all_parked_references_are_preserved(self) -> None:
         create_database(
             self.database,

@@ -5,6 +5,7 @@ Its caller must qualify those stores, files, UI caches and writer exclusion.
 Evidence contains IDs, counts and digests; private cells stay inside SQLite.
 """
 from contextlib import closing, contextmanager
+import json
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,7 @@ from .t3code_store import CONTRACT, RELATIVE, V2, T3CodeError, database_path, fa
 
 SCHEMA = "larj.t3code-database.v1"
 TURN_ITEM_COUNTS = V2 + "turn_item_counts"
+THREAD_ITEM_COUNTS = V2 + "thread_item_counts"
 THREAD_TABLES = (
     "mcp_app_model_context", "projection_thread_messages", "projection_thread_pull_requests",
     "projection_thread_sessions", "provider_session_runtime", "projection_threads",
@@ -33,14 +35,48 @@ THREAD_TABLES = (
 
 
 def _thread_tables(db):
-    # When present, remove exact counts before turn-item triggers can change them.
-    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (TURN_ITEM_COUNTS,)).fetchone():
-        return (TURN_ITEM_COUNTS, *THREAD_TABLES)
-    return THREAD_TABLES
+    # Remove thread totals before per-run totals, then their source rows.
+    counts = {r[0] for r in db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name IN (?,?)",
+                                       (THREAD_ITEM_COUNTS, TURN_ITEM_COUNTS))}
+    return (*(t for t in (THREAD_ITEM_COUNTS, TURN_ITEM_COUNTS) if t in counts), *THREAD_TABLES)
 
 
 def _where(column, ids):
     return column + " IN (" + ",".join("?" for _ in ids) + ")"
+
+
+def _guard_workflow_references(db, ids, handles, *, frozen_runs=()):
+    """Workflows carry cross-environment thread and turn IDs. Forks may share runs."""
+    if not db.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_steps' AND type='table'").fetchone():
+        return ()
+    where = _where("thread_id", ids)
+    runs = tuple(sorted(set(frozen_runs) | {identifier(row["run_id"]) for row in
+        rows(db, f"SELECT run_id FROM {V2}runs WHERE {where}", ids)}))
+    # A fork may read another thread's history by run ID or by timestamp.
+    # The existing thread-lineage guard covers the latter. Explicit membership
+    # must also be internal to the selection before its histories are removed.
+    if db.execute(f"""SELECT 1 FROM {V2}threads t, json_each(t.fork_run_ids_json) r
+                      WHERE {where} AND NOT EXISTS (SELECT 1 FROM {V2}runs owned
+                          WHERE owned.run_id=r.value AND {_where("owned.thread_id",ids)}) LIMIT 1""",
+                  (*ids, *ids)).fetchone():
+        fail("shared_fork_history")
+    if runs:
+        frozen_run_ids = json.dumps(runs)
+        for table, column in ((V2 + "turn_items", "run_id"), (TURN_ITEM_COUNTS, "run_key")):
+            if db.execute(f"""SELECT 1 FROM {table} WHERE NOT ({where})
+                              AND {column} IN (SELECT value FROM json_each(?)) LIMIT 1""",
+                          (*ids, frozen_run_ids)).fetchone():
+                fail("shared_fork_history")
+    extra = [r[0] for r in db.execute("""SELECT name FROM sqlite_schema WHERE type='table'
+             AND (name GLOB 'workflow_*' OR name IN ('agent_feedback','task_folders','layout_command_approvals'))""")]
+    protected = {*ids, *handles, *runs}
+    occupied = [(table, "1", ()) for table in extra if db.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()]
+    require_no_references(db, protected, rows=occupied,
+                          code="t3code_workflow_or_feedback_reference")
+    if runs:
+        require_no_references(db, runs, rows=[(V2 + "threads", f"NOT ({where})", ids)], json_only=True,
+                              code="t3code_shared_fork_history")
+    return runs
 
 
 def _check(db):
@@ -92,6 +128,7 @@ def receipt_closure(db, ids):
     ids = tuple(sorted({identifier(i) for i in ids}))
     if not ids:
         fail('empty_selection')
+    _guard_workflow_references(db, ids, ())
     for table, column in [*((t, 'thread_id') for t in _thread_tables(db)),
                           ('scheduled_tasks', 'thread_id'), ('orchestration_events', 'stream_id'),
                           (V2 + 'context_transfers', 'source_thread_id'),
@@ -187,6 +224,7 @@ def closure(db, ids, *, native_ids=(), receipt_only=False):
     if active:
         fail("pending_effects")
     protected_ids = tuple(sorted(set(ids) | set(native_ids) | {native_id for _, native_id in native_refs}))
+    linked_runs = _guard_workflow_references(db, ids, protected_ids)
     # One scanner/policy is shared with the cross-client after-image guard.
     # Ownership predicates determine which rows survive, never text matches.
     retained = [(table, 'NOT (' + predicate + ')', args)
@@ -201,6 +239,8 @@ def closure(db, ids, *, native_ids=(), receipt_only=False):
                           code='t3code_shared_provider_session_restore_reference')
     result = {"counts": counts, "provider_session_ids": sorted(owned_sessions),
               "native_references": [{"driver": d, "native_id": i} for d, i in sorted(native_refs)]}
+    if linked_runs:
+        result["linked_run_ids"] = list(linked_runs)
     if shared:
         result['preserved_provider_session_ids'] = sorted(shared)
     if owner_updates:
@@ -266,6 +306,9 @@ def validate(evidence):
         fail('database_evidence_invalid')
     ids = evidence.get("thread_ids")
     if not isinstance(ids, list) or not ids or ids != sorted({identifier(i) for i in ids}):
+        fail("database_evidence_invalid")
+    runs = evidence.get("linked_run_ids", [])
+    if not isinstance(runs, list) or runs != sorted({identifier(r) for r in runs}):
         fail("database_evidence_invalid")
     native_ids = evidence.get('protected_native_ids', [])
     if (not isinstance(native_ids, list) or any(not isinstance(i, str) or not i or '\0' in i for i in native_ids)
@@ -347,6 +390,9 @@ def remaining(evidence, *, terminal_verified=False, compact=False):
     with closing(connect_readonly(path)) as db:
         db.execute("BEGIN")
         _check(db)
+        _guard_workflow_references(db, ids,
+            [*evidence.get("protected_native_ids", ()), *(r["native_id"] for r in evidence["native_references"])],
+            frozen_runs=evidence.get("linked_run_ids", ()))
         remaining_count = 0
         for table in _thread_tables(db):
             remaining_count += db.execute(f'SELECT count(*) FROM "{table}" WHERE {_where("thread_id",ids)}', ids).fetchone()[0]

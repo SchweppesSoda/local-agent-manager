@@ -117,6 +117,7 @@ def build_claude_profile_catalog(
     default_root = Path.home() / ".claude"
     qualified_references: list[dict[str, Any]] = []
     reference_failures: list[Any] = []
+    unresolved_ids = set()
     seen_databases: set[str] = set()
     for profile in profiles:
         database_key = _path_identity(profile.database)
@@ -128,7 +129,10 @@ def build_claude_profile_catalog(
             reference_catalog = build_cindy_reference_catalog(
                 profile.database, profile_root=profile.root,
             )
-        cc_references = tuple(reference_catalog.for_backend("claude"))
+        cc_references = tuple(ref for ref in reference_catalog.for_backend("claude")
+                              if ref.execution_host == "local")
+        unresolved_ids.update(ref.remote_native_locator for ref in reference_catalog.for_backend("claude")
+                              if ref.execution_host == "unknown" and ref.remote_native_locator)
         dedicated_root = profile.root / "claude-home"
         try:
             dedicated_exists = dedicated_root.is_dir()
@@ -222,6 +226,11 @@ def build_claude_profile_catalog(
         frontend_references=qualified_references,
         reference_errors=reference_failures,
     )
+    if unresolved_ids:
+        catalog = replace(catalog, catalogs=tuple(replace(item, records=tuple(
+            replace(r, deletable=False, classification="inventory_incomplete",
+                    blockers=(*r.blockers, "Cindy retains this Claude ID under an unresolved execution host"))
+            if r.session_id in unresolved_ids else r for r in item.records)) for item in catalog.catalogs))
     if not catalog.catalogs and reference_failures:
         catalog = replace(catalog, root_errors=(*catalog.root_errors, *(
             ClaudeInventoryFailure(effective.config_dir, "cindy-root", "AmbiguousStorageRoot",

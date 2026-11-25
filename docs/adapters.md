@@ -438,8 +438,31 @@ manual、GUI 和直接服务入口使用相同 gate，阻止绕过已有 journal
   `unsupported:<原始 agent_kind>` 保留未知值，避免公共引擎别名意外恢复删除能力。
 - `healthy`、`unreferenced` 和 `cleanup_eligible` 分别是分类、引用状态、可选择性；
   都不能替代 plan/apply 的范围和删除授权。
-- 当前 host/path 模型只适用于本地执行。接入 WSL/SSH/远端存储前必须显式建模 host、
-  路径命名空间和执行端，不能把远端路径直接交给本机 `Path`。
+- 物理路径由拥有该存储的执行机解析。控制端保留另一台设备的主机标识和原生定位符，
+  在发起 SSH 操作时显式选择目标。WSL 发行版、共享 provider ID 和 SSH 主机分别识别。
+
+### 远程执行与记录归属
+
+模型 API 地址描述请求的去向。会话文件的归属取决于启动 Agent 的进程、账号和数据目录。
+本机启动的 Codex、Claude 或 Pi 沿用本机适配器。跨机器时使用下表的执行端证据。
+
+| 客户端和核对版本 | 用于定位的证据 | 已实现的清理范围 |
+|---|---|---|
+| Cindy 0.1.146 | `remote_host_id` 是 SSH alias，工程与 Agent 都在远端。`agent_device_id` 指同账号的另一台电脑或 `share:…`。这时项目和命令仍属控制端。切换历史按 `fromAgentDeviceId` 逐段解析，保留回退过的边界。 | 无引擎或设备切换的 SSH 任务可分两端批准。执行端核实该启动器的 Codex 或 Claude 专属 home，控制端重新核实原生删除和 SQLite 行再清任务。同账号设备或分享会话可独立盘点、清理有物理证据的原生存储。控制端备份、迁移副本及共享来宾的整套数据在该操作范围之外。[会话字段](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/localDb/schema.ts) · [设备切换](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-ipc/sessionAgentSwitchHandler.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
+| T3 Code Nightly 0.1.13-nightly.20261125.5245 | 环境使用持久化的 `environment-id`。thread 和 provider 恢复句柄从该环境的数据库读取，同 ID 的 v1/v2 投影归入一条远程清单记录。 | 在具备运行时与绑定的 Windows 执行端，可清理选中 thread、已绑定原生会话及计划列出的依赖。若只请求产品自带删除，会标记 thread 为已删除。peer 环境或未解决的跨线程、工作流、反馈引用会阻挡完整删除。[远程架构](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/docs/internals/05_remote.md) · [工作流的执行环境](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/apps/server/src/persistence/Migrations/110_Workflows.ts) |
+| Paseo 0.17.4 | daemon 保存 `server-id`，agent ID 和恢复句柄属于这台服务器。`paseo.parent-server-id` 描述父任务所在服务器。 | 在具备运行时与绑定的 Windows 执行端，可清注册记录、绑定的原生会话及已列入计划的桌面副本。仅请求 daemon 删除时，核验 RPC 与注册文件。其他电脑的桌面副本单独核对。[跨服务器父子关系](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/tools/paseo-tools.ts) · [daemon 存储](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/agent-storage.ts) |
+| Orca 1.4.274 | 独立 Orca 的 journal 保存 `executionHostId`、`wslDistro`、账号 home 与 provider 句柄链。 | 可盘点本机、SSH 和 runtime 的记录。远端标识及 WSL 路径在控制端保持原样，实际执行端上有确切物理存储时可单独处理原生记录。跨机 Orca journal 与恢复状态只读。[会话对象](https://github.com/stablyai/orca/blob/v1.4.274/src/shared/agent-session/lifecycle/agent-session-record.ts) · [执行主机](https://github.com/stablyai/orca/blob/v1.4.274/src/shared/execution-host/execution-host.ts) |
+
+SSH worker 使用执行端权威 checkout 的锁、计划和收据。远程计划绑定 SSH alias、物理存储身份、
+产品实例、原生目录和批准摘要。源自 Windows 绑定的完整 writer 仍要求执行端具备相应运行时。
+各阶段的输入和断线恢复见[远程记录命令](operation-cli.md#remote-provider-records)。
+
+Cindy 的 SSH 启动器指定执行端的 Codex home 和程序。控制端判断一轮是否结束时核对开始、结束和清空时间，
+已完成的任务可以保留非空的开始时间。Cindy 自带的协同 Worker 另用 `orca_remote_lead` 标记派工方，
+任务、工程和命令在接收派工的机器上。[SSH 启动器](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-host/codex-remote-transport.ts) · [回合时间戳](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/localDb/sessionActiveTurn.ts) · [协同 Worker](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/shared/orcaRemoteWorker.ts)
+
+T3 Code 的 registry ACP provider 在选中的 T3 server 上启动。客户端通过 relay 连接时，
+仍在这台 server 上确定 provider 的程序、配置和会话目录。[T3 ACP provider](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/docs/user/providers-acp.md)
 
 ### 关系语义
 
@@ -967,7 +990,10 @@ macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平�
 `--client t3code` 或显式 `--t3code-root` 才发现其存储，默认 `T3CODE_HOME`，否则
 `~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持原有结构和
 `0.1.10-nightly.20261112.4580`、`0.1.10-nightly.20261113.4616` 和
-`0.1.11-nightly.20261119.4928` 的 v1/v2 元数据投影与数据库清理。
+`0.1.11-nightly.20261119.4928`、`0.1.13-nightly.20261125.5245` 的 v1/v2 元数据投影与数据库清理。
+5245 的 100–118 迁移加入线程级计数、fork 的运行成员、反馈和工作流。事务按顺序删除选中线程的两层计数，
+检查其他线程是否读取这些运行，以及工作流步骤、结果和反馈是否仍可指回所选记录。
+存在这些跨范围记录时，完整计划报告冲突并保留原生会话。[上游迁移](https://github.com/pingdotgg/t3code/tree/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/apps/server/src/persistence/Migrations)
 4928 的 088–099 迁移更新了会话查询索引与回合条目的内联输出标记。清理按 thread ID
 处理这些条目，保留设备配对、登录会话和项目 issue tracker 绑定。
 安装包 `server.asar` 的 081–083 迁移加入搜索字段和索引，084–087 迁移加入回合条目计数、

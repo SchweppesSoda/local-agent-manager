@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .codex_desktop_state import ClientInspector
+from .cindy_references import CindyReferenceError, execution_host, nonlocal_bindings, switch_hosts
 from .sqlite_utils import connect_readonly, table_exists
 from .cindy_schema import CindySchemaError, guard_cindy_triggers
 
@@ -343,7 +344,7 @@ def guard_frontend_reference_closure(
             )
     except FrontendReferenceGuardError:
         raise
-    except FrontendReferenceError as exc:
+    except (FrontendReferenceError, CindyReferenceError) as exc:
         raise FrontendReferenceGuardError(str(exc)) from exc
     except sqlite3.Error as exc:
         raise FrontendReferenceGuardError(
@@ -486,6 +487,7 @@ def _guard_cindy_collection(
     current_tokens = {
         (str(row["id"]), row_fingerprint(row, session_columns))
         for row in current_rows
+        if execution_host(row) in {"local", "unknown"}
     }
     if current_tokens != approved_current:
         raise FrontendReferenceGuardError(
@@ -521,11 +523,13 @@ def _guard_cindy_collection(
         )
     if query_observer is not None:
         query_observer("cindy:live-history-collection")
+    owner_fields = ", ".join((f"s.{key}" if key in session_columns else "NULL") + f" AS {key}"
+                             for key in ("remote_host_id", "agent_device_id"))
     message_rows = connection.execute(
-        "SELECT m.* FROM messages AS m INNER JOIN sessions AS s ON s.id = m.session_id "
+        f"SELECT m.*, {owner_fields} FROM messages AS m INNER JOIN sessions AS s ON s.id = m.session_id "
         "WHERE m.role = 'agent_switch' "
         "AND (s.status IS NULL OR lower(s.status) <> 'deleted' OR s.id IN ("
-        + session_placeholders + "))",
+        + session_placeholders + ")) ORDER BY m.created_at, m.rowid",
         tuple(session_ids),
     ).fetchall()
     approved_history = {
@@ -539,23 +543,10 @@ def _guard_cindy_collection(
     }
     current_history: set[tuple[str, str, str]] = set()
     wanted = set(native_ids)
-    for row in message_rows:
+    parents = {row["session_id"]: row for row in message_rows}
+    for row, payload, host in switch_hosts(parents, message_rows):
         content = row["content"]
-        if not isinstance(content, str):
-            raise FrontendReferenceGuardError(
-                "Cindy agent_switch content is not text"
-            )
-        try:
-            payload = json.loads(content)
-        except (json.JSONDecodeError, UnicodeError) as exc:
-            raise FrontendReferenceGuardError(
-                "Cindy agent_switch content is malformed JSON"
-            ) from exc
-        if not isinstance(payload, Mapping):
-            raise FrontendReferenceGuardError(
-                "Cindy agent_switch content is not a JSON object"
-            )
-        if payload.get("fromSdkSessionId") in wanted:
+        if host in {"local", "unknown"} and payload.get("fromSdkSessionId") in wanted:
             current_history.add(
                 (
                     str(row["id"]),
@@ -652,6 +643,11 @@ def _prepare_cindy_batch(
             "Cindy session guard found a missing or duplicate row"
         )
     sessions = {str(row["id"]): row for row in session_rows}
+    foreign = nonlocal_bindings(connection, sessions)
+    for item in evidence:
+        locator = _mapping(item.get("locator"))
+        if (locator.get("cindy_session_id"), locator.get("message_id")) in foreign:
+            raise FrontendReferenceError("cindy_execution_host_required")
     message_items = [
         item
         for item in evidence

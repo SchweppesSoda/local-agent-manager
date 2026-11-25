@@ -129,13 +129,14 @@ def qualify(db, *, reference_guard_only=False):
     if objects in SCHEMA_CONTRACTS:
         return
     if reference_guard_only:
-        # Read every retained table including the new auth and issue-tracker
-        # columns. Secondary indexes carry no independent conversation rows.
+        # The reference guard scans every retained table. Secondary indexes
+        # carry no independent conversation rows. Writers still need exact DDL.
         versions = [CONTRACT['version'], *(v['version'] for v in CONTRACT['compatible_variants'])]
-        base = SCHEMA_CONTRACTS[versions.index(CONTRACT['reference_guard_base_version'])]
-        expected = {(r[0], r[1]): r for r in base if r[0] != 'index'}
-        if {(r[0], r[1]): r for r in objects if r[0] != 'index'} == expected:
-            return
+        observed = [r for r in objects if r[0] != 'index']
+        for version in CONTRACT['reference_guard_versions']:
+            base = SCHEMA_CONTRACTS[versions.index(version)]
+            if observed == [r for r in base if r[0] != 'index']:
+                return
     fail("schema_unverified")
 
 
@@ -144,6 +145,25 @@ def rows(db, query, args=()):
     if len(result) > MAX_ROWS:
         fail("inventory_budget_exceeded")
     return [dict(row) for row in result]
+
+
+def provider_rows(db):
+    current = rows(db, f"""SELECT provider_thread_id,thread_id,provider,driver,provider_instance_id,status,
+        json_extract(payload_json,'$.nativeThreadRef.driver') AS native_driver,
+        json_extract(payload_json,'$.nativeThreadRef.nativeId') AS native_id,
+        json_extract(payload_json,'$.nativeThreadRef.strength') AS native_strength
+        FROM {V2}provider_threads ORDER BY provider_thread_id""")
+    legacy = rows(db, "SELECT thread_id,provider_name,provider_thread_id,provider_session_id,status FROM projection_thread_sessions ORDER BY thread_id")
+    for row in current:
+        identifier(row["provider_thread_id"])
+        identifier(row["thread_id"], nullable=True)
+        native_handle(row["native_driver"], row["native_id"], nullable=True)
+        if row["native_id"] is not None and row["native_driver"] != (row["driver"] or row["provider"]):
+            fail("provider_reference_conflict")
+    for row in legacy:
+        for field in ("provider_thread_id", "provider_session_id"):
+            identifier(row[field], nullable=True)
+    return current, legacy
 
 
 def read_database(root, *, include_titles=False):
@@ -163,12 +183,7 @@ def read_database(root, *, include_titles=False):
             json_extract(payload_json,'$.lineage.parentThreadId') AS parent_thread_id,
             json_extract(payload_json,'$.lineage.relationshipToParent') AS parent_relationship
             FROM {V2}threads ORDER BY thread_id""")
-        providers = rows(db, f"""SELECT provider_thread_id,thread_id,provider,driver,provider_instance_id,status,
-            json_extract(payload_json,'$.nativeThreadRef.driver') AS native_driver,
-            json_extract(payload_json,'$.nativeThreadRef.nativeId') AS native_id,
-            json_extract(payload_json,'$.nativeThreadRef.strength') AS native_strength
-            FROM {V2}provider_threads ORDER BY provider_thread_id""")
-        old_providers = rows(db, "SELECT thread_id,provider_name,provider_thread_id,provider_session_id,status FROM projection_thread_sessions ORDER BY thread_id")
+        providers, old_providers = provider_rows(db)
         counts = rows(db, f"SELECT thread_id,count(*) AS count FROM {V2}messages GROUP BY thread_id")
         old_counts = rows(db, "SELECT thread_id,count(*) AS count FROM projection_thread_messages GROUP BY thread_id")
         schedules = rows(db, "SELECT task_id,thread_id,enabled FROM scheduled_tasks WHERE thread_id IS NOT NULL")
@@ -187,16 +202,7 @@ def read_database(root, *, include_titles=False):
                 fail("project_reference_unresolved")
             row["version"] = version
             by_thread[row["thread_id"]].append(row)
-    for row in providers:
-        identifier(row["provider_thread_id"])
-        identifier(row["thread_id"], nullable=True)
-        native_handle(row["native_driver"], row["native_id"], nullable=True)
-        if row["native_id"] is not None and row["native_driver"] != (row["driver"] or row["provider"]):
-            fail("provider_reference_conflict")
     # Orphaned projections remain visible as a coverage failure, never empty success.
-    for row in old_providers:
-        for field in ("provider_thread_id", "provider_session_id"):
-            identifier(row[field], nullable=True)
     if any(row["thread_id"] not in by_thread for row in counts + old_counts + old_providers + providers):
         fail("orphan_projection_present")
     return {"projects": by_project, "threads": dict(by_thread), "providers": providers,

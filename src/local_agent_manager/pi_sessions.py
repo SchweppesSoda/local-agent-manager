@@ -481,7 +481,18 @@ def build_pi_session_catalog(
         _normalized_path(record.path): [] for record in records
     }
     reference_identity_failed = False
+    unresolved_ids = set()
+    unresolved_path = False
     for reference in cindy_references:
+        if reference.backend == "pi" and reference.execution_host == "unknown" and reference.remote_native_locator:
+            # A foreign path has no physical identity here. A bare Pi ID can
+            # protect its matching headers without disabling unrelated sessions.
+            locator = reference.remote_native_locator
+            if "/" in locator or "\\" in locator:
+                unresolved_path = True
+            else:
+                unresolved_ids.add(locator)
+            continue
         if reference.backend != "pi" or reference.native_session_id is None:
             continue
         for record in records:
@@ -512,6 +523,9 @@ def build_pi_session_catalog(
     enriched: list[PiSessionRecord] = []
     for record in records:
         blockers = list(root_blockers)
+        uncertain = unresolved_path or record.session_id in unresolved_ids
+        if uncertain:
+            blockers.append("Cindy retains a Pi handle under an unresolved execution host")
         if record.active:
             blockers.append("PI_SESSION_FILE identifies this as the current active session")
         matched_references = tuple(
@@ -540,7 +554,7 @@ def build_pi_session_catalog(
             blockers.append("A live Cindy session retains a historical reference to this Pi session")
         classification = (
             "inventory_incomplete"
-            if reference_identity_failed
+            if reference_identity_failed or uncertain
             else "live_current_reference"
             if live_current
             else "live_historical_reference"

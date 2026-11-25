@@ -9,6 +9,71 @@ implemented deletion paths currently cover healthy/native records with a
 frozen frontend closure, Cindy Pi/Claude sessions, exact supported local WorkBuddy and Office sessions, and Cindy frontend sessions
 whose exact row status is `deleted`.
 
+## Remote provider records
+
+先确定 Agent 进程在哪里运行。本机启动的 Agent 即使使用远程模型 API，也按原命令
+`records --client …` 和 `delete plan` 选择本机存储。另一台机器上的 Agent 由该机的管理器
+执行盘点与清理。两端均需安装支持 `remote` 的版本，SSH 非交互会话须能找到
+`local-agent-manager`。使用已信任且指向正确账号的 OpenSSH 别名。路径填写执行机上的绝对路径。
+各客户端的归属字段见[远程执行与记录归属](adapters.md#远程执行与记录归属)。
+
+以下为 PowerShell 示例。盘点返回 `owner.store_id` 及前端或原生记录 ID。一次计划选一个完整 ID。
+核对计划列出的 `completion_scope`、实际存储和受影响记录，包括 Codex 的后代或前端关联记录。
+
+```powershell
+$target = @('--ssh-host', 'workstation', '--client', 't3code', '--root', 'D:\T3Home')
+$inventory = local-agent-manager remote records @target | ConvertFrom-Json
+$inventory.records
+$remotePlan = local-agent-manager remote plan @target --owner $inventory.owner.store_id --record-id '<完整 T3 thread ID>' | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $remotePlan.goal_status -ne 'ready') { throw '请查看执行端计划的阻挡原因。' }
+$remotePlan | ConvertTo-Json -Depth 30
+$operation = @('--owner', $remotePlan.owner.store_id, '--operation-id', $remotePlan.operation_id, '--approval', $remotePlan.approval)
+local-agent-manager remote apply @target @operation --clients-closed
+local-agent-manager remote verify @target @operation
+```
+
+| 选择 | 计划与验收 |
+|---|---|
+| `--client t3code` 或 `paseo` | 默认请求前端和原生联合清理。自动或显式绑定须在执行端成立，`--bindings` 指向执行端的清单。若缺乏绑定，计划报告阻挡。Windows 完整 writer 的关闭与依赖要求仍适用。 |
+| 上述命令显式加 `--frontend-only` 到 `remote plan` | 使用在运行的 Windows 产品实例。T3 核验该 thread 的软删标记，Paseo 核验 daemon 查询和 agent 注册文件消失。`provider_history=preserved` 表示原生会话保留。 |
+| `--client native`、`claude`、`pi` | 分别指定执行机的 Codex home、Claude 配置根、Pi session 根。Codex 可用 `--codex-bin` 选择真实可执行文件，Pi 的独立配置目录用 `--pi-agent-dir` 在每条命令中指定。只接受精确匹配且物理目标在所选根内的原生计划。 |
+| `remote records --client cindy` 或 `orca` | 分别指定 Cindy 数据库文件或 Orca profile。可查看执行主机及原生定位符。以设备、分享、Orca runtime 或 WSL 标识定位的句柄须在其实际执行环境单独核实。 |
+
+若 SSH 在 apply 期间断开，保留原来的 `$target` 和 `$operation`，用
+`local-agent-manager remote status @target @operation` 读取执行端日志，再用
+`remote verify` 核验。缺少执行回执的状态为 `unknown`。两端的管理器分别保管各自批准的计划与收据。
+
+### Cindy SSH 任务的两端批准
+
+Cindy 的 `remote_host_id` 需与 SSH 别名精确相符。执行端的标准 Claude 启动器使用
+`$HOME/.xdt-server/v1/claude-home`，标准 Codex 启动器使用同一父目录下的 `codex-home`。
+这两个路径仅适用于这两条 SSH 启动路径。先在其中选中精确原生 ID，再在控制端批准对应任务。
+下面假定使用 PowerShell 7。代码中的 SSH 路径须替换为执行账号的真实绝对路径。
+
+```powershell
+$target = @('--ssh-host', 'devbox', '--client', 'claude', '--root', '/home/dev/.xdt-server/v1/claude-home')
+$owner = (local-agent-manager remote records @target | ConvertFrom-Json).owner.store_id
+$planJson = local-agent-manager remote plan @target --owner $owner --record-id '<Claude 原生 ID>'
+$planJson | Set-Content -Encoding utf8NoBOM -LiteralPath ./provider-plan.json
+$remotePlan = $planJson | ConvertFrom-Json
+$operation = @('--owner', $owner, '--operation-id', $remotePlan.operation_id, '--approval', $remotePlan.approval)
+$localPlan = local-agent-manager delete plan --client cindy --cindy-db 'D:\Cindy\cindy-user.db' --record-id '<Cindy 任务 ID>' --cindy-remote-plan ./provider-plan.json --json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $localPlan.goal_status -ne 'ready') { throw '请查看控制端计划的阻挡原因。' }
+$localPlan | ConvertTo-Json -Depth 30
+local-agent-manager remote apply @target @operation --clients-closed
+if ($LASTEXITCODE -ne 0) { throw '用原操作 ID 查询执行端 status 和 verify。' }
+$controller = @('--operation-id', $localPlan.operation_id, '--plan', $localPlan.plan_path)
+local-agent-manager delete apply @controller --plan-sha256 $localPlan.plan_sha256 --clients-closed --json
+local-agent-manager operation verify @controller --json
+```
+
+控制端计划核实任务与原生操作的主机、引擎、ID、同一 profile 下其他任务的绑定。若实际
+Electron profile 与数据库父目录不同，计划另传 `--cindy-root`。控制端写入前要独立取得原生批次
+成功回执并读回目标已消失。活动回合、换机历史、执行机不可达或原生记录重新出现都会保留任务。
+同账号设备、分享 provider 及其他电脑的桌面副本可以有独立恢复数据，它们需要各自的归属证据。
+若控制机保留了 T3 的其他环境缓存，可按其环境 ID、标签和缓存会话集合在控制机单独生成
+`plan-cache` 并核验。[T3 桌面副本操作](#t3-code-完整本地操作)
+
 ## Joint CLI reservation recovery
 
 This is a verification-only route for an interrupted T3/Paseo operation that

@@ -487,6 +487,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("state", help="Inspect, compact and migrate manager recovery metadata")
     subparsers.add_parser("maintenance", help="Inspect and prune client artifacts and AI-reviewed obsolete runtimes")
     subparsers.add_parser("resources", help="Locate bundled management Skills and operation documents")
+    from .remote_records import add_arguments as add_remote_arguments
+    add_remote_arguments(subparsers.add_parser("remote", help="通过 SSH 在会话所属主机盘点、计划、执行及核验"))
 
     environment = subparsers.add_parser(
         "environment",
@@ -532,6 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(delete, progress=True)
     _add_operation_scope_arguments(delete)
+    delete.add_argument("--cindy-remote-plan", type=Path, help="SSH 执行机生成的原生删除计划 JSON，控制端写入前核验其完成回执")
     delete.add_argument("--magpie-bindings", type=Path,
         help="将显式配置及原生会话映射中的 Magpie 列表、缓存、网关历史与回收站纳入冻结计划")
     delete.add_argument(
@@ -1512,6 +1515,9 @@ def _run_operation_backend(
             agy_options.update(t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
 
     try:
+        if (supplied_adapters is None and (scope or {}).get("client") == "cindy"
+                and (getattr(args, "cindy_db", None) or getattr(args, "cindy_root", None))):
+            supplied_adapters = _create_default_adapters(args)
         if verb == "plan":
             if supplied_adapters is None and not ((scope or {}).get("paseo_only") or (scope or {}).get("t3code_only")) and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
@@ -1544,6 +1550,8 @@ def _run_operation_backend(
                 operation_kwargs["scope"] = scope
                 operation_kwargs["t3code_roots"] = tuple(args.t3code_root or (default_root(),))
             operation_kwargs.update(agy_options)
+            if getattr(args, "cindy_remote_plan", None):
+                operation_kwargs["cindy_remote_plan"] = args.cindy_remote_plan
             if getattr(args, "magpie_bindings", None):
                 operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.plan_operation(**operation_kwargs)
@@ -1708,6 +1716,10 @@ def _run_delete_operation(
 ) -> int:
     verb = str(args.delete_action)
     try:
+        if getattr(args, "cindy_remote_plan", None) and (
+                verb != "plan" or args.client != "cindy" or not args.cindy_db or len(args.record_id or ()) != 1
+                or args.engine or args.magpie_bindings or args.handoff or args.paseo_only or args.t3code_only):
+            raise ValueError("--cindy-remote-plan requires delete plan --client cindy --cindy-db and one --record-id")
         if getattr(args, "magpie_bindings", None) and (
                 getattr(args, "handoff", False) or args.paseo_only or args.t3code_only):
             raise ValueError("magpie_native_disk_plan_required: Magpie 不支持 frontend-only 或自动关闭 handoff；使用普通 plan/apply 和显式关闭确认")
@@ -1883,6 +1895,9 @@ def main(
         return _emit_fatal_error('records', ValueError('--include-titles requires --client t3code'),
             json_output=args.json, stdout=output, stderr=error_output)
 
+    if args.command == "remote":
+        from .remote_records import run
+        return run(args, output, error_output)
     if args.command == "environment":
         return run_environment_command(args, stdout=output, stderr=error_output)
 

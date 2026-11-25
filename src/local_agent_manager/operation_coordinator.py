@@ -84,8 +84,9 @@ class _ChildStateInspection:
 class OperationCoordinator:
     """Coordinate one immutable operation and its storage-qualified batches."""
 
-    def __init__(self, service: Any) -> None:
+    def __init__(self, service: Any, *, session_catalog_args: Any = None) -> None:
         self.service = service
+        self.session_catalog_args = session_catalog_args
         self._live: dict[str, _LiveOperation] = {}
 
     @staticmethod
@@ -169,6 +170,7 @@ class OperationCoordinator:
         adapters: Iterable[Any] | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         magpie_bindings: Path | None = None,
+        cindy_remote_plan: Path | None = None,
         **_unused: Any,
     ) -> dict[str, Any]:
         normalized_scope = self._scope(
@@ -182,6 +184,14 @@ class OperationCoordinator:
         try:
             self._validate_scope(normalized_scope, require_selection=True)
             client_name = str(normalized_scope["client"])
+            remote_proof = None
+            if cindy_remote_plan is not None:
+                from .cindy_remote import from_remote_plan
+                if (not _unused.get("cindy_db") or client_name != "cindy" or len(normalized_scope["record_ids"]) != 1
+                        or normalized_scope["engines"] or magpie_bindings is not None):
+                    raise OperationCoordinatorError("cindy_ssh_exact_frontend_scope_required")
+                remote_proof = from_remote_plan(cindy_remote_plan, _unused["cindy_db"], normalized_scope["record_ids"][0],
+                                                _unused.get("cindy_root"))
             builtin_root = None
             builtin_module = builtin_delete(normalized_scope)
             if builtin_module:
@@ -212,6 +222,7 @@ class OperationCoordinator:
                 herdr_roots=herdr_roots,
                 workbuddy_roots=workbuddy_roots,
                 builtin_root=builtin_root, builtin_module=builtin_module,
+                cindy_remote_proof=remote_proof,
             )
             self._emit_progress(
                 progress_callback,
@@ -333,6 +344,14 @@ class OperationCoordinator:
                 codex_home=codex_home,
             )
             self._validate_apply_scope(document, normalized_scope)
+            from .cindy_remote import frozen as cindy_remote_binding
+            remote_proof = cindy_remote_binding(document)
+            if remote_proof:
+                if not plan_sha256:
+                    raise OperationCoordinatorError("cindy_ssh_approved_plan_sha256_required")
+                for name, field in (("cindy_db", "database"), ("cindy_root", "profile_root")):
+                    if _unused.get(name) and Path(_unused[name]) != Path(remote_proof[field]):
+                        raise OperationCoordinatorError("cindy_ssh_controller_scope_mismatch")
             magpie_cleanup.check_repeated_bindings(document, magpie_bindings)
             builtin_module = builtin_delete(document["scope"])
             if builtin_module:
@@ -1752,7 +1771,14 @@ class OperationCoordinator:
         explicit_frontend_ids: Sequence[str] = (),
         approved_document=None,
         builtin_root=None, builtin_module=None,
+        cindy_remote_proof=None,
     ) -> tuple[Any, ...]:
+        if client == "cindy":
+            from .cindy_remote import context_for, frozen
+            proof = cindy_remote_proof or frozen(approved_document or {})
+            if proof:
+                result = context_for(self, proof, allow_absent=approved_document is not None)
+                return result if include_action_contexts else result[:5]
         module = builtin_module or builtin_delete((approved_document or {}).get("scope", {}))
         if module:
             evidence = (module.approved_evidence(approved_document) if approved_document is not None
@@ -1853,7 +1879,7 @@ class OperationCoordinator:
         explicit_session_ids: Sequence[str] = (),
     ) -> tuple[Any, ...]:
         if client in {"pi", "claude"}:
-            args = self._default_catalog_args(client, codex_home=codex_home)
+            args = self.session_catalog_args or self._default_catalog_args(client, codex_home=codex_home)
             if client == "pi":
                 from .session_catalog_factory import build_pi_catalog
 
@@ -2471,6 +2497,12 @@ class OperationCoordinator:
         databases: dict[tuple[str, str], tuple[Path, Path]] = {}
         # The unfiltered snapshot includes parked ACP handles even when the
         # caller selected another current engine. Keep their whole UI row.
+        rows = tuple(row for snapshot in getattr(inventory, "frontend_snapshots", ()) for row in snapshot.records)
+        remote_sessions = {(row.database, row.platform_session_id) for row in rows
+                           if row.details.get("execution_host", "local") != "local"}
+        if remote_sessions:
+            context = replace(context, cindy_nonlocal_sessions=tuple(
+                row for row in rows if (row.database, row.platform_session_id) in remote_sessions))
         acp_sessions = {(row.database, row.platform_session_id)
                         for snapshot in getattr(inventory, "frontend_snapshots", ())
                         for row in snapshot.records if row.details.get("agent_kind") == "acp"}
@@ -2483,7 +2515,7 @@ class OperationCoordinator:
                 continue
             if normalize_engine(getattr(session, "backend", "")) not in {"codex", "pi", "claude"}:
                 continue
-            if (session.database, session.platform_session_id) in acp_sessions:
+            if (session.database, session.platform_session_id) in acp_sessions | remote_sessions:
                 continue
             status = str(getattr(session, "status", "") or "").casefold()
             details = getattr(session, "details", {})
@@ -3354,6 +3386,12 @@ class OperationCoordinator:
             if kind_value(action) != "keep"
         )
         blockers: list[dict[str, Any]] = []
+        if scope.get("client") == "cindy" and getattr(context, "cindy_nonlocal_sessions", ()):
+            from .cindy_remote import selected_nonlocal_tasks
+            for database, sid in selected_nonlocal_tasks(context.cindy_nonlocal_sessions, scope):
+                blockers.append(self._blocker("cindy_execution_host_required",
+                    "Cindy retains provider history on another or unresolved execution host",
+                    scope=f"{database}#{sid}"))
         errors = tuple(getattr(context.plan, "errors", ()))
         if errors:
             blockers.append(
@@ -4073,6 +4111,8 @@ class OperationCoordinator:
         from .retired_clients import require_active_plan
         require_active_plan(document)
         validate_guard_sources(document)
+        from .cindy_remote import frozen as cindy_remote_binding
+        cindy_remote_binding(document)
         magpie_cleanup.validate_document(document)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(document)

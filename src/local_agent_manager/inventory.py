@@ -56,6 +56,9 @@ class FrontendSessionRecord:
             "is_live": self.is_live,
         }
         if self.platform == "cindy":
+            if self.details.get("execution_host", "local") != "local":
+                payload.update(execution_host=self.details["execution_host"],
+                               remote_native_locator=self.details.get("remote_native_locator"))
             payload.update(
                 {
                     "reference_kind": self.details.get("reference_kind", "current"),
@@ -360,6 +363,9 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
 
     all_records: list[ManagedConversation] = []
     unmapped: list[FrontendSessionRecord] = []
+    uncertain_cindy_ids = {s.details["remote_native_locator"] for rows in frontend_by_home.values() for s in rows
+                           if s.platform == "cindy" and s.backend == "codex" and s.details.get("execution_host") == "unknown"
+                           and s.details.get("remote_native_locator")}
     for home_key, home in sorted(home_paths.items()):
         state_rows, native_edges, state_edge_complete, state_errors = _read_state_partial(home)
         rollouts, rollout_errors = _read_rollouts_partial(home, plain_paths=plain_native_paths)
@@ -478,6 +484,9 @@ def build_session_catalog(adapters: Iterable[object], *, guard_adapters: Iterabl
             descendants = tuple(sorted(_transitive_descendants(graph, thread_id)))
             blockers = list(blocking_messages)
             blocker_codes: set[str] = set()
+            if uncertain_cindy_ids.intersection((thread_id, *descendants)):
+                blocker_codes.add("cindy_execution_host_required")
+                blockers.append("Cindy retains this native ID under an unresolved execution host")
             live_references = [
                 reference for reference in references if reference.is_live
             ]
