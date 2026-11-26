@@ -1421,7 +1421,35 @@
           "CREATE TRIGGER orchestration_v2_thread_item_counts_run_insert\n    AFTER INSERT ON orchestration_v2_projection_runs\n    BEGIN\n      INSERT INTO orchestration_v2_projection_thread_item_counts (thread_id, item_count)\n      SELECT thread_id, COUNT(*)\n      FROM orchestration_v2_projection_turn_items\n      WHERE run_id = new.run_id\n      GROUP BY thread_id\n      ON CONFLICT (thread_id) DO UPDATE SET item_count = item_count + excluded.item_count;\n    END"
         ]
       ]
+    },
+    {
+      "version": "0.1.13-nightly.20261125.5258",
+      "base_version": "0.1.13-nightly.20261125.5245",
+      "producer": "pingdotgg/t3code@bf961f8121c6336915ecf7b3f97ce6e68ab38fd7, server migration 119",
+      "remove": [],
+      "replace": [
+        [
+          "table",
+          "workflow_runs",
+          "workflow_runs",
+          "CREATE TABLE workflow_runs (\n      run_id TEXT PRIMARY KEY,\n      workflow TEXT NOT NULL,\n      version INTEGER NOT NULL,\n      engine_tag TEXT NOT NULL,\n      idempotency_key TEXT NOT NULL,\n      title TEXT NOT NULL,\n      status TEXT NOT NULL,\n      detail TEXT,\n      result_json TEXT,\n      pauses INTEGER NOT NULL DEFAULT 0,\n      started_at TEXT NOT NULL,\n      updated_at TEXT NOT NULL,\n      ended_at TEXT,\n      -- What a run was started with, for the cleanup of a cancelled run whose body is gone.\n      input_json TEXT,\n      -- The run that invoked this one and the wait it sits in, so it hears how this one ended.\n      parent_run_id TEXT,\n      parent_wait TEXT,\n      -- A run its agent gave up on waits for a person: resuming starts the agent's whole job again.\n      held INTEGER NOT NULL DEFAULT 0,\n      -- When an ended run's engine journal was deleted; the run's own rows stay.\n      engine_pruned_at TEXT\n    , tags_json TEXT NOT NULL DEFAULT '[]', subject_kind TEXT, subject_key TEXT, subject_url TEXT, subject_json TEXT)"
+        ]
+      ],
+      "add": [
+        [
+          "index",
+          "workflow_runs_subject",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_subject ON workflow_runs (subject_key)\n    WHERE subject_key IS NOT NULL\n  "
+        ],
+        [
+          "index",
+          "workflow_runs_subject_url",
+          "workflow_runs",
+          "CREATE INDEX workflow_runs_subject_url ON workflow_runs (subject_url)\n    WHERE subject_url IS NOT NULL\n  "
+        ]
+      ]
     }
   ],
-  "reference_guard_versions": ["0.1.11-nightly.20261119.4928", "0.1.13-nightly.20261125.5245"]
+  "reference_guard_versions": ["0.1.11-nightly.20261119.4928", "0.1.13-nightly.20261125.5245", "0.1.13-nightly.20261125.5258"]
 }

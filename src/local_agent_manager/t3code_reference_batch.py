@@ -20,13 +20,19 @@ _batch = ContextVar('t3_reference_batch', default=None)
 @contextmanager
 def hold(document, mutation_family):
     from .t3code_cleanup import evidence_from_document
-    from .t3code_lifecycle import current_boundary
-    from .t3code_store import RELATIVE
-    from .windows_held_files import HeldFiles
     evidence = evidence_from_document(document)
     if evidence is None or str(mutation_family) == 'delete_t3code_frontend':
         yield
         return
+    with hold_references(evidence):
+        yield
+
+
+@contextmanager
+def hold_references(evidence):
+    from .t3code_lifecycle import current_boundary
+    from .t3code_store import RELATIVE
+    from .windows_held_files import HeldFiles
     root = Path(evidence['root'])
     if current_boundary(root) is None or _batch.get() is not None:
         raise frozen_files.FrozenFilesError('t3_reference_batch_boundary_missing')

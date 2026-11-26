@@ -202,7 +202,7 @@ _THREAD_EVENT_FIELDS = '''createdBy creationSource id projectId title providerIn
     runtimeMode interactionMode branch worktreePath pullRequests activeProviderThreadId lineage forkedFrom
     createdAt updatedAt archivedAt settledOverride settledAt snoozedUntil snoozedAt lastVisitedAt deletedAt
     linkedPullRequest branchPullRequest historyOrigin unsettledAt pinnedAt pinOrderKey activeOrderKey
-    guestShare autoSettleDisabledAt opens titleRegeneration'''
+    guestShare autoSettleDisabledAt opens titleRegeneration linkOrigin delegatedFrom'''
 _SESSION_EVENT_FIELDS = '''id driver providerInstanceId status cwd model capabilities createdAt updatedAt
     lastError extensionStatuses'''
 _RUN_EVENT_FIELDS = '''id threadId ordinal providerInstanceId modelSelection providerThreadId userMessageId
@@ -228,7 +228,7 @@ _LEGACY_EVENT_FIELDS = {
         createdByProviderInstanceId createdAt updatedAt''',
     **{name: _TRANSFER_EVENT_FIELDS for name in ('context-transfer.created', 'context-transfer.updated')},
     'message.updated': '''createdBy creationSource id threadId runId nodeId role text context attachments streaming
-        createdAt updatedAt delegatedCompletion notification senderThreadId workflowScript''',
+        createdAt updatedAt delegatedCompletion notification senderThreadId linkedSender workflowScript''',
     'node.updated': '''id threadId runId parentNodeId rootNodeId kind status countsForRun providerThreadId providerTurnId
         nativeItemRef runtimeRequestId checkpointScopeId startedAt completedAt''',
     'plan.updated': 'id threadId runId nodeId status kind steps explanation',
@@ -241,7 +241,7 @@ _LEGACY_EVENT_FIELDS = {
         resolvedAt answers''',
     'subagent.updated': '''id threadId runId parentNodeId origin createdBy driver providerInstanceId providerThreadId
         childThreadId nativeTaskRef prompt title model modelSelection status result startedAt completedAt updatedAt
-        progress promptSequence completionWake completionDelivery''',
+        progress promptSequence completionWake completionDelivery remoteChild cancelledRunId executedModel''',
     'turn-item.updated': '''id threadId runId nodeId providerThreadId providerTurnId nativeItemRef parentItemId ordinal
         status title startedAt completedAt updatedAt createdBy creationSource type messageId inputIntent text context
         attachments input output exitCode streaming toolName subagentId origin driver providerInstanceId childThreadId
@@ -273,6 +273,9 @@ def _qualify_legacy_events(db):
         AND NOT lam_content_reference('orchestration_events','payload_json',t.payload_json,j.fullkey,t.event_type) ''')
     for row in fields:
         if row['key'] in _LEGACY_EVENT_FIELDS[row['event_type']].split():
+            continue
+        if (row['event_type'] == 'turn-item.updated' and row['value_type'] == 'object'
+                and (row['item_type'], row['key']) in {('subagent', 'remoteChild'), ('user_message', 'linkedSender')}):
             continue
         if (row['event_type'] == 'turn-item.updated' and row['value_type'] == 'text'
                 and isinstance(row['item_type'], str) and row['key'] in _TURN_ITEM_TEXT_FIELDS.get(row['item_type'], ())):
@@ -414,6 +417,18 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         self.observations = ()
         self.legacy_import_ids = set()
 
+    def check_import_roots(self, thread_ids):
+        selected = self.legacy_import_ids.intersection(thread_ids)
+        if selected:
+            from .t3code_discovery import _load_import_provenance, imported_root
+            imported = _load_import_provenance(self.profile_root)
+            for tid in selected:
+                proofs = [p for (source, _, _), p in imported.items() if source == tid]
+                bound = self.bindings[tid]
+                if (len(proofs) != 1 or proofs[0]['engine'] != bound['engine']
+                        or canonical_path(imported_root(proofs[0])) != canonical_path(bound['root'])):
+                    fail('import_source_binding_unproven')
+
     def describe_client(self):
         if self.manifest['schema_version'] in DATABASE_SCHEMAS:
             return super().describe_client()
@@ -434,7 +449,12 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         from .t3code_reference_batch import read
         return read(self, self._snapshot_references_fresh)
 
-    def _snapshot_references_fresh(self):
+    def snapshot_provider_references(self):
+        # The peer link belongs to the environment. A provider-only operation
+        # preserves both ends of the link and still checks all local handles.
+        return self._snapshot_references_fresh(provider_only=True)
+
+    def _snapshot_references_fresh(self, *, provider_only=False):
         from .t3code_reference_batch import read_environment
         _, raw = read_environment(self.profile_root)
         if raw.decode("utf-8").strip() != self.manifest["environment_id"]:
@@ -445,7 +465,7 @@ class T3CodeBoundAdapter(T3CodeAdapter):
         if self.manifest["schema_version"] in DATABASE_SCHEMAS:
             return snapshot
         data = self.observation
-        if data["peer_count"]:
+        if data["peer_count"] and not provider_only:
             fail("peer_environment_closure_unqualified")
         references, observations, stores = [], [], {}
         root_keys = {root: canonical_path(root) for root in {b['root'] for b in self.bindings.values()}}

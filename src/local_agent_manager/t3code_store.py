@@ -190,6 +190,11 @@ def read_database(root, *, include_titles=False):
         transfers = rows(db, f"SELECT context_transfer_id,source_thread_id,target_thread_id FROM {V2}context_transfers")
         children = rows(db, f"SELECT subagent_id,thread_id,child_thread_id FROM {V2}subagents WHERE child_thread_id IS NOT NULL")
         peer_count = db.execute("SELECT count(*) FROM peer_environment_links").fetchone()[0]
+        # Unpairing an environment removes its link, but the delegated
+        # threads and task projections can still refer to the other daemon.
+        peer_thread_ids = [r["thread_id"] for r in rows(db, f"""SELECT thread_id FROM {V2}threads
+            WHERE json_type(payload_json,'$.delegatedFrom')='object'
+            UNION SELECT thread_id FROM {V2}subagents WHERE json_type(payload_json,'$.remoteChild')='object'""")]
     if frozen_files._identity(database_path(root).stat()) != identity:
         fail("database_replaced")
     by_project = {identifier(row["project_id"]): row for row in projects}
@@ -207,7 +212,8 @@ def read_database(root, *, include_titles=False):
         fail("orphan_projection_present")
     return {"projects": by_project, "threads": dict(by_thread), "providers": providers,
         "legacy_providers": old_providers, "message_counts": counts, "legacy_message_counts": old_counts,
-        "schedules": schedules, "transfers": transfers, "children": children, "peer_count": peer_count}
+        "schedules": schedules, "transfers": transfers, "children": children, "peer_count": peer_count,
+        "peer_thread_ids": peer_thread_ids}
 
 
 def capability(value):

@@ -41,6 +41,8 @@ BIN 的自动回退也有边界：T3 未声明 Codex BIN、Paseo 使用裸命令
 T3／Paseo 的 Codex、Claude、Pi 未指定引擎专属 home 时，目前回退管理器的
 `Path.home()`，没有据此验证前端进程或包装脚本继承的用户目录。
 
+T3 从旧 `providers` 载入内置 driver 配置时，已写入的同名 `providerInstances` 优先。机器策略可在读取时覆盖 provider 的环境、程序或启动参数。检测到这类覆盖或无法读取策略时，自动发现会要求显式绑定，OpenCode 的服务位置标为 `unverified`。[配置迁入逻辑](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/serverSettings.ts#L504-L562) · [机器策略来源](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/packages/shared/src/managedPolicyFile.ts)
+
 T3 的受管 Antigravity ACP 使用独立的实例目录和受管运行时资格，不能与 CLI 模式互换。
 上述 agy 规则限定当前已验证布局；其他机器或版本如有不同启动／存储契约，应补充适配
 证据，不能仅把现有默认目录强加给它。
@@ -449,8 +451,8 @@ manual、GUI 和直接服务入口使用相同 gate，阻止绕过已有 journal
 | 客户端和核对版本 | 用于定位的证据 | 已实现的清理范围 |
 |---|---|---|
 | Cindy 0.1.146 | `remote_host_id` 标出 SSH alias。`agent_device_id` 标出同账号设备或 `share:…`。执行机用控制设备身份和任务 ID 派生影子工作目录，共享会话另带分享和成员身份。 | 单一 SSH 绑定支持 Codex、Claude。设备和直接分享支持具有匹配原生工作目录的 Codex、Claude、Pi。直接来宾多任务可在控制端任务、影子工作目录和原生历史逐一吻合时，精确移除选中的一对索引项。同账号 Pi 同时核对控制端账号目录、任务、来源设备和备份正文摘要。迁移、分叉、中转及无法区分的绑定保留供核对。[任务 ID 派生](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/sessionIdentity.ts) · [来宾索引](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [分享身份](https://github.com/makecindy/cindy/blob/v0.1.146/packages/device-link/src/providerSharePeer.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
-| T3 Code Nightly 0.1.13-nightly.20261125.5245 | 环境使用持久化的 `environment-id`。thread 和 provider 恢复句柄从该环境的数据库读取，同 ID 的 v1/v2 投影归入一条远程清单记录。 | 在具备运行时与绑定的 Windows 执行端，可清理选中 thread、已绑定原生会话及计划列出的依赖。若只请求产品自带删除，会标记 thread 为已删除。peer 环境或未解决的跨线程、工作流、反馈引用会阻挡完整删除。[远程架构](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/docs/internals/05_remote.md) · [工作流的执行环境](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/apps/server/src/persistence/Migrations/110_Workflows.ts) |
-| Paseo 0.17.4 | daemon 保存 `server-id`，agent ID 和恢复句柄属于这台服务器。`paseo.parent-server-id` 描述父任务所在服务器。 | 在具备运行时与绑定的 Windows 执行端，可清注册记录、绑定的原生会话及已列入计划的桌面副本。仅请求 daemon 删除时，核验 RPC 与注册文件。其他电脑的桌面副本单独核对。[跨服务器父子关系](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/tools/paseo-tools.ts) · [daemon 存储](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/agent-storage.ts) |
+| T3 Code Nightly 0.1.13-nightly.20261125.5258 | `environment-id` 标识环境。thread、provider instance 和原生恢复句柄从该环境的数据库读取，同 ID 的 v1/v2 投影归入一条清单记录。 | 服务在线时可软删 thread。在具备绑定和运行时的 Windows 执行端，可单独清理独占的原生会话，或联合清理 thread 与已绑定历史。peer 委派及未解决的跨线程、工作流和反馈引用会阻挡完整删除。[远程架构](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/docs/internals/05_remote.md) · [远程委派](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/peer/RemoteDelegation.ts) |
+| Paseo 0.17.4 | `server-id` 标识 daemon。agent 注册文件保存 provider 的恢复句柄，`paseo.parent-server-id` 定位父 agent 所在服务器。 | 服务在线时可删除 agent 注册与时间线。在具备绑定和运行时的 Windows 执行端，可单独清理独占的原生会话，或联合清理注册记录、原生历史和计划列出的桌面副本。[daemon 存储](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/agent/agent-storage.ts) · [删除请求](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/session.ts) |
 | Orca 1.4.277 | 结构化会话由执行机的 journal 持有。控制端的 `runtime:<environmentId>` 分区通过配对端点公钥定位该 profile。两端有 journal 时还须匹配工作区、账号 home 和完整句柄链。 | 已验证的 Windows Codex 组合可清执行端原生记录、journal 和恢复副本。Claude 结构化会话可清已证明独占的转录，共享或分叉的转录按原样保留。执行端完成后，控制端可清对应结构化标签、布局、已识别 profile 恢复副本及归属吻合的 journal。旧 SSH 终端、WSL、未配对主机及其它 provider 只报告可见元数据。[执行主机](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/execution-host/execution-host.ts) · [配对环境](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-catalog/runtime-environments.ts) · [执行端公钥](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-store/runtime-e2ee-keypair-file.ts) · [结构化启动](https://github.com/stablyai/orca/blob/v1.4.277/src/main/runtime/agent-session/launch/structured-agent-launch-composition.ts) |
 
 SSH worker 使用执行端权威 checkout 的锁、计划和收据。远程计划绑定 SSH alias、物理存储身份、
@@ -473,8 +475,11 @@ Cindy 的 SSH 启动器指定执行端的 Codex home 和程序。控制端判断
 已完成的任务可以保留非空的开始时间。Cindy 自带的协同 Worker 另用 `orca_remote_lead` 标记派工方，
 任务、工程和命令在接收派工的机器上。[SSH 启动器](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-host/codex-remote-transport.ts) · [回合时间戳](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/localDb/sessionActiveTurn.ts) · [协同 Worker](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/shared/orcaRemoteWorker.ts)
 
-T3 Code 的 registry ACP provider 在选中的 T3 server 上启动。客户端通过 relay 连接时，
-仍在这台 server 上确定 provider 的程序、配置和会话目录。[T3 ACP provider](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/docs/user/providers-acp.md)
+T3 peer 委派在接收环境创建独立 thread。发起方的 `remote_children` 给出任务 ID、对端环境和 thread，接收方的 `delegated_from` 给出父环境和 thread。两台环境各自批准自己持有的记录。远程清单以 `peer_link_origin_present` 表示链接来源，配对使用的 MCP session 和凭据留在原环境。T3 在选定环境按 provider instance 启动 Codex、Claude、Pi 或 ACP。内置实例可由 driver ID 自动生成。[委派实现](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/peer/RemoteDelegation.ts) · [来源标记](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/mcp/linkOrigin.ts) · [实例注册](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/provider/ProviderInstanceRegistryHydration.ts)
+
+Paseo 客户端或 Hub 调用 daemon 的 agent 接口。普通 Hub RPC 由 Hub 保存触发器与 agent 的映射。注册文件如含旧式 `owner.daemonId/executionId`，清单在 `hub_execution` 展示该任务。跨服务器父 agent 单列在 `parent_agent`。要定位原生历史，另用当前 agent 的 provider、持久化句柄和执行账号的数据目录。[Hub 协议](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/docs/hub.md) · [Hub 执行登记](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/hub/daemon-executions.ts) · [跨服务器父任务](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/agent/tools/paseo-tools.ts)
+
+OpenCode 可以独立提供 Agent 服务。T3 使用实例的 `config.serverUrl`，留空时在所选环境启动 OpenCode。Paseo 先读 provider 环境和 daemon 进程环境中的 `PASEO_OPENCODE_SERVER_URL`，随后可复用已登记、健康的本机服务，最后才自行启动。派生的 Paseo provider 会继承基础 provider 的环境配置。清单的 `opencode_configured_route` 仅描述磁盘配置，显式 loopback 地址也属于配置的服务。历史会话的物理存储仍需服务端证据。当前管理器只支持对这些会话做产品侧删除。[T3 服务选择](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/packages/provider-opencode/src/server/OpenCodeRuntime.ts) · [Paseo 环境合并](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/agent/provider-registry.ts) · [Paseo 服务选择](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/agent/providers/opencode/v2/service-selection.ts)
 
 ### 关系语义
 
@@ -993,10 +998,11 @@ macOS/Linux 的解析与协议测试不构成上述 Windows writer 的其他平�
 `--client t3code` 或显式 `--t3code-root` 才发现其存储，默认 `T3CODE_HOME`，否则
 `~/.t3`。读取 `userdata/statev2.sqlite`，逐项核对表、索引和触发器 DDL；支持原有结构和
 `0.1.10-nightly.20261112.4580`、`0.1.10-nightly.20261113.4616` 和
-`0.1.11-nightly.20261119.4928`、`0.1.13-nightly.20261125.5245` 的 v1/v2 元数据投影与数据库清理。
+`0.1.11-nightly.20261119.4928`、`0.1.13-nightly.20261125.5245` 及 `0.1.13-nightly.20261125.5258` 的 v1/v2 元数据投影与数据库清理。
 5245 的 100–118 迁移加入线程级计数、fork 的运行成员、反馈和工作流。事务按顺序删除选中线程的两层计数，
 检查其他线程是否读取这些运行，以及工作流步骤、结果和反馈是否仍可指回所选记录。
 存在这些跨范围记录时，完整计划报告冲突并保留原生会话。[上游迁移](https://github.com/pingdotgg/t3code/tree/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/apps/server/src/persistence/Migrations)
+5258 的迁移 119 增加了工作流 subject 字段与两个索引。工作流主题仍指向选中记录时，同样会阻挡清理。[工作流主题迁移](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/persistence/Migrations/119_WorkflowRunSubject.ts)
 4928 的 088–099 迁移更新了会话查询索引与回合条目的内联输出标记。清理按 thread ID
 处理这些条目，保留设备配对、登录会话和项目 issue tracker 绑定。
 安装包 `server.asar` 的 081–083 迁移加入搜索字段和索引，084–087 迁移加入回合条目计数、

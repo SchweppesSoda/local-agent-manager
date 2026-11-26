@@ -105,7 +105,7 @@ def _binding(entry, settings, cache):
     return binding
 
 
-def discover_bindings(root=None):
+def discover_bindings(root=None, *, provider_only=False):
     """Read-only binding preparation; selected deletion still uses the planner."""
     from .paseo_daemon_delete import _bundled_install, _server_id
 
@@ -145,7 +145,9 @@ def discover_bindings(root=None):
         raise BindingDiscoveryError(blockers)
     desktops = []
     desktop = Path(os.environ.get("APPDATA", str(Path.home() / "AppData/Roaming"))) / "Paseo"
-    if desktop.exists():
+    # A native-only plan fences Paseo.exe and daemon startup. It has no
+    # desktop database action and needs no Electron reader for that database.
+    if not provider_only and desktop.exists():
         _directory(desktop)
         runtime = os.environ.get("LARJ_PASEO_ELECTRON_RUNTIME")
         if (desktop / "IndexedDB/paseo_app_0.indexeddb.leveldb").exists():

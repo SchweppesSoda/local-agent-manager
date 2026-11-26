@@ -392,18 +392,7 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
             thread_ids = expanded
         if any(engines and adapter.bindings[i]["engine"] not in engines for i in thread_ids):
             files.fail("selector_engine_mismatch")
-        if set(thread_ids) & adapter.legacy_import_ids:
-            # The immutable database evidence freezes these exact cursors and
-            # source paths too. A current account/default home cannot replace
-            # their recorded source, even with an explicit binding manifest.
-            from .t3code_discovery import _load_import_provenance, imported_root
-            imported = _load_import_provenance(adapter.profile_root)
-            for thread_id in set(thread_ids) & adapter.legacy_import_ids:
-                proofs = [p for (tid, _, _), p in imported.items() if tid == thread_id]
-                bound = adapter.bindings[thread_id]
-                if (len(proofs) != 1 or proofs[0]['engine'] != bound['engine']
-                        or canonical_path(imported_root(proofs[0])) != canonical_path(bound['root'])):
-                    files.fail('import_source_binding_unproven')
+        adapter.check_import_roots(thread_ids)
         grouped = {}
         for ref in references:
             if ref.frontend_id not in thread_ids:
@@ -416,6 +405,8 @@ def build_context(coordinator, candidates, guards, selectors, engines, *, docume
                 entry[2].add(str(ref.native_record.path))
         desired = list(grouped.values())
         thread_ids = sorted(thread_ids)
+    if set(thread_ids).intersection(adapter.observation["peer_thread_ids"]):
+        files.fail("peer_thread_closure_unqualified")
     base = coordinator.service.prepare_report(ScanReport(), active_adapters=(), platforms=("t3code",))
     native_contexts, actions, action_contexts, targets, manual_map = [], [], {}, [], {}
     manual_catalog = manual_plan = None

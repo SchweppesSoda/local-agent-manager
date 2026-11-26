@@ -15,6 +15,7 @@ whose exact row status is `deleted`.
 `records --client …` 和 `delete plan` 选择本机存储。另一台机器上的 Agent 由该机的管理器
 执行盘点与清理。采用 SSH 协调时，两端均需安装支持 `remote` 的版本，SSH 非交互会话须能找到
 `local-agent-manager`。使用已信任且指向正确账号的 OpenSSH 别名。路径填写执行机上的绝对路径。
+直接在持有 T3、Paseo 或原生存储的机器上操作时，可在整组命令中使用 `--local`。
 各客户端的归属字段见[远程执行与记录归属](adapters.md#远程执行与记录归属)。
 
 以下为 PowerShell 示例。盘点返回 `owner.store_id` 及前端或原生记录 ID。一次计划选一个完整 ID。
@@ -35,7 +36,8 @@ local-agent-manager remote verify @target @operation
 | 选择 | 计划与验收 |
 |---|---|
 | `--client t3code` 或 `paseo` | 默认请求前端和原生联合清理。自动或显式绑定须在执行端成立，`--bindings` 指向执行端的清单。若缺乏绑定，计划报告阻挡。Windows 完整 writer 的关闭与依赖要求仍适用。 |
-| 上述命令显式加 `--frontend-only` 到 `remote plan` | 使用在运行的 Windows 产品实例。T3 核验该 thread 的软删标记，Paseo 核验 daemon 查询和 agent 注册文件消失。`provider_history=preserved` 表示原生会话保留。 |
+| `remote plan --frontend-only`，选择 T3 或 Paseo | 使用正在运行的 Windows 产品实例。T3 核验该 thread 的软删标记，Paseo 核验 daemon 查询和 agent 注册文件消失。验收范围限于产品 API 和它管理的记录。 |
+| `remote plan --provider-only`，选择 T3 或 Paseo | 从完整 thread 或 agent ID 定位独占的 Codex、Claude 或 Pi 原生会话。计划列出 daemon 的 `owner`、原生存储的 `provider_owner` 和 `native_ids`。原生写入在已关闭相关客户端的 Windows 执行端进行，保留前端条目与对端委派。 |
 | `--client native`、`claude`、`pi` | 分别指定执行机的 Codex home、Claude 配置根、Pi session 根。Codex 可用 `--codex-bin` 选择真实可执行文件，Pi 的独立配置目录用 `--pi-agent-dir` 在每条命令中指定。只接受精确匹配且物理目标在所选根内的原生计划。 |
 | `remote records --client cindy` 或 `orca` | 分别指定 Cindy 数据库文件或 Orca profile。可查看执行主机及原生定位符。以设备、分享、Orca runtime 或 WSL 标识定位的句柄须在其实际执行环境单独核实。 |
 | `remote plan --client orca` | 选择执行机 profile 和完整结构化会话 ID。`orca_host_session` 列出该机的 journal、前端副本及所选会话的原生范围。Claude 计划另列独占转录和须保留的句柄。 |
@@ -43,6 +45,27 @@ local-agent-manager remote verify @target @operation
 若 SSH 在 apply 期间断开，保留原来的 `$target` 和 `$operation`，用
 `local-agent-manager remote status @target @operation` 读取执行端日志，再用
 `remote verify` 核验。缺少执行回执的状态为 `unknown`。两端的管理器分别保管各自批准的计划与收据。
+
+### 按 T3 thread 或 Paseo agent 只清原生历史
+
+先在记录所属环境选中完整 ID。对 T3 peer 创建的子任务，用 `remote_children[].environment_id` 和 `thread_id` 到接收环境盘点。对 Paseo，按 `server-id` 选 daemon，再取 agent ID。下面是在持有 Paseo 注册文件和 provider 存储的电脑上运行的示例。要从另一台电脑发起，把整组命令的 `--local` 换成 `--ssh-host <别名>`。
+
+```powershell
+$target = @('--local', '--client', 'paseo', '--root', 'D:\PaseoHome')
+$inventory = local-agent-manager remote records @target | ConvertFrom-Json
+$inventory.records | Select-Object record_id, provider, references, hub_execution, parent_agent
+$plan = local-agent-manager remote plan @target --owner $inventory.owner.store_id --record-id '<完整 Paseo agent ID>' --provider-only | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $plan.goal_status -ne 'ready') { throw '请检查原生绑定和执行端计划。' }
+$plan | Select-Object daemon_record_id, native_ids, provider_owner, completion_scope | ConvertTo-Json -Depth 6
+$operation = @('--owner', $plan.owner.store_id, '--operation-id', $plan.operation_id, '--approval', $plan.approval)
+local-agent-manager remote apply @target @operation --clients-closed
+local-agent-manager remote status @target @operation
+local-agent-manager remote verify @target @operation
+```
+
+同一流程适用于 `--client t3code --root <T3 home>`。自动发现会核对 provider 配置及已保存的原生句柄。也可在 plan 传入执行机上的 `--bindings <清单绝对路径>`。Codex 需要绑定中记录的可执行文件，或显式传 `--codex-bin <绝对路径>`。Pi 还会核对精确文件与文件头。其他 daemon 记录共享目标、Codex 删除会波及额外后代，或执行前绑定已改变时，计划或执行会被阻挡。成功删除原生历史后，产品条目仍可见，后续恢复可能失败。
+
+如果已掌握独立 provider 所在机器、实际原生目录和完整 native ID，可直接在那台机器以 `--local --client native|claude|pi` 盘点，并用原生 ID 建立独立计划。此时不需要前端在线。OpenCode 的 `configured_server` 表示配置指向一个独立服务。T3 的 `spawn_on_environment` 和 Paseo 的 `daemon_runtime_selection` 描述默认启动路径。三者都只记录配置线索，当前支持的删除入口为产品侧的 `--frontend-only`。[服务选择与证据](adapters.md#远程执行与记录归属)
 
 ### Cindy SSH 任务的两端批准
 
@@ -722,6 +745,8 @@ Windows `--t3code-only` 使用本机已安装 T3 Nightly 的 CLI 发放短期凭
 增加无关表、列或索引可以继续使用该入口，缺少必需字段会阻挡。
 RPC 仍使用既有本机认证和 orchestration protocol 2，成功必须经过实际结果回读。
 原生记录的直接磁盘清理与历史导入各自沿用对应格式和接口契约。
+
+当前 Nightly 的 `thread.delete` 会同时删除由该 thread 分叉的存续侧聊。单条计划在预检和派发前检查这些侧聊，发现后会阻挡。上游在服务内加锁后决定级联范围，在线操作期间应避免同时给该 thread 新建侧聊。核验若读到同一命令删除其他 thread 的事件，会报告范围冲突。T3 还会按自身策略清理已删除 thread 的消息和搜索投影。[级联实现](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/orchestration-v2/Orchestrator.ts#L1952-L1971) · [产品侧内容清理](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/orchestration-v2/ProjectionMaintenance.ts)
 
 ```powershell
 local-agent-manager delete plan --client t3code --t3code-only --t3code-root 'D:/T3Home' --record-id '<完整 T3 thread ID>' --out t3-only.json --json

@@ -360,6 +360,10 @@ class OperationCoordinator:
                 codex_home=codex_home,
             )
             self._validate_apply_scope(document, normalized_scope)
+            if "daemon_provider_sha256" in document:
+                from .daemon_provider import active_proof
+                if not plan_sha256 or active_proof.get() != document["daemon_provider_sha256"]:
+                    raise OperationCoordinatorError("daemon_provider_approved_operation_required")
             from .cindy_remote import frozen as cindy_remote_binding
             remote_proof = cindy_remote_binding(document)
             from .orca_remote import frozen as orca_remote_binding
@@ -3965,6 +3969,9 @@ class OperationCoordinator:
                 capabilities["claude"].update(native_delete=any(a["kind"] == "delete_claude_session" for a in action_docs),
                     frontend_session_delete=True, verify=True, mode="partial",
                     reason="Released Orca session with a frozen Claude history disposition")
+        from .daemon_provider import active_proof
+        if active_proof.get() is not None:
+            payload["daemon_provider_sha256"] = active_proof.get()
         payload["plan_sha256"] = plan_sha256(payload)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(payload)

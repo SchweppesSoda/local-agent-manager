@@ -111,6 +111,34 @@ class T3ServerDeleteTests(unittest.TestCase):
         self.assertEqual([c['type'] for c in self.calls],['thread.delete'])
         self.assertEqual(self.native.read_bytes(),b'retained provider history')
 
+    def test_new_live_side_chat_blocks_parent_before_any_product_command(self):
+        code, plan = self.plan()
+        self.assertEqual(code, 0, plan)
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            insert(db, V2 + 'context_transfers', context_transfer_id='fork', type='fork',
+                   source_thread_id=THREAD, target_thread_id=KEEP)
+            db.execute(f"""UPDATE {V2}threads SET payload_json=json_set(payload_json,'$.lineage.sideChat',json('true'))
+                WHERE thread_id=?""", (KEEP,))
+            db.commit()
+        self.assertNotEqual(self.apply(plan)[0], 0)
+        self.assertEqual(self.calls, [])
+        code, blocked = self.plan()
+        self.assertNotEqual(code, 0)
+        self.assertIn('live_side_chat_outside_selection', json.dumps(blocked))
+
+    def test_verify_detects_a_cascade_committed_by_the_server(self):
+        code, plan = self.plan()
+        self.assertEqual(code, 0, plan)
+        self.assertEqual(self.apply(plan)[0], 0)
+        cid = self.calls[-1]['commandId']
+        with closing(sqlite3.connect(self.root / 'userdata/statev2.sqlite')) as db:
+            insert(db, 'orchestration_v2_events', event_id='side-chat-delete', command_id=cid,
+                   thread_id=KEEP, event_type='thread.deleted', payload_json='{}')
+            db.commit()
+        code, checked = self.verify(plan)
+        self.assertNotEqual(code, 0)
+        self.assertIn('product_cascade_outside_selection', json.dumps(checked))
+
     def test_batch_run_plans_and_verifies_both_ids_without_manual_hashes(self):
         output = self.base / 'batch.json'
         code, result = self.invoke('delete', 'run', '--client', 't3code', '--t3code-only',

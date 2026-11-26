@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 
 from . import frozen_files
+from . import t3code_provider_settings as t3_settings
 from .herdr_bound_adapter import native_catalog
 from .providers.t3 import strict_json
 from .record_identity import canonical_path
@@ -333,13 +334,19 @@ def discover_bindings(root=None, *, runtime_root=None):
     def settings_read():
         from .antigravity_cli_joint import held_settings
         current = held_settings(root, 'userdata/settings.json')
-        return current if current is not None else frozen_files.read_file(
-            root, 'userdata/settings.json', content=True, limit=1024*1024)
+        if current is not None:
+            return current
+        try:
+            return frozen_files.read_file(root, 'userdata/settings.json', content=True, limit=1024*1024)
+        except FileNotFoundError:
+            return None, b'{}'
 
     settings_proof, raw = settings_read()
     settings = strict_json(raw.decode("utf-8-sig"))
-    instances = settings.get("providerInstances") if isinstance(settings, dict) else None
-    if not isinstance(instances, dict):
+    if t3_settings.has_provider_policy():
+        raise BindingDiscoveryError([{"blocker_code": "t3code_managed_provider_requires_explicit_bindings"}])
+    instances = t3_settings.persisted_instances(settings)
+    if instances is None:
         raise BindingDiscoveryError([{"blocker_code": "t3code_provider_settings_unverified"}])
     data = read_database(root)
     try:
@@ -380,7 +387,10 @@ def discover_bindings(root=None, *, runtime_root=None):
                 bindings.append(binding)
                 instances_by_thread[thread_id] = instance_id
                 continue
-            instance = instances.get(instance_id)
+            # T3 seeds unconfigured built-in instances under their driver ID.
+            # A custom instance still needs its own persisted driver binding.
+            instance = instances.get(instance_id, {"driver": instance_id}
+                if instance_id in {"codex", "claudeAgent", "pi"} else None)
             if (not isinstance(instance, dict)
                     or row["default_provider"] not in {instance.get("driver"), instance_id}):
                 raise ValueError("provider_instance_unverified")

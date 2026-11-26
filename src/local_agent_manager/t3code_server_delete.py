@@ -1,6 +1,6 @@
 """Journaled, exact-ID T3 deletion through the product's local server.
 
-This is T3's soft deletion, not a purge. No provider-native delete is called.
+T3 tombstones the thread and may purge its own conversation projections.
 Worktree detachment is a durable product command before deletion, so later
 worktreeOnDelete sweeps cannot remove the selected thread's former checkout.
 """
@@ -34,6 +34,8 @@ _PROJECTION_COLUMNS = {
     V2 + 'provider_sessions': {'provider_session_id', 'thread_id', 'status'},
     V2 + 'provider_session_bindings': {'provider_session_id', 'thread_id'},
     V2 + 'provider_threads': {'provider_thread_id', 'thread_id', 'provider', 'driver', 'provider_instance_id', 'payload_json'},
+    V2 + 'context_transfers': {'source_thread_id', 'target_thread_id', 'type'},
+    'orchestration_v2_events': {'command_id', 'thread_id', 'event_type'},
     'orchestration_v2_effect_outbox': {'effect_id', 'thread_id', 'status'},
 }
 
@@ -92,10 +94,21 @@ def _qualify_projection(db):
             raise T3ServerError('t3code_server_projection_unverified')
 
 
-def _snapshot(root, thread_id):
+def _snapshot(root, thread_id, *, command_id=None):
     with closing(connect_readonly(database_path(root))) as db:
         db.execute('BEGIN')
         _qualify_projection(db)
+        # T3's liveSideChatIds follows outgoing fork transfers. thread.delete
+        # would tombstone these local children in the same product command.
+        if db.execute(f"""SELECT 1 FROM {V2}context_transfers f JOIN {V2}threads child
+                ON child.thread_id=f.target_thread_id WHERE f.source_thread_id=? AND f.type='fork'
+                AND child.deleted_at IS NULL AND json_type(child.payload_json,'$.lineage.sideChat')='true'
+                LIMIT 1""", (thread_id,)).fetchone():
+            raise T3ServerError('t3code_live_side_chat_outside_selection')
+        if command_id and db.execute("""SELECT 1 FROM orchestration_v2_events WHERE thread_id<>?
+                AND event_type='thread.deleted' AND (command_id=? OR command_id=?||':side-chat:'||thread_id)
+                LIMIT 1""", (thread_id, command_id, command_id)).fetchone():
+            raise T3ServerError('t3code_product_cascade_outside_selection')
         record = rows(db, f'''SELECT thread_id,project_id,default_provider,provider_instance_id,deleted_at,
             json_extract(payload_json,'$.worktreePath') AS worktree_path,
             json_extract(payload_json,'$.branch') AS branch FROM {V2}threads WHERE thread_id=?''', (thread_id,))
@@ -236,7 +249,7 @@ def require_absent(evidence, timeout=0):
     _check_identity(evidence)
     deadline = time.monotonic() + timeout
     while True:
-        row = _snapshot(evidence['root'],evidence['thread_id'])
+        row = _snapshot(evidence['root'],evidence['thread_id'],command_id=evidence['command_id'])
         if (row.get('deleted_at') is not None and row.get('worktree_path') is None and not row['active'] and not row['live_sessions']
                 and row['native_refs'] == evidence['before']['native_refs']
                 and all(x['status'] in ('succeeded','cancelled') for x in row['effects'])):

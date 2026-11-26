@@ -119,6 +119,7 @@ class T3DiscoveryTests(unittest.TestCase):
             {"name": "TEST_CREDENTIAL", "value": "PRIVATE_SECRET", "sensitive": True}]}}}
         self.write_settings()
         for item in (patch("local_agent_manager.t3code_server_delete._bundled_install", return_value=self.install),
+                     patch("local_agent_manager.t3code_provider_settings.has_provider_policy", return_value=False),
                      patch.dict(os.environ, {"APPDATA": str(self.base / "appdata"), "T3CODE_HOME": str(self.root)})):
             item.start()
             self.addCleanup(item.stop)

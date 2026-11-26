@@ -160,6 +160,19 @@ def closure(db, ids, *, native_ids=(), receipt_only=False):
     found.update(r[0] for r in db.execute(f"SELECT thread_id FROM projection_threads WHERE {where}", ids))
     if found != set(ids):
         fail("selected_thread_missing")
+    # Unpairing or pruning a task projection does not retire the delegation
+    # preserved in either event log. Its other endpoint owns a separate thread.
+    for table, owner in (("orchestration_v2_events", "thread_id"), ("orchestration_events", "stream_id")):
+        threads = _where(owner, ids)
+        if table == "orchestration_events":
+            threads += " AND aggregate_kind='thread'"
+        if db.execute(f"""SELECT 1 FROM {table} WHERE {threads} AND (
+                (event_type IN ('thread.created','thread.metadata-updated','thread.deleted')
+                    AND json_type(payload_json,'$.delegatedFrom')='object') OR
+                ((event_type='subagent.updated' OR (event_type='turn-item.updated'
+                    AND json_extract(payload_json,'$.type')='subagent'))
+                    AND json_type(payload_json,'$.remoteChild')='object')) LIMIT 1""", ids).fetchone():
+            fail("peer_thread_closure_unqualified")
     if db.execute(f"SELECT 1 FROM scheduled_tasks WHERE {where} LIMIT 1", ids).fetchone():
         fail("scheduled_task_reference")
     if db.execute(f"SELECT 1 FROM {V2}context_transfers WHERE ({_where('source_thread_id',ids)}) != ({_where('target_thread_id',ids)}) LIMIT 1", ids + ids).fetchone():

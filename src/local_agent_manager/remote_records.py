@@ -1,7 +1,7 @@
 """Run a bounded record request in the authoritative checkout on the owning host."""
 from __future__ import annotations
 
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 import hashlib
 import io
 import json
@@ -26,6 +26,7 @@ HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}", re.ASCII)
 HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 VERBS = ("records", "plan", "apply", "status", "verify")
 REPLY_LIMIT = 16 * 1024 * 1024
+LOCAL_OWNER = "@local"
 
 
 def _digest(value):
@@ -41,7 +42,7 @@ def directory_identity(root):
     return _digest([os.path.normcase(str(root)), info.st_dev, info.st_ino])
 
 
-def _owner(client, root, pi_agent_dir=None):
+def _owner(client, root, pi_agent_dir=None, *, cindy_ssh_layout=True):
     """Resolve a path on this host only. File IDs distinguish replaced profiles."""
     if not is_local_absolute_locator(str(root)) or root != Path(os.path.abspath(root)):
         raise ValueError("remote_owner_absolute_path_required")
@@ -72,7 +73,7 @@ def _owner(client, root, pi_agent_dir=None):
     # Cindy's SSH launchers explicitly set these two homes on the executor.
     # Only this execution mode has this layout. Device/share providers may differ.
     cindy_ssh = {"native": "codex-home", "claude": "claude-home"}
-    if client in cindy_ssh and root == Path.home() / ".xdt-server" / "v1" / cindy_ssh[client]:
+    if cindy_ssh_layout and client in cindy_ssh and root == Path.home() / ".xdt-server" / "v1" / cindy_ssh[client]:
         identity["cindy_ssh_provider"] = "codex" if client == "native" else client
     if client == "pi":
         from .pi_sessions import resolve_pi_paths
@@ -114,46 +115,11 @@ def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=()
                  "status": ref.session_status, "boundary_id": ref.boundary_id,
                  "rewind_at": ref.boundary_rewind_at_ms} for ref in catalog.references]
     if client == "t3code":
-        from .t3code_store import V2, database_path, identifier, provider_rows, rows
-        from .sqlite_utils import connect_readonly
-        with closing(connect_readonly(database_path(root))) as db:
-            db.execute("BEGIN")
-            records = {}
-            # Both projection generations can coexist for one thread. These
-            # metadata reads grant no qualification to the offline SQL writer.
-            for table in ("projection_threads", V2 + "threads"):
-                if not db.execute("SELECT 1 FROM sqlite_schema WHERE name=? AND type='table'", (table,)).fetchone():
-                    raise ValueError("t3code_thread_projection_unavailable")
-                extra = ",default_provider,provider_instance_id" if table.startswith(V2) else ""
-                for row in rows(db, f"SELECT thread_id,project_id,archived_at,deleted_at{extra} FROM {table} ORDER BY thread_id"):
-                    tid = identifier(row.pop("thread_id"))
-                    record = records.setdefault(tid, {"record_id": tid, "projections": [], "provider_references": []})
-                    record["projections"].append({"table": table, **row})
-            current, legacy = provider_rows(db)
-            for row in current:
-                tid = row["thread_id"]
-                if tid not in records:
-                    raise ValueError("t3code_orphan_provider_projection")
-                records[tid]["provider_references"].append({"provider": row["driver"] or row["provider"],
-                    "instance_id": row["provider_instance_id"], "locator": row["native_id"],
-                    "kind": "nativeThreadRef", "strength": row["native_strength"]})
-            for row in legacy:
-                if row["thread_id"] not in records:
-                    raise ValueError("t3code_orphan_provider_projection")
-                for field in ("provider_thread_id", "provider_session_id"):
-                    if row[field] is not None:
-                        records[row["thread_id"]]["provider_references"].append({"provider": row["provider_name"],
-                            "kind": field, "locator": row[field]})
-            return [records[tid] for tid in sorted(records)]
+        from .daemon_records import t3_records
+        return t3_records(root)
     if client == "paseo":
-        from .paseo_store import PaseoAdapter
-        adapter = PaseoAdapter(profile_root=root)
-        if any(error.blocks_inventory for error in adapter.snapshot_references().errors):
-            raise ValueError("paseo_registry_inventory_incomplete")
-        return [{"record_id": row["id"], "provider": row["provider"], "status": row["lastStatus"],
-                 "references": row["references"], "opaque_session_handle_present": row["opaque_session_handle_present"],
-                 "opaque_native_handle_present": row["opaque_native_handle_present"],
-                 "native_handle_projected": row["native_handle_projected"]} for row in adapter.observations]
+        from .daemon_records import paseo_records
+        return paseo_records(root)
     from .session_catalog_factory import build_pi_catalog, build_claude_catalog
     if client == "native":
         from .adapters import NativeIntegrityAdapter
@@ -264,8 +230,10 @@ def _physical_scope(doc, owner):
             key = "environment_id" if client == "t3code" else "server_id"
             if Path(e["root"]) != root or e[key] != instance:
                 raise ValueError("remote_frontend_owner_mismatch")
+            provider = e["before"]["default_provider"] if client == "t3code" else e["provider"]
+            history = "preserved" if provider in {"codex", "claude", "claudeAgent", "pi", "antigravity"} else "outside_scope"
             return {"completion_scope": "t3_soft_delete" if client == "t3code" else "paseo_daemon_delete",
-                    "provider_history": "preserved", "frontend_ids": [record_id]}
+                    "provider_history": history, "frontend_ids": [record_id]}
         from . import t3code_cleanup, paseo_cleanup
         module = t3code_cleanup if client == "t3code" else paseo_cleanup
         e = module.evidence_from_document(doc)
@@ -323,14 +291,20 @@ def _validate(q, *, executor_only=False):
         required.add("owner")
     if verb == "plan":
         required.update(("record_id", "frontend_only", "bindings", "codex_bin"))
+        if "provider_only" in q:
+            if q["provider_only"] is not True or q["client"] not in {"t3code", "paseo"} or q.get("frontend_only"):
+                raise ValueError("remote_provider_only_scope_invalid")
+            required.add("provider_only")
     if verb in {"apply", "status", "verify"}:
         required.update(("operation_id", "approval"))
     if verb == "apply":
         required.add("clients_closed")
         if "controller_approval" in q:
             required.add("controller_approval")
+    local = (q.get("destination") == LOCAL_OWNER and q.get("client") in {"t3code", "paseo", "native", "pi", "claude"}
+             and not {"cindy_hosted", "controller_approval"}.intersection(q))
     if (set(q) != required or q["protocol"] != PROTOCOL or verb not in VERBS or q["client"] not in CLIENTS
-            or not isinstance(q["destination"], str) or not HOST.fullmatch(q["destination"])
+            or not isinstance(q["destination"], str) or not (local or HOST.fullmatch(q["destination"]))
             or not isinstance(q["root"], str) or not 0 < len(q["root"]) <= 32767
             or any(ord(char) < 32 for char in q["root"])):
         raise ValueError("remote_request_invalid")
@@ -350,7 +324,8 @@ def _validate(q, *, executor_only=False):
                 or any(ord(c) < 32 for c in q["bindings"])):
             raise ValueError("remote_binding_manifest_invalid")
     if verb == "plan" and q["codex_bin"] is not None and (
-            q["client"] not in {"native", "orca"} or not isinstance(q["codex_bin"], str) or any(ord(c) < 32 for c in q["codex_bin"])):
+            q["client"] not in {"native", "orca"} and not q.get("provider_only")
+            or not isinstance(q["codex_bin"], str) or any(ord(c) < 32 for c in q["codex_bin"])):
         raise ValueError("remote_codex_binary_invalid")
     if verb == "plan" and (not isinstance(q["record_id"], str) or not 0 < len(q["record_id"]) <= 512
                            or q["record_id"] != q["record_id"].strip() or any(ord(c) < 32 for c in q["record_id"])):
@@ -403,28 +378,54 @@ def _recheck_hosted(stored, owner, coverage, verb, receipt, approval):
         raise ValueError("cindy_hosted_session_binding_changed")
 
 
-def dispatch(q, *, executor_only=False):
+def dispatch(q, *, executor_only=False, provider_source=None):
     _validate(q, executor_only=executor_only)
     verb, client, root = q["verb"], q["client"], Path(q["root"])
     if executor_only and (client not in {"native", "claude", "pi"} or "controller_approval" in q
                           or verb == "plan" and "cindy_hosted" not in q):
         raise ValueError("cindy_executor_only_scope_invalid")
-    owner = _owner(client, root, q.get("pi_agent_dir"))
+    if client in {"t3code", "paseo"} and verb in {"apply", "status", "verify"}:
+        path = manager_state_base() / PLANS_DIRECTORY / (validate_operation_id(q["operation_id"]) + ".json")
+        binding = strict_json_load(path.parent / "remote-bindings" / path.name)
+        if "daemon_provider" in binding:
+            from .daemon_provider import route
+            proof = binding["daemon_provider"]
+            owner = proof["owner"]
+            doc = strict_json_load(path)
+            if (q["approval"] != _digest(binding) or q["owner"] != owner["store_id"] or client != owner["client"]
+                    or root != Path(owner["root"]) or q["destination"] != binding["destination"]
+                    or q["operation_id"] != binding["operation_id"] or binding["plan_sha256"] != plan_sha256(doc)
+                    or doc.get("daemon_provider_sha256") != _digest(proof)):
+                raise ValueError("remote_provider_approval_or_owner_mismatch")
+            # Receipts belong to the native owner. A cold status/verify can
+            # read them even when the original daemon profile is offline.
+            return route(q, proof, document=doc)
+    cindy_ssh_layout = provider_source is None and q["destination"] != LOCAL_OWNER
+    owner = _owner(client, root, q.get("pi_agent_dir"), cindy_ssh_layout=cindy_ssh_layout)
     agent_dir = Path(owner["agent_dir"]) if client == "pi" else None
     common = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner}
     if verb == "records":
         records = _records(client, root, agent_dir=agent_dir)
-        if owner != _owner(client, root, q.get("pi_agent_dir")):
+        if owner != _owner(client, root, q.get("pi_agent_dir"), cindy_ssh_layout=cindy_ssh_layout):
             raise ValueError("remote_owner_changed")
         return 0, {**common, "goal_status": "complete", "records": records}
     if q["owner"] != owner["store_id"]:
         raise ValueError("remote_owner_changed")
     if verb == "plan":
         record_id, frontend_only = q["record_id"], q["frontend_only"]
+        if q.get("bindings") is not None and not is_local_absolute_locator(q["bindings"]):
+            raise ValueError("remote_bindings_absolute_path_required")
+        if q.get("provider_only"):
+            from .daemon_provider import prepare, route
+            return route(q, prepare(owner, q))
         matches = [r for r in _records(client, root, agent_dir=agent_dir,
                    hosted_id=record_id if "cindy_hosted" in q else None) if r["record_id"] == record_id]
         if not matches or client in {"pi", "claude", "native"} and len(matches) != 1:
             raise ValueError("remote_exact_record_not_found")
+        if client in {"t3code", "paseo"} and not frontend_only:
+            from .daemon_records import require_native_route
+            for record in matches:
+                require_native_route(record)
         args = _scope(client, root, record_id, frontend_only)
         orca_codex = client == "orca" and matches[0]["engine"] == "codex"
         if (orca_codex or client == "native" and "cindy_hosted" in q) and not q["codex_bin"]:
@@ -435,8 +436,6 @@ def dispatch(q, *, executor_only=False):
         if runtime:
             args.append("--codex-bin=" + runtime["path"])
         if q["bindings"] is not None:
-            if not is_local_absolute_locator(q["bindings"]):
-                raise ValueError("remote_bindings_absolute_path_required")
             args.append(f"--{client}-bindings={q['bindings']}")
         code, result = _operation(client, root, ["delete", "plan", *args], agent_dir=agent_dir)
         if code or result.get("goal_status") != "ready":
@@ -457,6 +456,16 @@ def dispatch(q, *, executor_only=False):
     coverage = _physical_scope(doc, owner)
     envelope = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner,
                 "operation_id": operation, "plan_sha256": digest}
+    if provider_source is not None:
+        from .daemon_provider import check_plan
+        if doc.get("daemon_provider_sha256") != _digest(provider_source) or provider_source["target"]["owner"] != owner:
+            raise ValueError("daemon_provider_native_owner_mismatch")
+        # The plan hash keeps the exact Pi path after its long/short aliases
+        # stop resolving to a file. Prove their physical identity at admission.
+        check_plan(coverage, provider_source, planning=verb == "plan")
+        envelope["daemon_provider"] = provider_source
+    elif "daemon_provider_sha256" in doc:
+        raise ValueError("daemon_provider_approved_operation_required")
     if executor_only:
         envelope["cindy_executor_only"] = True
     if client == "orca":
@@ -492,7 +501,8 @@ def _bound_result(q, envelope, stored, path, doc, coverage, matches, runtime):
     envelope_path = path.parent / "remote-bindings" / path.name
     index_receipt = envelope_path.parent / "host-index" / path.name
     frozen_args = ["--operation-id", operation, "--plan", str(path)]
-    if owner != _owner(client, root, q.get("pi_agent_dir")):
+    if owner != _owner(client, root, q.get("pi_agent_dir"), cindy_ssh_layout=(
+            "daemon_provider" not in envelope and q["destination"] != LOCAL_OWNER)):
         raise ValueError("remote_owner_changed")
     if verb == "plan":
         envelope["codex_runtime"] = runtime
@@ -637,13 +647,15 @@ def _bound_result(q, envelope, stored, path, doc, coverage, matches, runtime):
     return code, {**binding, "goal_status": result["goal_status"], "result": result}
 
 
-def worker(stdin, stdout, *, executor_only=False):
+def worker(stdin, stdout, *, executor_only=False, local_owner=False):
     request = None
     try:
         raw = stdin.read(64 * 1024 + 1)
         if len(raw) > 64 * 1024:
             raise ValueError("remote_request_too_large")
         request = strict_json(raw.decode("utf-8"))
+        if (request.get("destination") == LOCAL_OWNER) != local_owner:
+            raise ValueError("remote_local_owner_transport_mismatch")
         code, reply = dispatch(request, executor_only=executor_only)
     except (OSError, ValueError, RuntimeError, sqlite3.Error, KeyError, TypeError, AttributeError, RecursionError) as exc:
         code = 1
@@ -670,6 +682,7 @@ def add_arguments(parser):
         sub.add_argument("--progress", action="store_true", help="在标准错误输出请求阶段及结果计数")
         destination = sub.add_mutually_exclusive_group(required=True)
         destination.add_argument("--ssh-host", help="已信任的 OpenSSH 主机别名")
+        destination.add_argument("--local", action="store_true", help="在当前电脑操作 T3、Paseo 或独立原生存储")
         destination.add_argument("--cindy-executor-only", action="store_true",
                                  help="直接在本机清理 Cindy 执行端记录，控制端可离线")
         clients = CLIENTS if verb == "records" else tuple(c for c in CLIENTS if c != "cindy")
@@ -680,7 +693,9 @@ def add_arguments(parser):
             sub.add_argument("--owner", required=True, help="remote records 返回的 owner.store_id")
         if verb == "plan":
             sub.add_argument("--record-id", help="完整记录 ID，Cindy 托管任务也可用 --cindy-task 定位")
-            sub.add_argument("--frontend-only", action="store_true", help="仅执行 T3 或 Paseo 自带的前端删除")
+            mode = sub.add_mutually_exclusive_group()
+            mode.add_argument("--frontend-only", action="store_true", help="仅执行 T3 或 Paseo 自带的前端删除")
+            mode.add_argument("--provider-only", action="store_true", help="仅删除当前 thread 或 agent 独占并已绑定的原生会话")
             sub.add_argument("--bindings", help="执行端 T3 或 Paseo 原生存储绑定清单的绝对路径")
             sub.add_argument("--codex-bin", help="执行端实际使用的 Codex 程序绝对路径")
             sub.add_argument("--cindy-task", help="同账号设备或共享 provider 的完整 Cindy 任务 ID")
@@ -720,9 +735,10 @@ def exchange(request, *, executor_only=False):
         return 1, {"goal_status": "blocked", "error": str(exc), "destination": request.get("destination")}
     try:
         payload = canonical_json_bytes(request)
-        if executor_only:
+        if executor_only or request["destination"] == LOCAL_OWNER:
             stream = io.BytesIO()
-            code = worker(io.BytesIO(payload), stream, executor_only=True)
+            code = worker(io.BytesIO(payload), stream, executor_only=executor_only,
+                          local_owner=request["destination"] == LOCAL_OWNER)
             raw = stream.getvalue()
         else:
             code, raw = _ssh(request["destination"], payload)
@@ -774,8 +790,13 @@ def _check_controller_plan(path, request):
 
 def run(args, output, errors):
     executor_only = args.cindy_executor_only
-    request = {"protocol": PROTOCOL, "destination": "local-executor" if executor_only else args.ssh_host, "verb": args.remote_verb,
+    if args.ssh_host == LOCAL_OWNER:
+        raise ValueError("remote_ssh_alias_invalid")
+    destination = LOCAL_OWNER if args.local else "local-executor" if executor_only else args.ssh_host
+    request = {"protocol": PROTOCOL, "destination": destination, "verb": args.remote_verb,
                "client": args.client, "root": args.root}
+    if getattr(args, "provider_only", False):
+        request["provider_only"] = True
     for name in ("owner", "record_id", "frontend_only", "bindings", "codex_bin", "operation_id", "approval", "clients_closed"):
         if hasattr(args, name):
             request[name] = getattr(args, name)
