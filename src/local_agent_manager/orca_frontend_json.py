@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+from urllib.parse import unquote
 
 from .orca_journal_cleanup import decode, encode, fail, operation, record_references, text
 
@@ -109,13 +110,15 @@ def workspace(value, selected, known_tabs, native_ids, *, namespace="local", rem
             if owned and tab["contentType"] == "agent-session" and tab["entityId"] in selected:
                 if remote and worktree != remote["workspace"]:
                     fail("remote_tab_workspace_mismatch")
+                if remote and remote.get("provider") == "claude" and tab.get("agentSessionAgent") != "claude":
+                    fail("remote_tab_provider_unverified")
                 removed_tabs.add(tab["id"])
                 worktree_tabs.setdefault(worktree, set()).add(tab["id"])
             else:
                 # A native title on a terminal is not proof that its resume
                 # argv, buffers and provider home belong to this selection.
                 title = tab.get("aiVaultTitle")
-                if owned and isinstance(title, dict) and title.get("agent") == "codex" and title.get("sessionId") in native_ids:
+                if owned and isinstance(title, dict) and title.get("agent") in {"codex", "claude"} and title.get("sessionId") in native_ids:
                     fail("terminal_restore_binding_unverified")
                 kept.append(tab)
                 kept_tabs.add(tab["id"])
@@ -172,7 +175,7 @@ def workspace(value, selected, known_tabs, native_ids, *, namespace="local", rem
     for record in mapping(value.get("sleepingAgentSessionsByPaneKey", {})).values():
         record = mapping(record)
         provider = mapping(record.get("providerSession"))
-        if record.get("agent") == "codex" and provider.get("id") in native_ids:
+        if record.get("agent") in {"codex", "claude"} and provider.get("id") in native_ids:
             fail("sleeping_session_binding_unverified")
     # A structured session does not own terminal scrollback. Encountering such
     # a cross-model attachment requires the separate terminal binding contract.
@@ -182,8 +185,57 @@ def workspace(value, selected, known_tabs, native_ids, *, namespace="local", rem
     return value, worktree_tabs, worktree_groups
 
 
+def _paired_snapshot(snapshots, remote):
+    env = unquote(remote["host"].removeprefix("runtime:"))
+    if env not in mapping(snapshots):
+        return
+    for worktree, state in mapping(mapping(snapshots[env]).get("workspaces")).items():
+        state = mapping(state)
+        tabs = sequence(state.get("tabs"))
+        if state.get("worktree") != worktree or any(not text(mapping(t).get("id")) for t in tabs):
+            fail("remote_snapshot_workspace_unverified")
+        if len({t["id"] for t in tabs}) != len(tabs):
+            fail("remote_snapshot_tab_ambiguous")
+        selected = [t for t in tabs if t.get("type") == "agent-session" and t.get("sessionId") == remote["sid"]]
+        if any(t.get("replacesSessionId") == remote["sid"] for t in tabs):
+            fail("remote_snapshot_replacement_unverified")
+        if not selected:
+            continue
+        if (worktree != remote["workspace"] or any(t.get("agent") != remote.get("provider", "codex") for t in selected)
+                or state.get("agentSessionsUnverifiable")):
+            fail("remote_snapshot_binding_unverified")
+        removed = {t["id"] for t in selected}
+        if "agentSenderAssociations" in state:
+            senders = mapping(state["agentSenderAssociations"])
+            for link in (*sequence(senders.get("associations")), *sequence(senders.get("attachments"))):
+                if (mapping(link).get("sessionId") == remote["sid"] or link.get("identity") == "orca_session_id:" + remote["sid"]
+                        or any(str(link.get("paneKey", "")).startswith(tab + ":") for tab in removed | {"structured-agent-session-" + remote["sid"]})):
+                    fail("remote_snapshot_sender_unverified")
+        state["tabs"] = [t for t in tabs if t["id"] not in removed]
+        removed_groups = set()
+        for group in sequence(state.get("tabGroups", [])):
+            order = strings(group.get("tabOrder"))
+            group["tabOrder"] = [t for t in order if t not in removed]
+            if order and not group["tabOrder"]:
+                removed_groups.add(group["id"])
+            if group.get("activeTabId") in removed:
+                group["activeTabId"] = next(iter(group["tabOrder"]), None)
+            if "recentTabIds" in group:
+                group["recentTabIds"] = [t for t in strings(group["recentTabIds"]) if t not in removed]
+        if removed_groups:
+            state["tabGroups"] = [g for g in state["tabGroups"] if g["id"] not in removed_groups]
+            if state.get("tabGroupLayout") is not None:
+                state["tabGroupLayout"] = _layout(state["tabGroupLayout"], removed_groups)
+            if state.get("activeGroupId") in removed_groups:
+                state["activeGroupId"] = None
+        if state.get("activeTabId") in removed:
+            state["activeTabId"] = state["activeTabType"] = None
+
+
 def ui_state(value, selected, known_tabs=(), native_ids=(), *, remote=None):
     value = deepcopy(mapping(value))
+    if remote and "remoteLayoutSnapshots" in value:
+        _paired_snapshot(value["remoteLayoutSnapshots"], remote)
     removed_tabs, removed_groups = {}, {}
     def merge(target, values):
         for key, items in values.items():
@@ -191,6 +243,8 @@ def ui_state(value, selected, known_tabs=(), native_ids=(), *, remote=None):
     pane_keys = set()
     def pane(tab, sid):
         digest = hashlib.sha256(sid.encode("utf-8")).hexdigest()[:32]
+        if tab.startswith("chat-tab-") and tab != "chat-tab-":
+            tab = "structured-agent-session-" + sid
         return f"{tab}:{digest[:8]}-{digest[8:12]}-4{digest[13:16]}-a{digest[17:20]}-{digest[20:]}"
     if isinstance(known_tabs, dict):
         pane_keys.update(pane(tab, sid) for tab, sids in known_tabs.items() for sid in sids if sid in selected)

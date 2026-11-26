@@ -30,12 +30,12 @@ deletedSshConfigAliases sshRemotePtyLeases sshPtyConsumerRecoveries
 claudeLivePtySessionIds migrationUnsupportedPtyEntries legacyPaneKeyAliasEntries
 automations automationRuns onboarding featureInteractionTelemetryBuckets
 codexResetCreditAttemptLedger worktreeMetaByIdentity worktreeIdentityAliases
-mobileClientTabSelectionsByDeviceId
+mobileClientTabSelectionsByDeviceId remoteLayoutSnapshots
 """.split())
 EMPTY_DOMAINS = frozenset("""
 sshRemotePtyLeases sshPtyConsumerRecoveries claudeLivePtySessionIds
 migrationUnsupportedPtyEntries legacyPaneKeyAliasEntries automations automationRuns
-mobileClientTabSelectionsByDeviceId
+mobileClientTabSelectionsByDeviceId remoteLayoutSnapshots
 """.split())
 TERMINAL_FIELDS = frozenset("""
 id worktreeId title customTitle defaultTitle color createdAt sortOrder ptyId shellOverride
@@ -124,10 +124,10 @@ def _observe(root):
     # Missing/unreadable journals are different. This proof accepts absence
     # only, including absence of sidecars, restore copies and old journal dirs.
     for name in frontend._names(root):
-        if name.startswith("agent-session-journal"):
+        if name.startswith(("agent-session-journal", "agent-session-domain")):
             fail("guard_journal_present")
     json_sources, databases = frontend.sources(root)
-    indexes = frontend._indexes(root)
+    indexes = frontend._indexes(root, databases)
     current_index = next(item for item in indexes if item["path"] == "orca-profile-index.json")
     if current_index.get("absent"):
         fail("guard_profile_index_required")
@@ -138,7 +138,7 @@ def _observe(root):
         fail("guard_profile_membership_unverified")
     # All index backups must refer to the same complete observed directories.
     for item in indexes:
-        if not item.get("absent"):
+        if not item.get("absent") and not item["path"].endswith(".authority"):
             _, raw = frozen_files.read_file(root, item["path"], content=True, limit=16 * 1024 * 1024)
             if {entry["id"] for entry in decode(raw)["profiles"]} != directories:
                 fail("guard_profile_membership_unverified")
@@ -161,7 +161,7 @@ def _observe(root):
         before = frozen_files._revision(path.lstat())
         with closing(connect_readonly(path)) as db:
             db.execute("BEGIN")
-            profile.qualify(db)
+            profile.qualify(db, all_domains=True)
             if profile.meta(db)[0]["profile_id"] != relative.split("/")[1]:
                 fail("guard_profile_identity_unverified")
             if db.execute("SELECT 1 FROM profile_state_automation_runs LIMIT 1").fetchone():

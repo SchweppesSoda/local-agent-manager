@@ -66,6 +66,10 @@ def sources(root):
                 if not prefix:
                     fail("root_profile_database_layout_unverified")
                 databases.append(relative)
+            elif prefix and name == "profile-state.db.authority":
+                _, marker = frozen_files.read_file(root, relative, content=True, limit=32)
+                if marker != b"sqlite\n" or not _exists(root, prefix + "profile-state.db"):
+                    fail("profile_sqlite_authority_unverified")
             elif any(name.endswith(suffix) and _DB_BACKUP.fullmatch(name[:-len(suffix)])
                      for suffix in ("-wal", "-shm", "-journal")):
                 frozen_files._plain(frozen_files.checked_path(root, relative).lstat())
@@ -80,7 +84,7 @@ def sources(root):
     return sorted(json_files), sorted(databases)
 
 
-def _indexes(root):
+def _indexes(root, databases=()):
     result = []
     for relative in ("orca-profile-index.json", "orca-profile-index.json.bak", "orca-profile-index.json.tmp"):
         if not _exists(root, relative):
@@ -105,12 +109,21 @@ def _indexes(root):
         if len(set(ids)) != len(ids) or value["activeProfileId"] not in ids:
             fail("profile_index_identity_unverified")
         result.append(observation)
+    for relative in databases:
+        if relative.endswith("/profile-state.db") and _exists(root, relative + ".authority"):
+            marker, data = frozen_files.read_file(root, relative + ".authority", content=True, limit=32)
+            if data != b"sqlite\n":
+                fail("profile_sqlite_authority_unverified")
+            result.append(marker)
     return result
 
 
 def _record_metadata(root, sid, raw):
     value = mapping(raw)
     record = parse_orca_record(sid, value)
+    if record.provider == "claude" and record.host == "local":
+        from .orca_claude import metadata
+        return metadata(sid, value)
     if (record.host != "local" or record.wsl_distro is not None or record.provider != "codex"
             or record.home_variable != "CODEX_HOME" or record.unsupported_recovery):
         fail("selected_record_recovery_unverified")
@@ -126,15 +139,17 @@ def _metadata(root, selected, json_sources):
     records, tabs = [], {}
     def add_tab(tab, sid):
         tabs.setdefault(tab, set()).add(sid)
-    with closing(connect_readonly(frozen_sqlite.path_for(root, journal.RELATIVE))) as db:
+    def observe_record(sid, value):
+        if sid in selected:
+            records.append(_record_metadata(root, sid, value))
+        else:
+            journal.guard_fork_source(value, selected, "local")
+            journal.record_references(value, selected)
+    with closing(connect_readonly(frozen_sqlite.path_for(root, journal.writer_name(root)))) as db:
         db.execute("BEGIN")
         journal.qualify(db)
         for sid, raw in rows(db, "SELECT session_id,record_json FROM agent_session_records"):
-            value = decode(raw)
-            if sid in selected:
-                records.append(_record_metadata(root, sid, value))
-            else:
-                journal.record_references(value, selected)
+            observe_record(sid, decode(raw))
         for tab, sid in rows(db, "SELECT tab_id,session_id FROM agent_session_tabs"):
             if sid in selected:
                 add_tab(tab, sid)
@@ -149,16 +164,13 @@ def _metadata(root, selected, json_sources):
         for key in ("records", "unusableRecords"):
             for sid, item in mapping(value[key]).items():
                 record = mapping(item).get("raw") if key == "unusableRecords" else item
-                if sid in selected:
-                    records.append(_record_metadata(root, sid, record))
-                else:
-                    journal.record_references(record, selected)
+                observe_record(sid, record)
         for item in value.get("sessionTabs", ()):
             if item["sessionId"] in selected:
                 add_tab(item["tabId"], item["sessionId"])
     # Stable source order is not an ownership rule; independently qualify every
     # historical copy and retain the union of its complete native handle chain.
-    unique = {(r["session_id"], r["workspace_id"], r["home"], tuple(r["native_ids"])): r for r in records}
+    unique = {(r["session_id"], r["workspace_id"], r["home"], tuple(r["native_ids"]), r.get("chain", "")): r for r in records}
     return [unique[key] for key in sorted(unique)], {key: sorted(tabs[key]) for key in sorted(tabs)}
 
 
@@ -256,7 +268,7 @@ def _hooks(root, native_ids, known_tabs=(), *, require_empty=False):
                         if not text(item.get("source")) or not journal.integer(item.get("receivedAt")):
                             fail("hook_spool_schema_unverified")
                         payload = mapping(item.get("payload"))
-                        if item["source"] == "codex" and payload.get("session_id") in native_ids:
+                        if item["source"] in {"codex", "claude"} and payload.get("session_id") in native_ids:
                             fail("terminal_hook_binding_unverified")
                     result.append(observed)
                 continue
@@ -324,12 +336,13 @@ def _runtime_metadata(root):
     return result
 
 
-def freeze(root, selected, *, timestamp=None, frozen=None, remote_owner=None):
+def freeze(root, selected, *, timestamp=None, frozen=None, remote_owner=None, claude_history=None):
     root = Path(root)
     selected = sorted(set(selected))
     if not selected or any(not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", sid) for sid in selected):
         fail("frontend_selection_invalid")
     json_sources, profile_dbs = sources(root)
+    journal_path = journal.writer_name(root)
     if remote_owner:
         from .orca_remote import controller_metadata
         records, tabs = controller_metadata(root, remote_owner, json_sources)
@@ -353,9 +366,9 @@ def freeze(root, selected, *, timestamp=None, frozen=None, remote_owner=None):
         if family == "profile_json":
             json_hashes[item["before"]["sha256"]] = item["after_sha256"]
     evidence = {"schema_version": SCHEMA, "root": str(root), "session_ids": selected,
-        "indexes": _indexes(root),
+        "indexes": _indexes(root, profile_dbs),
         "records": records, "tab_ids": tabs, "timestamp": timestamp,
-        "journal": ({"root": str(root), "absent": True} if remote_owner and not _exists(root, journal.RELATIVE)
+        "journal": ({"root": str(root), "absent": True} if remote_owner and not _exists(root, journal_path)
                     else journal.freeze(root, journal_ids)), "json_files": json_files, "json_hashes": json_hashes,
         "profile_databases": [profile.freeze(root, relative, set(selected), ui_tabs, native_ids,
             timestamp=timestamp, json_hashes=json_hashes, remote=remote_owner) for relative in profile_dbs],
@@ -363,6 +376,8 @@ def freeze(root, selected, *, timestamp=None, frozen=None, remote_owner=None):
         "runtime_observations": _runtime_metadata(root)}
     if remote_owner:
         evidence["remote_owner"] = remote_owner
+    if claude_history is not None:
+        evidence["claude_history"] = claude_history
     from .adapters.orca import OrcaAdapter
     from .orca_cleanup import covers_error
     errors = OrcaAdapter(profile_root=root).snapshot_references(refresh=True).errors
@@ -394,7 +409,8 @@ def apply(evidence, *, phase_callback, require_closed):
     """Execute one frozen frontend child after its native children completed."""
     root = validate(evidence)
     require_closed()
-    current = freeze(root, evidence["session_ids"], timestamp=evidence["timestamp"], remote_owner=evidence.get("remote_owner"))
+    current = freeze(root, evidence["session_ids"], timestamp=evidence["timestamp"], remote_owner=evidence.get("remote_owner"),
+                     claude_history=evidence.get("claude_history"))
     if current != evidence:
         fail("frontend_evidence_changed")
     arguments = _arguments(evidence)
@@ -432,7 +448,7 @@ def remaining(evidence, *, terminal_verified=False):
         fail("frontend_restore_sources_changed")
     arguments = _arguments(evidence)
     observed = _hooks(root, arguments["native_ids"], evidence["tab_ids"])
-    if _indexes(root) != evidence["indexes"]:
+    if _indexes(root, databases) != evidence["indexes"]:
         fail("frontend_profile_indexes_changed")
     if _runtime_metadata(root) != evidence["runtime_observations"]:
         fail("frontend_runtime_metadata_changed")
@@ -440,14 +456,18 @@ def remaining(evidence, *, terminal_verified=False):
         fail("frontend_hook_sources_changed")
     journal_ids = arguments["selected"] if evidence["records"] else set()
     if evidence["journal"].get("absent"):
-        if _exists(root, journal.RELATIVE):
+        if _exists(root, journal.writer_name(root)):
             fail("controller_journal_appeared")
         count = 0
     else:
+        if journal.writer_name(root) != evidence["journal"]["relative"]:
+            fail("journal_store_changed")
         count = journal.remaining(evidence["journal"], journal_ids, terminal_verified=terminal_verified)
     if "remote_owner" in evidence:
         from .orca_remote import controller_metadata
         count += len(controller_metadata(root, evidence["remote_owner"], json_sources)[0])
+    elif "claude_history" in evidence and not count:
+        count += len(_metadata(root, journal_ids, json_sources)[0])
     count += sum(profile.remaining(item, **arguments, terminal_verified=terminal_verified)
                  for item in evidence["profile_databases"])
     for item in evidence["json_files"]:

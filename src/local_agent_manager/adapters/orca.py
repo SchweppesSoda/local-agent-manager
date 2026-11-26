@@ -16,7 +16,7 @@ from ..orca_discovery import (
     OrcaDiscoveryError, local_orca_path, prove_account_home, prove_runtime_home,
     require_plain_directory, require_plain_file,
 )
-from ..orca_metadata import read_orca_journal
+from ..orca_metadata import journal_name, read_orca_journal
 from ..record_identity import EngineCapability, RecordKey, StoreKey, canonical_path
 
 
@@ -40,7 +40,7 @@ class OrcaAdapter:
         if self._snapshot is not None and not refresh:
             return self._snapshot
         root = self.profile_root
-        journal = root / "agent-session-journal.db"
+        journal = root / journal_name(root)
         sources = [journal]
         errors: list[SourceFailure] = []
         stores: dict[str, StoreKey] = {}
@@ -119,7 +119,7 @@ class OrcaAdapter:
                 candidate = None
                 if record.host == "local" and record.wsl_distro is None:
                     try:
-                        candidate = StoreKey(record.provider, local_orca_path(record.home_locator, host=record.host))
+                        candidate = StoreKey(record.provider, local_orca_path(record.launched_home or record.home_locator, host=record.host))
                     except ValueError:
                         pass
                 failure("provider_native_catalog_not_supported", store=candidate)

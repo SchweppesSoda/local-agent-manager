@@ -517,7 +517,8 @@ def freeze_orca_target(adapter: Any, home: Path, record_id: str, *,
             blockers.append("orca_target_retains_reference")
         if not rollouts:
             blockers.append("orca_target_rollout_scope_incomplete")
-        rows, errors = read_orca_journal(root / "agent-session-journal.db", root)
+        from .orca_journal_cleanup import writer_name
+        rows, errors = read_orca_journal(root / writer_name(root), root)
         blockers.extend(error.message for error in errors if error.blocks_delete)
         related = tuple(row for row in rows if row.provider == "codex" and row.host == "local" and
                         row.wsl_distro is None and canonical_path(row.home_locator) == canonical_path(home))
@@ -826,6 +827,19 @@ def evidence_for_actions(document, actions):
         if kind == "delete_orca_frontend":
             from .orca_cleanup import validate_action
             validate_action(document, action)
+            continue
+        if kind == "delete_claude_session":
+            from .orca_claude import validate_actions
+            from .orca_cleanup import frontend_evidence
+            from .operation_coordinator import OperationCoordinator
+            from .agent_operations import action_binding
+            closure, = frontend_evidence(document).values()
+            identifier = action["action_id"] if isinstance(action, Mapping) else str(action.action_id)
+            approved = frozen_actions.get(identifier)
+            if (identifier not in validate_actions(document, closure) or approved is None
+                    or (action != approved if isinstance(action, Mapping)
+                        else OperationCoordinator._metadata(action_binding(action)) != approved["binding"])):
+                raise ValueError("orca_claude_approved_action_changed")
             continue
         if isinstance(action, Mapping):
             action_id = action.get("action_id")

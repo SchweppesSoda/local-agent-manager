@@ -44,12 +44,18 @@ def covers_error(evidence, error):
     paths.update(canonical_path(root / item["path"]) for item in evidence["hook_observations"] if "sha256" in item)
     source = canonical_path(error.source)
     covered = (error.message == "legacy_or_profile_restore_source_not_read" and source in paths
-        or evidence.get("remote_owner") and source == canonical_path(root / journal.RELATIVE) and (
+        or evidence.get("remote_owner") and source == canonical_path(root / journal.journal_name(root)) and (
             error.message == "journal_unavailable" and evidence["journal"].get("absent")
-            or error.message == "record_native_root_unproven" and not evidence["journal"].get("absent"))
+            or (error.message == "record_native_root_unproven" or evidence["remote_owner"].get("provider") == "claude"
+                and error.message == "provider_native_catalog_not_supported") and not evidence["journal"].get("absent"))
         or error.message == "agent_hooks_namespaces_not_covered" and source == canonical_path(root / "agent-hooks")
         or error.message == "runtime_verification_not_covered" and source == canonical_path(root / "orca-runtime.json")
             and any(item["path"] == "orca-runtime.json" and "pid" in item for item in evidence["runtime_observations"]))
+    if (evidence.get("claude_history") and error.error_type == "OrcaInventoryIncomplete"
+            and error.message == "provider_native_catalog_not_supported"
+            and source == canonical_path(root / journal.journal_name(root)) and error.store is not None
+            and error.store.backend == "claude" and error.store.canonical_path == canonical_path(evidence["claude_history"]["home"])):
+        return "covered_errors" not in evidence or error.to_dict() in evidence["covered_errors"]
     return (covered and error.error_type == "OrcaInventoryIncomplete" and error.store is None
             and ("covered_errors" not in evidence or error.to_dict() in evidence["covered_errors"]))
 
@@ -60,7 +66,7 @@ def covers_reference(evidence, reference):
     if (evidence.get("remote_owner") or reference.client != "orca" or reference.evidence_complete is not True or native is None
             or reference.host != "local" or reference.path_namespace != "local" or native.store.backend != "codex"
             or reference.engine != "codex" or reference.kind not in {ReferenceKind.CURRENT, ReferenceKind.HISTORY}
-            or canonical_path(reference.source) != canonical_path(Path(evidence["root"]) / journal.RELATIVE)
+            or canonical_path(reference.source) != canonical_path(Path(evidence["root"]) / evidence["journal"]["relative"])
             or reference.frontend_id not in evidence["session_ids"]):
         return False
     return any(record["session_id"] == reference.frontend_id
@@ -118,6 +124,9 @@ def validate_action(document, action):
             if evidence["frozen"].get("frontend") != closure:
                 journal.fail("frontend_native_proof_mismatch")
             expected.append(evidence["action_id"])
+    if "claude_history" in closure:
+        from .orca_claude import validate_actions
+        expected = validate_actions(document, closure)
     if sorted(payload.get("requires_action_ids", ())) != sorted(expected):
         journal.fail("frontend_dependency_scope_changed")
     return closure
@@ -136,11 +145,11 @@ def _selected(adapters, selectors):
         except FileNotFoundError:
             continue
         try:
-            (root / journal.RELATIVE).lstat()
+            (root / journal.journal_name(root)).lstat()
         except FileNotFoundError:
             pass
         else:
-            with closing(connect_readonly(root / journal.RELATIVE)) as db:
+            with closing(connect_readonly(root / journal.journal_name(root))) as db:
                 journal.qualify(db)
                 values.extend(journal.rows(db, "SELECT session_id,record_json FROM agent_session_records"))
         for relative, family in frontend.sources(root)[0]:
@@ -202,6 +211,15 @@ def build_context(coordinator, adapters, guards, selectors, engines, *, document
     requests = _selected(selected, selectors)
     if requests is None or not requests:
         return None
+    for adapter, ids in requests.values():
+        if any(r.engine == "claude" and r.frontend_id in ids for r in adapter.snapshot_references().references):
+            if len(requests) != 1 or len(ids) != 1 or set(selectors) != ids or engines and set(engines) != {"claude"}:
+                journal.fail("claude_exact_session_required")
+            from .orca_claude import build_context as claude_context
+            return claude_context(coordinator, adapter, guards, next(iter(ids)), document=document)
+    from .orca_runtime import RUNTIME_ACCEPTED
+    if not RUNTIME_ACCEPTED or engines and set(engines) != {"codex"}:
+        return None
     frontend_only = document is not None and document.get("actions") and all(a.get("kind") == KIND for a in document["actions"])
     if not frontend_only and any(adapter.codex_bin_hint is None for adapter, _ids in requests.values()):
         # Keep the established inventory-only plan (and its persisted guard
@@ -212,6 +230,8 @@ def build_context(coordinator, adapters, guards, selectors, engines, *, document
     for key, (adapter, ids) in requests.items():
         old = previous.get(key)
         closure = frontend.freeze(adapter.profile_root, ids, timestamp=old["timestamp"] if old else None)
+        if any(r.get("provider") == "claude" for r in closure["records"]):
+            journal.fail("claude_authoritative_domain_journal_required")
         if old is not None and closure != old:
             journal.fail("frontend_evidence_changed")
         closures[key] = closure
@@ -328,6 +348,10 @@ def execute(evidence, *, client_inspector, phase_callback):
     if "remote_owner" in evidence:
         from .orca_remote import verify
         verify(evidence["remote_owner"])
+    elif "claude_history" in evidence:
+        from .orca_claude import remaining
+        if remaining(evidence["claude_history"]):
+            journal.fail("native_dependency_remains")
     else:
         for record in evidence["records"]:
             if not _native_absent(record["home"], record["native_ids"]):

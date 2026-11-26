@@ -1,4 +1,4 @@
-"""Read Orca journal metadata at upstream efbf651c7bb2eec778daf1844f8228e70809ec9f.
+"""Read Orca's shared journal metadata projection.
 
 Only agent_session_records/tabs/store_meta are queried. Journal/chat rows,
 operations, credentials and launch arguments are never returned or executed.
@@ -18,10 +18,23 @@ from typing import Any
 from .client_contracts import SourceFailure
 from .sqlite_utils import connect_readonly
 
-UPSTREAM_REVISION = "efbf651c7bb2eec778daf1844f8228e70809ec9f"
+UPSTREAM_REVISION = "1c61fb73e5ddbacbe1465d2e0506483f57017c5f"
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{8,128}\Z")
 _LINK_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _MAX_RECORD_BYTES = 1024 * 1024
+DOMAIN_JOURNAL = "agent-session-domain.db"
+LEGACY_JOURNAL = "agent-session-journal.db"
+
+
+def journal_name(root: Path) -> str:
+    """The host opens the domain store first. Never fall back past an orphan WAL."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            (root / (DOMAIN_JOURNAL + suffix)).lstat()
+        except FileNotFoundError:
+            continue
+        return DOMAIN_JOURNAL
+    return LEGACY_JOURNAL
 
 
 class OrcaMetadataError(ValueError):
@@ -68,6 +81,7 @@ class OrcaRecord:
     handles: tuple[OrcaHandle, ...]
     unsupported_recovery: bool
     lease: OrcaLease
+    launched_home: str | None = None
 
 
 def _text(value: Any, maximum: int = 512) -> bool:
@@ -100,6 +114,44 @@ def _handle(value: Any) -> tuple[OrcaHandle, str, str]:
     key = provider + ":" + json.dumps([native, leaf] if provider == "claude" else native, ensure_ascii=False, separators=(",", ":"))
     root = provider + ":" + json.dumps(native, ensure_ascii=False, separators=(",", ":"))
     return OrcaHandle(value["linkId"], provider, native, leaf, value["origin"]), key, root
+
+
+def launch_home(raw):
+    """A founding home can differ from the home reported by the acquired SDK."""
+    launch = raw.get("launchedAccount")
+    chain, lease = raw["providerHandleChain"], raw["lease"]
+    if not isinstance(launch, dict) or not chain:
+        return None
+    fence, home = launch.get("fence"), launch.get("accountHome")
+    if (type(fence) is not int or not 0 < fence <= lease["runtimeFence"] or fence != chain[-1]["mintedAtFence"]
+            or not isinstance(home, dict) or "kind" in home or home.get("variable") != "CLAUDE_CONFIG_DIR"
+            or not _text(home.get("path"), 4096)):
+        return None
+    if "acquiredAccount" in raw:
+        receipt = raw["acquiredAccount"]
+        location = raw["location"]
+        # A mirrored record can retain the executing host's original local scope.
+        scope_suffix = "\0" + (location["wslDistro"] or "") + "\0" + location["workspaceId"]
+        boundary = raw.get("providerContextBoundary") or {}
+        if (not isinstance(receipt, dict) or set(receipt) != {"version", "hostId", "sessionId", "scope", "context",
+                "fence", "observedThroughFence", "generation", "spawnToken", "recipe"}
+                or type(receipt.get("version")) is not int or receipt["version"] != 1
+                or any(not isinstance(receipt[k], str) or not 0 < len(receipt[k]) <= 512 for k in ("hostId", "generation", "spawnToken"))
+                or receipt["hostId"] not in ("local", location["executionHostId"])
+                or receipt.get("scope") != receipt["hostId"] + scope_suffix or receipt.get("sessionId") != raw["sessionId"]
+                or type(receipt.get("fence")) is not int or receipt["fence"] != fence
+                or type(receipt.get("observedThroughFence")) is not int or receipt["observedThroughFence"] != lease["runtimeFence"]
+                or not isinstance(boundary, dict) or receipt.get("context") != boundary.get("operationId")
+                or not isinstance(receipt.get("recipe"), dict) or receipt["recipe"].get("home") != home["path"]):
+            return None
+        recipe = receipt["recipe"]
+        if recipe.get("route") == "system":
+            if set(recipe) != {"route", "home", "configDir"} or recipe["configDir"] not in (None, home["path"]):
+                return None
+        elif (recipe.get("route") != "managed" or set(recipe) != {"route", "home", "accountId"}
+              or not isinstance(recipe["accountId"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,512}", recipe["accountId"])):
+            return None
+    return home["path"]
 
 
 def parse_orca_record(row_id: Any, value: Any) -> OrcaRecord:
@@ -153,8 +205,8 @@ def parse_orca_record(row_id: Any, value: Any) -> OrcaRecord:
         and "processStartTimeMs" in owner and (owner["processStartTimeMs"] is None or _integer(owner["processStartTimeMs"], 0))
         and _text(owner.get("spawnToken"))), "record_owner_invalid")
     checkpoint = lease.get("journalCheckpoint")
-    _require("journalCheckpoint" in lease and (checkpoint is None or isinstance(checkpoint, dict)
-        and _integer(checkpoint.get("epoch"), 0) and _integer(checkpoint.get("sequence"), 0)), "record_lease_invalid")
+    _require(checkpoint is None or isinstance(checkpoint, dict)
+        and _integer(checkpoint.get("epoch"), 0) and _integer(checkpoint.get("sequence"), 0), "record_lease_invalid")
     death = lease.get("deathEvidence")
     _require("deathEvidence" in lease and (death is None or isinstance(death, dict)
         and death.get("kind") in {"exit-observed", "pid-absent", "identity-mismatch"} and _text(death.get("detail"))
@@ -191,7 +243,8 @@ def parse_orca_record(row_id: Any, value: Any) -> OrcaRecord:
                                 lease["handoffStage"], owner["hostId"] if owner else None,
                                 owner["pid"] if owner else None,
                                 owner["processStartTimeMs"] if owner else None,
-                                death["kind"] if death else None))
+                                death["kind"] if death else None),
+                      launch_home(value) if provider == "claude" else None)
 
 
 def read_orca_journal(path: Path, profile_root: Path) -> tuple[tuple[OrcaRecord, ...], tuple[SourceFailure, ...]]:
@@ -203,7 +256,7 @@ def read_orca_journal(path: Path, profile_root: Path) -> tuple[tuple[OrcaRecord,
         with closing(connect_readonly(path)) as connection:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN")
-            if connection.execute("PRAGMA user_version").fetchone()[0] != 4:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != (2 if path.name == DOMAIN_JOURNAL else 4):
                 raise OrcaMetadataError("journal_schema_unsupported")
             for table, columns in {
                 "agent_session_records": {"session_id": ("TEXT", True), "record_json": ("TEXT", False)},

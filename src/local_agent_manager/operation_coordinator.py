@@ -1524,6 +1524,10 @@ class OperationCoordinator:
             if "remote_owner" in evidence:
                 from .orca_remote import verify
                 verify(evidence["remote_owner"])
+            elif "claude_history" in evidence:
+                from .orca_claude import remaining as native_remaining
+                if native_remaining(evidence["claude_history"]):
+                    residuals.extend(a["action_id"] for a in document["actions"] if a["kind"] == "delete_claude_session")
             else:
                 remains += sum(not _native_absent(record["home"], record["native_ids"]) for record in evidence["records"])
             if remains:
@@ -1855,12 +1859,14 @@ class OperationCoordinator:
     def _qualified_orca_context(self, candidates, guards, selectors, engines, *, document=None):
         """Qualify an exact native cascade, optionally with its frontend closure."""
         from .orca_runtime import RUNTIME_ACCEPTED
-        if not RUNTIME_ACCEPTED or os.name != "nt" or engines and tuple(engines) != ("codex",):
+        if os.name != "nt" or engines and tuple(engines) not in {("codex",), ("claude",)}:
             return None
         from .orca_cleanup import build_context as build_full_context
         full = build_full_context(self, candidates, guards, selectors, engines, document=document)
         if full is not None:
             return full
+        if not RUNTIME_ACCEPTED or engines and tuple(engines) != ("codex",):
+            return None
         from .client_contracts import describe_adapter
         from .orca_target_safety import plan_target_evidence
         from .orca_authorization import coordinator_scope
@@ -3943,9 +3949,14 @@ class OperationCoordinator:
             "excluded": ["other_profiles", "request_archives", "remote_sync_and_backups", "webview_and_os_caches"]}}
         if scope["client"] == "orca" and payload["goal_status"] == "ready":
             from .orca_remote import frozen
-            if frozen(payload):
-                capabilities["codex"].update(frontend_session_delete=True, verify=True, mode="partial",
+            pair = frozen(payload)
+            if pair:
+                capabilities[pair["remote_owner"].get("provider", "codex")].update(frontend_session_delete=True, verify=True, mode="partial",
                     reason="Exact paired controller session with independently verified executor completion")
+            elif any(a["kind"] == "delete_orca_frontend" and a["impact"].get("external_engine") == "claude" for a in action_docs):
+                capabilities["claude"].update(native_delete=any(a["kind"] == "delete_claude_session" for a in action_docs),
+                    frontend_session_delete=True, verify=True, mode="partial",
+                    reason="Released Orca session with a frozen Claude history disposition")
         payload["plan_sha256"] = plan_sha256(payload)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(payload)

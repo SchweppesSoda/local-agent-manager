@@ -36,7 +36,7 @@ def related(rows, root):
 
 def require_closed(evidence, *, client_inspector=None):
     from .codex_desktop_state import running_related_clients
-    from .orca_metadata import read_orca_journal
+    from .orca_metadata import journal_name, read_orca_journal
     from .orca_target_safety import inspect_orca_target_processes
     root = Path(evidence["root"])
     if client_inspector is not None and client_inspector is not running_related_clients:
@@ -51,10 +51,10 @@ def require_closed(evidence, *, client_inspector=None):
         fail("writer_running")
     if evidence.get("remote_owner") and evidence["journal"].get("absent"):
         from .orca_frontend import _exists
-        if _exists(root, "agent-session-journal.db"):
+        if _exists(root, journal_name(root)):
             fail("controller_journal_appeared")
         return
-    records, errors = read_orca_journal(root / "agent-session-journal.db", root)
+    records, errors = read_orca_journal(root / journal_name(root), root)
     if errors:
         fail("writer_lease_unverified")
     leases = (record.lease for record in records if not evidence.get("remote_owner") or record.host == "local")

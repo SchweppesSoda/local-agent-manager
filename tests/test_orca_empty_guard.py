@@ -114,6 +114,22 @@ class OrcaEmptyGuardTests(unittest.TestCase):
             db.commit()
             self.assertFalse(guard.proves_no_sessions(self.root))
 
+    def test_split_only_recovery_state_cannot_prove_an_empty_guard(self):
+        path = self.directory / "profile-state.db"
+        path.with_suffix(".db.authority").write_bytes(b"sqlite\n")
+        with closing(sqlite3.connect(path)) as db:
+            db.executescript(profile.PARTS_DDL)
+            self.assertTrue(guard.proves_no_sessions(self.root))
+            payload = '{"sessionId":"retained"}'
+            for domain in ("worktreeMeta", "futureRecovery"):
+                with self.subTest(domain=domain):
+                    db.execute("INSERT INTO profile_state_document_parts VALUES(?, '[]', 0, ?, ?)",
+                               (domain, payload, profile.sha(payload)))
+                    db.commit()
+                    self.assertFalse(guard.proves_no_sessions(self.root))
+                    db.execute("DELETE FROM profile_state_document_parts WHERE domain=?", (domain,))
+                    db.commit()
+
     def test_unknown_domains_bindings_and_recovery_state_fail_closed(self):
         variants = [
             {"futureRecovery": {}}, {"automations": [{"id": "automation"}]},

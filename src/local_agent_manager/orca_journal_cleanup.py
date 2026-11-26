@@ -6,9 +6,9 @@ import json
 import re
 
 from . import frozen_sqlite
-from .orca_metadata import parse_orca_record
+from .orca_metadata import DOMAIN_JOURNAL, LEGACY_JOURNAL, journal_name, parse_orca_record
 
-RELATIVE = "agent-session-journal.db"
+RELATIVE = LEGACY_JOURNAL
 MAX_ITEMS = 20000
 DDL = """
 CREATE TABLE journal_rows(session_id TEXT NOT NULL,epoch TEXT NOT NULL,seq INTEGER NOT NULL,ts INTEGER NOT NULL,row_json TEXT NOT NULL,PRIMARY KEY(session_id,epoch,seq));
@@ -24,6 +24,35 @@ CREATE TABLE agent_session_store_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 """
 SESSION_TABLES = ("journal_rows", "journal_sessions", "journal_repairs", "journal_imports",
                   "journal_set_aside", "agent_session_records", "agent_session_tabs")
+# Orca's current domain writer stores each epoch, including retired ones, under
+# the Orca session ID. Global PR events, upload sweeps and claim keys are shared.
+DOMAIN_SESSION_TABLES = (
+    "journal_chat_state", "journal_queue_clear_members", "journal_items", "journal_settlements",
+    "journal_input_end_observations", "journal_item_subagent_names", "journal_item_tombstones",
+    "journal_removed_turns", "journal_item_aliases", "journal_submission_attempts", "journal_send_receipts",
+    "journal_provider_activity", "journal_events", "journal_queue_cards", "journal_edit_leases",
+    "journal_outline_cache", "journal_retire_pending", "journal_text_tail",
+    "agent_session_command_receipts", "agent_session_tabs", "agent_session_records")
+DOMAIN_CHAT_TABLES = ("pr_chat_actions", "pr_event_deliveries", "pr_pending_actions")
+
+
+def writer_name(root):
+    name = journal_name(root)
+    if name == DOMAIN_JOURNAL:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            try:
+                (root / (RELATIVE + suffix)).lstat()
+            except FileNotFoundError:
+                continue
+            fail("journal_legacy_reimport_unverified")
+    return name
+
+
+def owner_columns(db):
+    if db.execute("PRAGMA user_version").fetchone()[0] == 2:
+        return ([(t, "session_id") for t in DOMAIN_SESSION_TABLES]
+                + [(t, "chat_id") for t in DOMAIN_CHAT_TABLES])
+    return [(t, "session_id") for t in SESSION_TABLES]
 
 
 class OrcaFrontendError(RuntimeError):
@@ -88,7 +117,17 @@ def _sql(value):
 
 
 def qualify(db):
-    if db.execute("PRAGMA user_version").fetchone()[0] != 4 or db.execute("PRAGMA application_id").fetchone()[0] != 0:
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if db.execute("PRAGMA application_id").fetchone()[0] != 0:
+        fail("journal_writer_schema_unverified")
+    if version == 2:
+        # Includes the generated columns, all FK actions, indexes and triggers.
+        definitions = "\n".join(r[0] for r in rows(db,
+            "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type,name"))
+        if hashlib.sha256(definitions.encode()).hexdigest() != "09023642d559cef33353d4703263c9aedcf4db7e19296bd1698056a9b0902e96":
+            fail("domain_journal_writer_schema_unverified")
+        return
+    if version != 4:
         fail("journal_writer_schema_unverified")
     expected = {_sql(statement) for statement in DDL.split(";") if statement.strip()}
     actual = set()
@@ -129,6 +168,17 @@ def record_references(value, selected):
         return value
     after = command(value["conversationCommand"], selected, record=True)
     return value if after == value["conversationCommand"] else {**value, "conversationCommand": after}
+
+
+def guard_fork_source(value, selected, host):
+    # The child can replay inherited item actions through its source journal.
+    if not isinstance(value, dict) or value.get("provider") != "claude" or value.get("forkedFrom") is None:
+        return
+    parent, location = value["forkedFrom"], value.get("location")
+    if not isinstance(parent, dict) or not text(parent.get("sessionId")) or not isinstance(location, dict) or not text(location.get("executionHostId")):
+        fail("claude_fork_source_unverified")
+    if location["executionHostId"] == host and parent["sessionId"] in selected:
+        fail("claude_fork_source_still_required")
 
 
 def _launch(value):
@@ -245,14 +295,27 @@ def transform(db, selected):
             after = record_references(value, selected)
             if after != value:
                 db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (encode(after), sid))
+    columns = owner_columns(db)
+    if legacy_restore_references(db, selected):
+        fail("domain_legacy_session_restore_unverified")
     for sid in sorted(selected):
-        for table in SESSION_TABLES:
-            db.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
+        if db.execute("PRAGMA user_version").fetchone()[0] == 2:
+            # These rows have independent consumers: upload GC and the connector
+            # delivery outbox. Their lifetime is outside this single-chat plan.
+            if any(db.execute(f"SELECT 1 FROM {t} WHERE session_id=? LIMIT 1", (sid,)).fetchone()
+                   for t in ("agent_session_attachment_claims", "journal_connector_replies")):
+                fail("domain_session_external_claim_unverified")
+        for table, column in columns:
+            db.execute(f"DELETE FROM {table} WHERE {column}=?", (sid,))
 
 
 def count_remaining(db, selected):
-    count = sum(db.execute(f"SELECT count(*) FROM {table} WHERE session_id=?", (sid,)).fetchone()[0]
-                for table in SESSION_TABLES for sid in selected)
+    columns = owner_columns(db)
+    if db.execute("PRAGMA user_version").fetchone()[0] == 2:
+        columns.extend((t, "session_id") for t in ("agent_session_attachment_claims", "journal_connector_replies"))
+    count = legacy_restore_references(db, selected) + sum(
+        db.execute(f"SELECT count(*) FROM {table} WHERE {column}=?", (sid,)).fetchone()[0]
+        for table, column in columns for sid in selected)
     for key, raw in rows(db, "SELECT operation_key,row_json FROM agent_session_operations ORDER BY operation_key"):
         value = decode(raw)
         count += operation(key, value, selected) != value
@@ -263,8 +326,21 @@ def count_remaining(db, selected):
     return count
 
 
+def legacy_restore_references(db, selected):
+    if not selected or db.execute("PRAGMA user_version").fetchone()[0] != 2:
+        return 0
+    count = 0
+    for key, value in rows(db, "SELECT key, CASE WHEN key GLOB 'journal.legacy-copy-source:*' OR "
+                           "key GLOB 'journal.legacy-pending-copy:*' THEN value END "
+                           "FROM agent_session_store_meta WHERE key GLOB 'journal.legacy-*:*'"):
+        # Retired originals append a content digest to the Orca session ID.
+        identifier = key.split(":", 2)[1]
+        count += identifier in selected or value in selected
+    return count
+
+
 def freeze(root, selected):
-    return frozen_sqlite.freeze(root, RELATIVE, qualifier=qualify, transform=lambda db: transform(db, selected))
+    return frozen_sqlite.freeze(root, writer_name(root), qualifier=qualify, transform=lambda db: transform(db, selected))
 
 
 def apply(evidence, selected, *, phase_callback):

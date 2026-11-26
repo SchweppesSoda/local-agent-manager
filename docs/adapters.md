@@ -235,7 +235,7 @@ Claude 订阅账号 Home 和旧 `codex-accounts` 的逐 provider 绑定仍未适
 | 独立 Pi | agent 根：显式参数 → `PI_CODING_AGENT_DIR` → `~/.pi/agent`；session 根：显式参数 → `PI_CODING_AGENT_SESSION_DIR` → 项目 `sessionDir` → 全局 `sessionDir` → `agentDir/sessions`。 |
 | 独立 agy | `--antigravity-bin` 与 `--antigravity-root` 分别指定并核验；不自动继承某个前端的实例目录。 |
 | Herdr | Codex／Claude／Pi 的 native root 通过 `--herdr-bindings` 逐会话声明，Codex BIN、Pi agent 根与相关运行文件分别声明；默认只读引用不猜 home。agy 未注册完整清理能力。 |
-| Orca | Codex 根据已验证账号／runtime-home 证据及已知布局绑定，BIN 可显式指定；Claude 仅有已限定根的引用保护。Pi／agy 无对应完整清理资格。 |
+| Orca | Codex 根据已验证的账号或 runtime home 和已知布局绑定，可显式指定 BIN。结构化 Claude 从实际启动账号定位转录。Pi／agy 无对应完整清理资格。配对与游标条件见[远程执行与记录归属](#远程执行与记录归属)。 |
 | WorkBuddy、千问办公 | 使用各自的存储／SDK 适配；不能从相似名称推成四种 Agent 的可替换 BIN／Home。 |
 
 `environment inventory` 的配置投影不等于上述记录清理绑定：当前 T3 只投影固定
@@ -300,7 +300,7 @@ Claude／Antigravity driver。它验证的是 `homePath/skillsSubdir` 与挂载�
 | native / Codex、Pi、Claude | 对应引擎专用 writer | 无前端行的独立记录正常；每个物理 root 分别批准 |
 | antigravity / 独立 CLI | 精确会话数据库、共享摘要、恢复镜像、resume cache 和产物 | Windows 排他句柄及冻结格式；已知前端引用和未知关系阻挡 |
 | Orca / Codex | journal 引用与已证明 homes 的原生清单；限定 Windows 原生删除 | 静态能力关闭，精确 v3 operation 逐目标资格见下文；未知来源保持 incomplete |
-| Orca / Claude、其他引擎 | 只读引用与来源错误 | 本机 Claude account root 仅用于精确保护，不提供 Orca native catalog/writer |
+| Orca / Claude | Windows 结构化会话的精确 journal、恢复标签和独占转录 | 原生删除要求已释放租约、实际启动账号及完整单线游标。其他引擎仅展示可识别的元数据。 |
 | Herdr / Codex、Claude、Pi | 持久化 current/restore；显式 live metadata | 默认 rootless 只读；Windows 显式绑定有原生、前端及恢复副本的完整清理路径 |
 | WorkBuddy / WorkBuddy | 独立 SQLite、精确会话 artifacts 和 UI 引用 | 仅支持已识别 5.6.2 本地终态范围，Windows writer 覆盖及完整冻结证据；未知副本只读 |
 | 千问办公 / QwenWork CN | 主/子会话数据库、独占 SDK 文件及已识别 UI 引用清理 | 已核实 1.2.5 CN schema；分批删除与冷验证，云端、共享 SDK 和未知恢复引用阻断对应目标 |
@@ -448,16 +448,24 @@ manual、GUI 和直接服务入口使用相同 gate，阻止绕过已有 journal
 
 | 客户端和核对版本 | 用于定位的证据 | 已实现的清理范围 |
 |---|---|---|
-| Cindy 0.1.146 | `remote_host_id` 标出 SSH alias。`agent_device_id` 标出同账号设备或 `share:…`。执行机用控制设备身份和任务 ID 派生影子工作目录，共享会话另带分享和成员身份。 | 单一 SSH 绑定支持 Codex、Claude。设备和直接分享支持具有匹配原生工作目录的 Codex、Claude、Pi。共享来宾只剩一个任务和一个原生定位符时，可精确移除这两个索引项。同账号 Pi 同时核对控制端账号目录、任务、来源设备和备份正文摘要。迁移、分叉、中转及多重绑定保留供核对。[任务 ID 派生](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/sessionIdentity.ts) · [来宾索引](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [分享身份](https://github.com/makecindy/cindy/blob/v0.1.146/packages/device-link/src/providerSharePeer.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
+| Cindy 0.1.146 | `remote_host_id` 标出 SSH alias。`agent_device_id` 标出同账号设备或 `share:…`。执行机用控制设备身份和任务 ID 派生影子工作目录，共享会话另带分享和成员身份。 | 单一 SSH 绑定支持 Codex、Claude。设备和直接分享支持具有匹配原生工作目录的 Codex、Claude、Pi。直接来宾多任务可在控制端任务、影子工作目录和原生历史逐一吻合时，精确移除选中的一对索引项。同账号 Pi 同时核对控制端账号目录、任务、来源设备和备份正文摘要。迁移、分叉、中转及无法区分的绑定保留供核对。[任务 ID 派生](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/sessionIdentity.ts) · [来宾索引](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [分享身份](https://github.com/makecindy/cindy/blob/v0.1.146/packages/device-link/src/providerSharePeer.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
 | T3 Code Nightly 0.1.13-nightly.20261125.5245 | 环境使用持久化的 `environment-id`。thread 和 provider 恢复句柄从该环境的数据库读取，同 ID 的 v1/v2 投影归入一条远程清单记录。 | 在具备运行时与绑定的 Windows 执行端，可清理选中 thread、已绑定原生会话及计划列出的依赖。若只请求产品自带删除，会标记 thread 为已删除。peer 环境或未解决的跨线程、工作流、反馈引用会阻挡完整删除。[远程架构](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/docs/internals/05_remote.md) · [工作流的执行环境](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/apps/server/src/persistence/Migrations/110_Workflows.ts) |
 | Paseo 0.17.4 | daemon 保存 `server-id`，agent ID 和恢复句柄属于这台服务器。`paseo.parent-server-id` 描述父任务所在服务器。 | 在具备运行时与绑定的 Windows 执行端，可清注册记录、绑定的原生会话及已列入计划的桌面副本。仅请求 daemon 删除时，核验 RPC 与注册文件。其他电脑的桌面副本单独核对。[跨服务器父子关系](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/tools/paseo-tools.ts) · [daemon 存储](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/agent-storage.ts) |
-| Orca 1.4.277 | 结构化会话由执行机的 journal 持有。控制端的 `runtime:<environmentId>` 分区通过配对端点公钥定位该 profile。两端有 journal 时还须匹配工作区、账号 home 和完整句柄链。 | 已验证的 Windows Codex 组合可清执行端原生记录、journal 和恢复副本。执行端完成后，控制端可清对应结构化标签、布局、已识别 profile 恢复副本及归属吻合的 journal。旧 SSH 终端、WSL、未配对主机及其它 provider 只报告可见元数据。[执行主机](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/execution-host/execution-host.ts) · [配对环境](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-catalog/runtime-environments.ts) · [执行端公钥](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-store/runtime-e2ee-keypair-file.ts) · [结构化启动](https://github.com/stablyai/orca/blob/v1.4.277/src/main/runtime/agent-session/launch/structured-agent-launch-composition.ts) |
+| Orca 1.4.277 | 结构化会话由执行机的 journal 持有。控制端的 `runtime:<environmentId>` 分区通过配对端点公钥定位该 profile。两端有 journal 时还须匹配工作区、账号 home 和完整句柄链。 | 已验证的 Windows Codex 组合可清执行端原生记录、journal 和恢复副本。Claude 结构化会话可清已证明独占的转录，共享或分叉的转录按原样保留。执行端完成后，控制端可清对应结构化标签、布局、已识别 profile 恢复副本及归属吻合的 journal。旧 SSH 终端、WSL、未配对主机及其它 provider 只报告可见元数据。[执行主机](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/execution-host/execution-host.ts) · [配对环境](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-catalog/runtime-environments.ts) · [执行端公钥](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-store/runtime-e2ee-keypair-file.ts) · [结构化启动](https://github.com/stablyai/orca/blob/v1.4.277/src/main/runtime/agent-session/launch/structured-agent-launch-composition.ts) |
 
 SSH worker 使用执行端权威 checkout 的锁、计划和收据。远程计划绑定 SSH alias、物理存储身份、
 产品实例、原生目录和批准摘要。源自 Windows 绑定的完整 writer 仍要求执行端具备相应运行时。
 各阶段的输入和断线恢复见[远程记录命令](operation-cli.md#remote-provider-records)。
 
 Cindy 同账号托管的 Codex 会话以执行端账号目录下该线程的位置索引为准。只有索引中的 rollout、SQLite home 与原生计划一致时，才会将该条索引纳入删除。共享 Codex 使用来宾专属 home。Claude 根据历史原生 ID 查找订阅账号配置目录，Pi 根据执行端 profile 确定 Agent 目录及普通或来宾会话目录。[Codex 线程定位](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-host/codex-thread-locations.ts) · [Claude 历史账号](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/subscription-accounts/store.ts) · [Pi 会话目录](https://github.com/makecindy/cindy/blob/v0.1.146/packages/maker-core/src/agents/pi/index.ts)
+
+Cindy 的来宾索引独立登记宿主任务和原生定位符，恢复权限按整个来宾授权检查。分叉会把新原生 ID 登到源任务并保存祖先工作目录。组内中转另存执行成员，直接委派也有独立所有者。管理器只在直接来宾的全部控制端绑定和原生工作目录能逐条对应时，移除目标的宿主任务 ID 与原生定位符，保留同一授权的其余字段。[执行端登记、恢复与中转](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [控制端分叉](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-orchestration/fork.ts)
+
+Orca v1.4.277 的执行端先打开 `agent-session-domain.db`。Claude 计划要求已识别的 domain v2 表、触发器和已释放的本机租约。若旧 journal 并存、所选会话还有退休原件或导入关系、附件托管或连接器待发记录，计划会指出相应证据缺口。两个数据库之间可能还有待导入内容。[执行端数据库选择](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/agent-session-journal/database/journal-host-database.ts) · [domain 表](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/agent-session-journal/database/journal-domain-schema-001.ts)
+
+Claude 启动时可跟随当前账号选择。`remote records` 分列创立会话的 `provider_home`、可核实的 `launched_home` 及各句柄的 `leaf_uuids`。执行端用实际启动 home 定位 `projects/<项目目录>/<原生 ID>.jsonl`，有 acquired-account 回执时还核对其范围、代次和启动配方。原生删除要求初创 ID 符合 Orca 的派生算法、完整句柄链和转录末端吻合，且已检查的其他会话及恢复来源皆无共享引用。分叉产生新句柄，普通恢复仍能读取同一整份转录。文件中的游标只用于核对父链，清理流程没有逐行裁剪操作。[启动账号](https://github.com/stablyai/orca/blob/v1.4.277/src/main/claude/structured/launch/claude-structured-launch-resolution.ts) · [账号回执](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/agent-session/lifecycle/accounts/agent-session-acquired-account.ts) · [原生 ID 派生](https://github.com/stablyai/orca/blob/v1.4.277/src/main/claude/structured/lifecycle/claude-structured-session-id.ts) · [转录定位](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/transcript-discovery/session-file-resolver-claude-probe.ts) · [回合游标](https://github.com/stablyai/orca/blob/v1.4.277/src/main/claude/structured/turns/claude-structured-resume-point.ts) · [分叉父链](https://github.com/stablyai/orca/blob/v1.4.277/src/main/claude/transcripts/claude-conversation-fork-boundary.ts)
+
+控制端可以清配对环境中的结构化标签、可归属的离线布局快照，以及与执行端证据吻合的 journal 副本。SQLite profile v3 的工作区文档若已拆成多行，须能同时验证各行、整份内容摘要和旧文档修订号。两份可恢复版本分歧、标签关联了未核实的发送方或仅有无主 journal 行时，保留现场。设备配对和两端操作步骤见[双端命令](operation-cli.md#orca-配对执行机的结构化会话)。[结构化标签](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/agent-session/view/structured-agent-session-projection.ts) · [离线布局写入](https://github.com/stablyai/orca/blob/v1.4.277/src/main/remote-layout-snapshot/remote-layout-snapshot-recorder.ts) · [profile 分行存储](https://github.com/stablyai/orca/blob/v1.4.277/src/main/persistence/profile-state/document-parts/profile-state-document-parts.ts)
 
 Cindy 的 SSH 启动器指定执行端的 Codex home 和程序。控制端判断一轮是否结束时核对开始、结束和清空时间，
 已完成的任务可以保留非空的开始时间。Cindy 自带的协同 Worker 另用 `orca_remote_lead` 标记派工方，
@@ -563,13 +571,7 @@ SID 残留复核，后续另一个合法会话删除不改变原有完成结论�
 ### Orca：已接入只读清单与保护
 
 `OrcaAdapter` 是独立的类型化 metadata adapter，通过 `records --client orca`
-使用公共清单。首版依据固定上游 revision
-`efbf651c7bb2eec778daf1844f8228e70809ec9f`，接受
-`agent-session-journal.db` 的 SQLite `user_version=4` 和 record `schemaVersion=2`。
-验证 schema 与读取 metadata 位于同一读事务；只查询
-`agent_session_records`、`agent_session_tabs` 和 `agent_session_store_meta`，拒绝用
-VIEW 冒充这些表。依据：[数据库 schema](https://github.com/stablyai/orca/blob/efbf651c7bb2eec778daf1844f8228e70809ec9f/src/main/native-chat/agent-session-journal/journal-database-schema.ts)、
-[record 契约](https://github.com/stablyai/orca/blob/efbf651c7bb2eec778daf1844f8228e70809ec9f/src/shared/agent-session-record.ts)。
+使用公共清单。v1.4.277 优先读取 domain 库（SQLite `user_version=2`），仅在该库及其侧文件均缺失时读取 `agent-session-journal.db`（v4）。两者均须使用 record `schemaVersion=2`。盘点只在同一读事务核对并读取 `agent_session_records`、`agent_session_tabs` 和 `agent_session_store_meta` 的元数据。[当前 record 契约](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/agent-session/lifecycle/agent-session-record.ts)
 
 每个合法 record 的 handle chain 全部保留，最后一项为 current，其余为 history；
 record 不依赖当前 tab 是否存在。`session_tabs_recorded` 缺失时显式报告覆盖未知，
@@ -589,10 +591,7 @@ catalog。未知或失败引用保留 opaque locator 与来源错误，不补默
 
 多个已证明 Codex homes 分别盘点并保留 store-qualified identity，多个 profile 共享
 catalog pass。Orca 清单不读取 Codex Desktop 私有 sqlite/global-state；不同逻辑 store
-不会因同 ID 或 hardlink 合并。文件别名仅为观察证据，尚无完整桥接图。本机合法
-`CLAUDE_CONFIG_DIR` selector 仅用于精确 root 的只读保护，不遍历该 root 或声称 Orca
-已支持 Claude 原生清单。静态 Orca 能力仍关闭；只有下述高层 operation 精确组合可获得
-原生删除资格，frontend/remote 写入不开放。
+不会因同 ID 或 hardlink 合并。文件别名仅为观察证据，尚无完整桥接图。元数据清单保持只读。Windows 上选择完整的 Orca Claude 会话 ID 时，高层操作另行核对实际账号、物理文件和会话引用，写入范围见[远程执行与记录归属](#远程执行与记录归属)。
 
 已知但未实现的恢复来源只检查 presence 并报告 incomplete：退休的
 `agent-sessions/agent-sessions.json[.bak]`、root/profile 下 `orca-data.json[.bak.1..5]`、

@@ -16,7 +16,13 @@ CREATE TABLE profile_state_documents(domain TEXT PRIMARY KEY NOT NULL,payload TE
 CREATE TABLE profile_state_automation_runs_meta(domain TEXT PRIMARY KEY NOT NULL,presence TEXT NOT NULL,domain_version INTEGER NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL,content_hash TEXT NOT NULL);
 CREATE TABLE profile_state_automation_runs(run_id TEXT PRIMARY KEY NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 """
-DOMAINS = {"workspaceSession", "workspaceSessionsByHostId", "mobileClientTabSelectionsByDeviceId", "ui"}
+PARTS_DDL = """
+CREATE TABLE profile_state_document_parts_meta(domain TEXT PRIMARY KEY NOT NULL,domain_version INTEGER NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL,content_hash TEXT NOT NULL,legacy_revision INTEGER);
+CREATE TABLE profile_state_document_parts(domain TEXT NOT NULL,part_key TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,content_hash TEXT NOT NULL,PRIMARY KEY(domain,part_key));
+"""
+SPLIT_DEPTH = {"workspaceSession": 2, "workspaceSessionsByHostId": 3, "remoteLayoutSnapshots": 3}
+WORKTREE_PARTS = {"worktreeMeta": 1, "worktreeMetaByIdentity": 1, "worktreeIdentityAliases": 1}
+DOMAINS = {*SPLIT_DEPTH, "mobileClientTabSelectionsByDeviceId", "ui"}
 
 
 def sha(value):
@@ -33,7 +39,64 @@ def meta(db):
     return value, int(revision)
 
 
-def qualify(db):
+def parts(value, depth, keys=()):
+    if depth and isinstance(value, dict) and value:
+        for key, child in value.items():
+            yield from parts(child, depth - 1, (*keys, key))
+    else:
+        payload = encode(value)
+        yield encode(keys), payload, sha(payload)
+
+
+def synchronized_parts(db, revision, *, all_domains=False):
+    """A closed writer refreshes the legacy row. Qualify both readable copies."""
+    depths = SPLIT_DEPTH
+    if all_domains:
+        depths = {**depths, **WORKTREE_PARTS}
+        domains = rows(db, "SELECT domain FROM profile_state_document_parts_meta UNION SELECT domain FROM profile_state_document_parts")
+        if any(domain not in depths for (domain,) in domains):
+            fail("profile_split_domain_unverified")
+    for domain, depth in depths.items():
+        meta_row = db.execute("SELECT domain_version,revision,updated_at,content_hash,legacy_revision "
+                              "FROM profile_state_document_parts_meta WHERE domain=?", (domain,)).fetchone()
+        stored = rows(db, "SELECT part_key,payload,content_hash,ordinal FROM profile_state_document_parts "
+                          "WHERE domain=? ORDER BY ordinal", (domain,))
+        if not meta_row and not stored:
+            continue
+        doc = db.execute("SELECT payload,revision,content_hash FROM profile_state_documents WHERE domain=?", (domain,)).fetchone()
+        if (not meta_row or not doc or meta_row[0] != 1 or not integer(meta_row[1], 1) or meta_row[1] > revision
+                or not integer(meta_row[2]) or tuple(meta_row[3:]) != (doc[2], doc[1])):
+            fail("profile_split_restore_versions_diverged")
+        expected = list(parts(decode(doc[0]), depth))
+        if ([tuple(row[:3]) for row in stored] != expected or len({row[3] for row in stored}) != len(stored)
+                or sha(encode(decode(doc[0]))) != doc[2]):
+            fail("profile_split_restore_parts_unverified")
+
+
+def write_parts(db, domain, value, revision, timestamp, digest):
+    if domain not in SPLIT_DEPTH or not db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE name='profile_state_document_parts_meta'").fetchone():
+        return
+    if not db.execute("SELECT 1 FROM profile_state_document_parts_meta WHERE domain=?", (domain,)).fetchone():
+        return
+    existing = {k: (ordinal, hashed) for k, ordinal, hashed in rows(db,
+        "SELECT part_key,ordinal,content_hash FROM profile_state_document_parts WHERE domain=?", (domain,))}
+    updated = list(parts(value, SPLIT_DEPTH[domain]))
+    # Removing leaves preserves the ordering (and row identities) of survivors.
+    old_order = [existing[k][0] for k, _, _ in updated if k in existing]
+    reuse = len(old_order) == len(updated) and old_order == sorted(old_order)
+    for i, (key, payload, hashed) in enumerate(updated):
+        ordinal = old_order[i] if reuse else i
+        if existing.pop(key, None) != (ordinal, hashed):
+            db.execute("INSERT INTO profile_state_document_parts VALUES(?,?,?,?,?) ON CONFLICT(domain,part_key) "
+                       "DO UPDATE SET ordinal=excluded.ordinal,payload=excluded.payload,content_hash=excluded.content_hash",
+                       (domain, key, ordinal, payload, hashed))
+    db.executemany("DELETE FROM profile_state_document_parts WHERE domain=? AND part_key=?", ((domain, k) for k in existing))
+    db.execute("UPDATE profile_state_document_parts_meta SET revision=?,updated_at=?,content_hash=?,legacy_revision=? WHERE domain=?",
+               (revision, timestamp, digest, revision, domain))
+
+
+def qualify(db, *, all_domains=False):
     if db.execute("PRAGMA user_version").fetchone()[0] != 3 or db.execute("PRAGMA application_id").fetchone()[0] != 0:
         fail("profile_writer_schema_unverified")
     actual = set()
@@ -43,7 +106,9 @@ def qualify(db):
         if kind != "table" or not isinstance(sql, str):
             fail("profile_writer_schema_unverified")
         actual.add(_sql(sql))
-    if actual != {_sql(statement) for statement in DDL.split(";") if statement.strip()}:
+    base = {_sql(statement) for statement in DDL.split(";") if statement.strip()}
+    split = base | {_sql(statement) for statement in PARTS_DDL.split(";") if statement.strip()}
+    if actual not in (base, split):
         fail("profile_writer_schema_unverified")
     _, revision = meta(db)
     for domain, payload, version, row_revision, updated, digest in rows(db, "SELECT * FROM profile_state_documents"):
@@ -51,6 +116,8 @@ def qualify(db):
                 or not integer(row_revision, 1) or row_revision > revision or not integer(updated) or sha(payload) != digest):
             fail("profile_document_unverified")
         decode(payload)
+    if actual == split:
+        synchronized_parts(db, revision, all_domains=all_domains)
     markers = rows(db, "SELECT * FROM profile_state_automation_runs_meta")
     if len(markers) != 1 or markers[0][0] != "automationRuns":
         fail("profile_automation_projection_unverified")
@@ -128,6 +195,7 @@ def transform(db, selected, known_tabs, native_ids, *, timestamp, json_hashes, r
         payload = encode(value)
         db.execute("UPDATE profile_state_documents SET payload=?,revision=?,updated_at=?,content_hash=? WHERE domain=?",
             (payload, revision + 1, timestamp, sha(payload), domain))
+        write_parts(db, domain, value, revision + 1, timestamp, sha(payload))
     if acceptance is not None:
         db.execute("UPDATE profile_state_meta SET value=? WHERE key='legacy_json_acceptance'", (encode(acceptance),))
     db.execute("INSERT INTO profile_state_meta(key,value) VALUES ('revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(revision + 1),))

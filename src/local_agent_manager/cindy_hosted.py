@@ -23,14 +23,16 @@ def _hash(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def locator_matches(value, expected):
-    if value == expected:
-        return True
+def locator_key(value):
     # Pi's Windows launcher also returns forward-slash paths. Compare only
     # separators; never resolve a foreign path on the controller.
-    return (isinstance(value, str) and isinstance(expected, str)
-            and bool(re.match(r"^[A-Za-z]:[\\/]", expected))
-            and value.replace("/", "\\") == expected.replace("/", "\\"))
+    if isinstance(value, str) and re.match(r"^[A-Za-z]:[\\/]", value):
+        return value.replace("/", "\\")
+    return value
+
+
+def locator_matches(value, expected):
+    return locator_key(value) == locator_key(expected)
 
 
 def possible_reference(value, expected):
@@ -123,10 +125,9 @@ def _peer(profile, controller, sid, native_id, retired_key=None):
         retired = key == retired_key and host_id not in hosts and not has_native
         if not retired and not has_native and host_id not in hosts:
             continue
-        # The two arrays are sets, not pairs. Another task in this grant may
-        # still resume the same native ID even when its original cwd is known.
-        sole_session = hosts == [host_id] and len(natives) == 1 and has_native
-        if (relay or not (retired or sole_session) or row.get("members") or row.get("forkWorkspaces")
+        if (relay or not (retired or host_id in hosts and has_native)
+                or len(set(hosts)) != len(hosts) or len(set(natives)) != len(natives)
+                or row.get("members") or row.get("forkWorkspaces")
                 or row.get("relayDevices") or row.get("forgetPending") or row.get("directOwnerDeviceId")
                 or set(row) - {"controller", "hostSessionIds", "nativeIds", "attachmentRunIds", "members", "forkWorkspaces",
                                 "relayDevices", "forgetPending", "cleanupEpoch"} or not peer.startswith('["provider-share",')):
@@ -137,10 +138,53 @@ def _peer(profile, controller, sid, native_id, retired_key=None):
                 or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", part) for part in (parts[1], parts[3]))
                 or json.dumps(parts, separators=(",", ":")).ljust(129, "~") != peer):
             raise ValueError("cindy_guest_controller_mismatch")
-        candidates.append((peer, "share:" + parts[1]))
+        candidates.append((peer, "share:" + parts[1], row))
     if len(candidates) > 1:
         raise ValueError("cindy_guest_session_ownership_ambiguous")
-    return candidates[0] if candidates else (controller, None)
+    return candidates[0] if candidates else (controller, None, None)
+
+
+def _guest_bindings(profile, owner, workspaces, row, *, approved, selected, locator):
+    """Match each native history to its shadow, independently of either set's order."""
+    from .remote_records import _records
+    hosts, natives = set(row["hostSessionIds"]), row["nativeIds"]
+    if len(hosts) != len(natives):
+        raise ValueError("cindy_guest_session_ownership_ambiguous")
+    root = Path(owner["root"])
+    records = _records(owner["client"], root, agent_dir=owner.get("agent_dir"),
+                       hosted_locators=natives)
+    by_locator = {}
+    for record in records:
+        by_locator.setdefault(locator_key(record.get("path", record["record_id"])), []).append(record)
+    bindings = {}
+    for native in natives:
+        if owner["client"] == "claude" and _claude_home(profile, native)[0] != root:
+            raise ValueError("cindy_guest_native_home_unverified")
+        matches = by_locator.get(locator_key(native), ())
+        if not matches and approved and locator_matches(native, locator):
+            # Only the selected transcript can disappear between native completion
+            # and the index checkpoint. The native receipt is checked by the caller.
+            host = selected
+        else:
+            if len(matches) != 1:
+                raise ValueError("cindy_guest_native_history_unverified")
+            owners = set()
+            for cwd in matches[0]["cwds"]:
+                if not isinstance(cwd, str) or not is_local_absolute_locator(cwd) or Path(cwd) != Path(os.path.abspath(cwd)):
+                    raise ValueError("cindy_guest_native_history_unverified")
+                parts = Path(cwd).relative_to(workspaces).parts
+                if len(parts) < 2 or parts[0] not in hosts or parts[1] != "fs":
+                    raise ValueError("cindy_guest_native_history_unverified")
+                owners.add(parts[0])
+            if len(owners) != 1:
+                raise ValueError("cindy_guest_native_history_unverified")
+            host, = owners
+        if host in bindings:
+            raise ValueError("cindy_guest_session_ownership_ambiguous")
+        bindings[host] = native
+    if set(bindings) != hosts or not locator_matches(bindings.get(selected), locator):
+        raise ValueError("cindy_guest_session_ownership_ambiguous")
+    return bindings
 
 
 def _owner_directories(profile, directory, pattern):
@@ -205,7 +249,7 @@ def _claude_home(profile, native):
     return homes[0] if homes else (Path.home() / ".claude", None)
 
 
-def observe(request, owner, native_locator, *, record=None, retired=None):
+def observe(request, owner, native_locator, *, record=None, approved=None, retired=None):
     """Only the executor interprets executor paths. Shadows may be gone after close."""
     from .remote_records import directory_identity
     profile, sid, controller = Path(request["profile"]), request["task_id"], request["controller_device"]
@@ -213,7 +257,7 @@ def observe(request, owner, native_locator, *, record=None, retired=None):
     device = device_id(profile)
     if device == controller:
         raise ValueError("cindy_execution_device_not_distinct")
-    peer, share = _peer(profile, controller, sid, native_locator, (retired or {}).get("guest_key"))
+    peer, share, row = _peer(profile, controller, sid, native_locator, (retired or {}).get("guest_key"))
     host_id = host_session_id(peer, sid)
     peer_dir = _hash(peer)[:16]
     shadow = profile / "remote-agent" / "workspaces" / peer_dir / host_id / "fs"
@@ -228,6 +272,11 @@ def observe(request, owner, native_locator, *, record=None, retired=None):
     root = Path(owner["root"])
     if share:
         result["guest_key"] = _hash(peer)[:32]
+        if retired and "guest_bindings" in retired:
+            result.update(guest_peer=peer, guest_bindings=retired["guest_bindings"])
+        elif not retired and (len(row["hostSessionIds"]) > 1 or len(row["nativeIds"]) > 1):
+            result.update(guest_peer=peer, guest_bindings=_guest_bindings(profile, owner, shadow.parent.parent, row,
+                approved=approved, selected=host_id, locator=native_locator))
     if owner["client"] == "pi":
         agent = profile / "pi-agent-home"
         if Path(owner["agent_dir"]) != agent or root != (guest_home / "pi-sessions" if share else agent / "sessions"):
@@ -252,9 +301,14 @@ def guest_transform(raw, hosted, native):
     index = strict_json(raw.decode("utf-8"))
     row = index[hosted["guest_key"]]
     natives = row.get("nativeIds", [])
-    if row.get("hostSessionIds") != [hosted["host_session_id"]] or len(natives) != 1 or not locator_matches(natives[0], native):
+    hosts = row.get("hostSessionIds", [])
+    bindings = hosted.get("guest_bindings", {hosted["host_session_id"]: native})
+    if (set(hosts) != bindings.keys() or len(hosts) != len(bindings) or len(natives) != len(bindings)
+            or len(set(map(locator_key, natives))) != len(natives)
+            or set(map(locator_key, natives)) != set(map(locator_key, bindings.values()))):
         raise ValueError("cindy_guest_session_ownership_changed")
-    row.update(hostSessionIds=[], nativeIds=[])
+    row["hostSessionIds"] = [h for h in hosts if h != hosted["host_session_id"]]
+    row["nativeIds"] = [n for n in natives if not locator_matches(n, native)]
     return json.dumps(index, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 

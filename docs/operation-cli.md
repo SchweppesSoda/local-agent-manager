@@ -38,7 +38,7 @@ local-agent-manager remote verify @target @operation
 | 上述命令显式加 `--frontend-only` 到 `remote plan` | 使用在运行的 Windows 产品实例。T3 核验该 thread 的软删标记，Paseo 核验 daemon 查询和 agent 注册文件消失。`provider_history=preserved` 表示原生会话保留。 |
 | `--client native`、`claude`、`pi` | 分别指定执行机的 Codex home、Claude 配置根、Pi session 根。Codex 可用 `--codex-bin` 选择真实可执行文件，Pi 的独立配置目录用 `--pi-agent-dir` 在每条命令中指定。只接受精确匹配且物理目标在所选根内的原生计划。 |
 | `remote records --client cindy` 或 `orca` | 分别指定 Cindy 数据库文件或 Orca profile。可查看执行主机及原生定位符。以设备、分享、Orca runtime 或 WSL 标识定位的句柄须在其实际执行环境单独核实。 |
-| `remote plan --client orca` | 在执行机选择 Orca profile 和完整结构化会话 ID。`orca_host_session` 涵盖该机已冻结的 journal、前端副本及完整 Codex 句柄链。 |
+| `remote plan --client orca` | 选择执行机 profile 和完整结构化会话 ID。`orca_host_session` 列出该机的 journal、前端副本及所选会话的原生范围。Claude 计划另列独占转录和须保留的句柄。 |
 
 若 SSH 在 apply 期间断开，保留原来的 `$target` 和 `$operation`，用
 `local-agent-manager remote status @target @operation` 读取执行端日志，再用
@@ -103,17 +103,21 @@ local-agent-manager operation verify @controller --json
 
 Codex 和 Claude 分别使用 `--client native`、`--client claude` 和各自实际的 home。Codex 计划另传 `--codex-bin` 指定执行端使用的程序。同账号 Codex 须有唯一的线程位置索引，索引须属于控制端任务的账号，且其中的 rollout 和 SQLite home 均须指向选中的存储。原生删除后会清除该条位置索引。Claude 使用默认目录或原生会话绑定的订阅账号目录。Pi 会核对执行机 Cindy profile 下的 Agent 目录和相应会话目录。
 
-同账号 Pi 的已发布备份须位于该任务数据库对应的账号目录。校验通过的备份出现在控制端计划的 `remote_native.backup`。直接分享须有来宾索引、原生工作目录和控制设备三方吻合；计划的 `guest_index` 列出要清除的两个条目。若原生已删而索引未写完，`remote status` 和 `remote verify` 会报告残留；确认索引仍为批准时的版本后，重用原操作执行 `remote apply` 可完成索引写入。多个任务共用一份无法逐条配对的来宾索引、设备迁移、中转、未完成回合或自定义设备身份无法复核时，保留任务。授权关系、其他来宾、附件目录与工作文件均在会话清理范围之外。
+同账号 Pi 的已发布备份须位于该任务数据库对应的账号目录，核对结果在控制端计划的 `remote_native.backup`。
+
+直接分享支持同一来宾的多条任务。仍用上面的 `--cindy-task $task` 选择一条。执行机按每份原生历史中的工作目录，把来宾索引的每个原生定位符对应到唯一的影子任务。控制机再用分享、设备、各任务 ID 以及当前 SDK 绑定独立重建这组关系。`cindy_hosted.guest_bindings` 列出多任务对应关系，`guest_index` 只列本次要移除的两个条目。两端核验完成后，其余任务、原生会话、分享授权、附件和工作文件均保留。
+
+共享索引的两个数组可各自增删或去重，顺序不能用于配对。原生工作目录缺失、两个定位符落在同一任务、分叉、历史切换、设备迁移、中转或未结束的回合都会阻挡相应计划。若原生批次已完成、来宾索引尚未写完，用原 `remote status` 和 `remote verify` 查看回执与残留。索引仍符合冻结的写前或写后状态时，原 `remote apply` 可完成索引步骤。
 
 ### Orca 配对执行机的结构化会话
 
-在执行机的配置中确认 Orca 实际使用的 Codex 程序和 profile。执行机须满足[Orca 原生写入条件](adapters.md#orca精确原生删除的限定组合)。
+选择执行端实际使用的 Orca profile。下例适用于已配对的 Windows 结构化 Claude 会话。若选中的是 Codex，在 `remote plan` 加上 `--codex-bin '<执行端 Codex 可执行文件>'`，并核对其[原生写入条件](adapters.md#orca精确原生删除的限定组合)。
 
 ```powershell
 $sid = '<完整 Orca 会话 ID>'
 $target = @('--ssh-host', 'worker', '--client', 'orca', '--root', '<执行端 Orca profile>')
 $owner = (local-agent-manager remote records @target | ConvertFrom-Json).owner.store_id
-$json = local-agent-manager remote plan @target --owner $owner --record-id $sid --codex-bin '<执行端 Codex 可执行文件>'
+$json = local-agent-manager remote plan @target --owner $owner --record-id $sid
 if ($LASTEXITCODE -ne 0) { throw '请核对执行端的 journal、账号 home 和原生计划。' }
 $json | Set-Content -Encoding utf8NoBOM ./orca-owner.json
 $remotePlan = $json | ConvertFrom-Json
@@ -122,13 +126,21 @@ if ($LASTEXITCODE -ne 0 -or $localPlan.goal_status -ne 'ready') { throw '请查�
 $operation = @('--owner', $owner, '--operation-id', $remotePlan.operation_id, '--approval', $remotePlan.approval)
 local-agent-manager remote apply @target @operation --controller-plan $localPlan.plan_path --clients-closed
 if ($LASTEXITCODE -ne 0) { throw '用原操作查询执行机的 status 和 verify。' }
+local-agent-manager remote verify @target @operation
+if ($LASTEXITCODE -ne 0) { throw '先核对执行端各批次的回执与残留。' }
 $controller = @('--operation-id', $localPlan.operation_id, '--plan', $localPlan.plan_path)
 local-agent-manager delete apply @controller --plan-sha256 $localPlan.plan_sha256 --clients-closed --json
 if ($LASTEXITCODE -ne 0) { throw '用原控制端操作查询 status 和 verify。' }
 local-agent-manager operation verify @controller --json
 ```
 
-控制端可只有配对环境的恢复标签。若还有 journal 副本，其会话 ID、工作区、provider home、创建时间和有序句柄链必须与执行机相符。配对公钥变化、多个环境指向同一身份、句柄被其他会话使用或租约尚未释放都会阻挡对应操作。执行机已完成的批次可用原操作 ID 查看。仅有旧 SSH 终端标题、睡眠终端、WSL 路径或移动端缓存时，这套命令无法确认其两端归属。
+批准 Claude 计划前查看 `deleted_native_ids` 与 `preserved_native`。前者列出将删除的独占 JSONL，后者按原生 ID 列出保留原因。独占转录须位于实际启动账号 home，全部已记录的 `leafUuid` 须落在同一条完整父链上，最后一个游标须命中文件末端。多个 Orca 会话引用同一转录、分叉、接管历史或无法核实启动账号时，可清理归属明确的 Orca 会话、journal 和恢复标签，保留整份 Claude 历史。`complete` 按这份已批准的范围核验。
+
+若另一条 Claude 会话的 `forkedFrom.sessionId` 指向所选会话，Orca 还要读取源 journal 才能从继承的历史条目再次分叉。此时计划会保留源会话。选择分支自身时，可清理它的 journal 和恢复标签，保留源会话与原生转录。[上游分叉来源解析](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/agent-session-wire/acquisition/structured-agent-session-fork-source.ts)
+
+控制端可以只有配对环境的结构化恢复标签。若有对应 journal，其工作区、provider、账号、租约代次和有序句柄链须与执行端吻合。其他主机和本机的同 ID 记录会保留。若控制端独自发现共享引用，或保留着无法排除共享的旧 journal 原件，已有的独占转录计划会在执行端写入前停止。旧 SSH 终端标题、睡眠终端及 WSL 路径不足以确认结构化会话归属。
+
+执行机若在原生批次完成后断线，可从原 `remote status` 查看已完成和待执行的批次。若 Orca 批次尚未开始且两端冻结证据仍吻合，重用原 `remote apply` 可继续。控制端写入之前会再次联系执行机，核对成功回执并读回各项结果。写入已经开始但结果不明时保留控制端记录。
 
 ## Joint CLI reservation recovery
 
@@ -317,10 +329,10 @@ apply may therefore have pending children and a read-only residual verdict.
 
 `records --client orca [--orca-root PATH ...]` reads the supported local journal
 and proven native homes. Orca's static capabilities remain closed. The high-level
-operation coordinator may qualify an explicitly selected native Codex target
-through the [fixed Windows combination](adapters.md#orca精确原生删除的限定组合).
-Other combinations return structured blockers. A plan without authorized actions
-remains blocked; an empty executable catalog never proves deletion.
+operation coordinator can qualify a native Codex target on Windows or a complete
+structured Claude session ID with a verified executor and restore scope.
+The corresponding requirements are in the [Codex write conditions](adapters.md#orca精确原生删除的限定组合)
+and [paired Claude workflow](#orca-配对执行机的结构化会话).
 
 Plans that discover Orca protection profiles use `larj.operation-plan.v2`.
 The required `guard_sources` list contains each canonical local profile root,
@@ -345,7 +357,7 @@ blockers. The proof is rebuilt for each required-source check, including apply
 and verify; it never grants Orca mutation capabilities or substitutes for
 `--clients-closed`. Missing journals without that positive evidence stay blocked.
 
-Qualified Orca native deletion uses `larj.operation-plan.v3`. Its target safety
+Qualified Orca Codex native deletion uses `larj.operation-plan.v3`. Its target safety
 evidence freezes one managed account home, each complete native cascade, ordinary
 rollout/SQLite/index identities and link counts, required sources, bounded
 configuration hashes, opaque credential identities/hashes, approved startup

@@ -12,6 +12,7 @@ from contextvars import Context
 import io
 import hashlib
 import base64
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,15 @@ def orca_worker_fixture():
             Path(path).unlink()
         return nullcontext(SimpleNamespace(delete_thread=delete_thread))
     with ExitStack() as stack:
+        if "--interrupt-after-native" in sys.argv:
+            from local_agent_manager.operation_store import OperationStore
+            append = OperationStore.append_event
+            def stop_after_receipt(store, event, **kwargs):
+                result = append(store, event, **kwargs)
+                if event.get("event") == "batch_finished" and event.get("goal_status") == "complete":
+                    os._exit(74)
+                return result
+            stack.enter_context(patch.object(OperationStore, "append_event", stop_after_receipt))
         for target, value in (
             ("orca_runtime_probe.probe_contract", lambda *args: None),
             ("orca_target_safety._windows_process_snapshot", lambda: ()),
@@ -103,6 +113,22 @@ class RemoteRecordsTests(unittest.TestCase):
             self.drop_after_dispatch = False
             raise subprocess.TimeoutExpired("ssh", 1)
         return code, output.getvalue()
+
+    def orca_transport(self, host, payload):
+        self.assertEqual(host, self.host)
+        script = "from tests.test_remote_records import orca_worker_fixture; raise SystemExit(orca_worker_fixture())"
+        extra = []
+        if getattr(self, "interrupt_orca", False) and json.loads(payload)["verb"] == "apply":
+            self.interrupt_orca = False
+            extra.append("--interrupt-after-native")
+        result = subprocess.run([sys.executable, "-c", script, str(self.root), *extra], input=payload, capture_output=True, timeout=90)
+        if result.returncode == 74:
+            raise subprocess.TimeoutExpired("interrupted-test-worker", 1)
+        self.last_worker_reply = json.loads(result.stdout)
+        if self.drop_after_dispatch:
+            self.drop_after_dispatch = False
+            raise subprocess.TimeoutExpired("test-worker", 1)
+        return result.returncode, result.stdout
 
     def invoke(self, verb, *extra, ok=True):
         output = io.StringIO()
@@ -258,6 +284,44 @@ class RemoteRecordsTests(unittest.TestCase):
         location.write_text(json.dumps(original))
         self.assertTrue(self.invoke("verify", *op, ok=False)["result"]["modified"])
 
+    def test_shared_codex_deletes_only_one_guest_rollout(self):
+        from tests.support import create_thread_index, write_rollout
+        sid, database, host, peer, fs, options = self.hosted_devices(share=True)
+        self.client = "native"
+        self.root = host / "remote-agent/guest-homes" / fs.parents[1].name / "codex"
+        native_ids = ["11111111-1111-4111-8111-111111111111", "77777777-7777-4777-8777-777777777777"]
+        tasks = [sid, "second-codex-task"]
+        hosts = [cindy_hosted.host_session_id(peer, task) for task in tasks]
+        rollouts = []
+        for native, task_host in zip(native_ids, hosts):
+            path = write_rollout(self.root, native, originator="codex")
+            events = [json.loads(line) for line in path.read_bytes().splitlines()]
+            events[0]["payload"]["cwd"] = str(fs.parents[1] / task_host / "fs")
+            path.write_text("".join(json.dumps(e) + "\n" for e in events))
+            rollouts.append(path)
+        create_thread_index(self.root, [dict(id=native, rollout_path=str(path)) for native, path in zip(native_ids, rollouts)])
+        guest_path = host / "remote-agent/guest-sessions.json"
+        guest_key = hashlib.sha256(peer.encode()).hexdigest()[:32]
+        guest = {"controller": peer, "hostSessionIds": hosts, "nativeIds": native_ids[::-1], "cleanupEpoch": 4}
+        guest_path.write_text(json.dumps({guest_key: guest}))
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("UPDATE sessions SET agent_kind='codex',sdk_session_id=? WHERE id=?", (native_ids[0], sid))
+            db.execute("INSERT INTO sessions(id,status,agent_kind,sdk_session_id,agent_device_id) VALUES(?,?,?,?,?)",
+                       (tasks[1], "active", "codex", native_ids[1], "share:share-one"))
+            db.commit()
+        binary = self.base / "codex.exe"
+        binary.write_bytes(b"fixture")
+        binary.chmod(0o700)
+        plan, op = self.plan(native_ids[0], "--codex-bin", str(binary), *options)
+        local = self.approve_cindy_controller(sid, database, plan)
+        self.invoke("apply", *op, "--controller-plan", local[3], "--clients-closed")
+        self.assertEqual(self.invoke("verify", *op)["goal_status"], "complete")
+        self.assertEqual(self.controller("delete", "apply", *local, "--clients-closed")["goal_status"], "complete")
+        self.assertFalse(rollouts[0].exists())
+        self.assertTrue(rollouts[1].is_file())
+        self.assertEqual(json.loads(guest_path.read_bytes())[guest_key],
+                         dict(guest, nativeIds=[native_ids[1]], hostSessionIds=[hosts[1]]))
+
     def test_shared_claude_requires_bound_account_home_and_shadow(self):
         sid, database, host, peer, fs, options = self.hosted_devices(share=True)
         self.client = "claude"
@@ -274,10 +338,10 @@ class RemoteRecordsTests(unittest.TestCase):
         index.parent.mkdir()
         index.write_text(json.dumps({hashlib.sha256(peer.encode()).hexdigest()[:32]: {
             "controller": peer, "nativeIds": [tid], "hostSessionIds": [fs.parent.name]}}))
-        def transcript(root, cwd):
-            path = root / "projects" / "example" / (tid + ".jsonl")
+        def transcript(root, cwd, native=tid):
+            path = root / "projects" / "example" / (native + ".jsonl")
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"type":"user", "sessionId":tid, "cwd":str(cwd), "message":"PRIVATE"}) + "\n")
+            path.write_text(json.dumps({"type":"user", "sessionId":native, "cwd":str(cwd), "message":"PRIVATE"}) + "\n")
             return path
         self.root = Path.home() / ".claude"
         copy = transcript(self.root, fs / "workspace")
@@ -288,12 +352,31 @@ class RemoteRecordsTests(unittest.TestCase):
         path = transcript(self.root, self.base)
         self.invoke("plan", *plan_args(), ok=False)
         transcript(self.root, fs / "workspace")
+        sibling = "another-claude-task"
+        native = "33333333-3333-4333-8333-333333333333"
+        other_host = cindy_hosted.host_session_id(peer, sibling)
+        other_file = transcript(self.root, fs.parents[1] / other_host / "fs", native)
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("INSERT INTO sessions(id,status,agent_kind,sdk_session_id,agent_device_id) VALUES(?,?,?,?,?)",
+                       (sibling, "active", "cc", native, "share:share-one"))
+            db.commit()
+        guest = json.loads(index.read_bytes())
+        row, = guest.values()
+        row["hostSessionIds"].append(other_host)
+        row["nativeIds"].insert(0, native)
+        index.write_text(json.dumps(guest))
+        self.invoke("plan", *plan_args(), ok=False)
+        owners = json.loads(pool.read_bytes())
+        owners["bindings"]["anthropic:native:" + native] = {"providerId": "anthropic", "accountId": account}
+        pool.write_text(json.dumps(owners))
         plan, args = self.plan(tid, *options)
         controller_op = self.approve_cindy_controller(sid, database, plan)
         self.invoke("apply", *args, "--clients-closed", "--controller-plan", controller_op[3])
         self.assertEqual(self.controller("delete", "apply", *controller_op, "--clients-closed")["goal_status"], "complete")
         self.assertTrue(copy.exists())
         self.assertFalse(path.exists())
+        self.assertTrue(other_file.is_file())
+        self.assertEqual(next(iter(json.loads(index.read_bytes()).values()))["nativeIds"], [native])
 
     def test_hosted_device_pi_pairs_checkpoint_and_checks_both_owners(self):
         sid, database, path, identifier, options, _ = self.hosted_pi()
@@ -356,6 +439,30 @@ class RemoteRecordsTests(unittest.TestCase):
         owner = self.invoke("records")["owner"]["store_id"]
         self.invoke("plan", "--owner", owner, "--record-id", identifier, *options, ok=False)
         row["hostSessionIds"].pop()
+        sibling = "second-guest-task"
+        peer = row["controller"]
+        sibling_host = cindy_hosted.host_session_id(peer, sibling)
+        selected_host = row["hostSessionIds"][0]
+        other = self.pi_file(self.root, "sibling")
+        sibling_data = json.loads(other.read_bytes())
+        workspaces = Path(json.loads(path.read_bytes())["cwd"]).parents[2]
+        sibling_data["cwd"] = str(workspaces / sibling_host / "fs" / "work")
+        other.write_text(json.dumps(sibling_data) + "\n")
+        row["hostSessionIds"].append(sibling_host)
+        row["nativeIds"].insert(0, str(other))
+        row["attachmentRunIds"] = ["aaaaaaaa-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("INSERT INTO sessions(id,status,agent_kind,sdk_session_id,agent_device_id) VALUES(?,?,?,?,?)",
+                       (sibling, "active", "pi", str(other), "share:share-one"))
+            db.commit()
+        row["forkWorkspaces"] = {str(other): [selected_host]}
+        index.write_text(json.dumps(stored))
+        self.invoke("plan", "--owner", owner, *options, ok=False)
+        del row["forkWorkspaces"]
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("INSERT INTO sessions(id,status,agent_kind,sdk_session_id,agent_device_id) VALUES(?,?,?,?,?)",
+                       ("other-device", "active", "pi", str(path), "d"*64))
+            db.commit()
         index.write_text(json.dumps(stored))
         wrong = list(options)
         wrong[1] = "different-task"
@@ -365,6 +472,18 @@ class RemoteRecordsTests(unittest.TestCase):
         saved.write_text(json.dumps(plan))
         local = self.controller("delete", "plan", "--client", "cindy", "--cindy-db", str(database),
                                 "--record-id", sid, "--cindy-remote-plan", str(saved))
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("UPDATE sessions SET sdk_session_id=? WHERE id=?", (str(path), sibling))
+            db.commit()
+            self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
+            self.assertTrue(path.exists())
+            db.execute("UPDATE sessions SET sdk_session_id=? WHERE id=?", (str(other), sibling))
+            db.execute("UPDATE sessions SET active_turn_started_at=8,last_turn_ended_at=2 WHERE id=?", (sibling,))
+            db.commit()
+            self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
+            self.assertTrue(path.exists())
+            db.execute("UPDATE sessions SET last_turn_ended_at=9 WHERE id=?", (sibling,))
+            db.commit()
         row["relayDevices"] = ["third-host"]
         index.write_text(json.dumps(stored))
         self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
@@ -377,7 +496,7 @@ class RemoteRecordsTests(unittest.TestCase):
                                 "--record-id", sid, "--cindy-remote-plan", str(saved))
         self.interrupt_index = True
         mixed = self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
-        self.assertEqual(mixed["goal_status"], "completed_with_residuals")
+        self.assertEqual(mixed["goal_status"], "completed_with_residuals", mixed)
         self.assertTrue(mixed["result"]["mutation_started"])
         self.assertEqual(mixed["result"]["batches"][0]["status"], "complete")
         self.assertFalse(path.exists())
@@ -398,10 +517,16 @@ class RemoteRecordsTests(unittest.TestCase):
         self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"])
         self.assertEqual(self.controller("delete", "apply", "--operation-id", local["operation_id"], "--plan", local["plan_path"],
             "--plan-sha256", local["plan_sha256"], "--clients-closed")["goal_status"], "complete")
-        row.update(hostSessionIds=[], nativeIds=[])
+        row.update(hostSessionIds=[sibling_host], nativeIds=[str(other)])
         self.assertEqual(json.loads(index.read_bytes()), stored)
+        self.assertTrue(other.is_file())
+        self.assertEqual(self.invoke("verify", *args)["goal_status"], "complete")
+        self.assertEqual(self.controller("operation", "verify", "--operation-id", local["operation_id"],
+                                        "--plan", local["plan_path"])["goal_status"], "complete")
         with closing(sqlite3.connect(database)) as db:
             self.assertFalse(db.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone())
+            self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id=?", (sibling,)).fetchone(), (str(other),))
+            self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id='other-device'").fetchone(), (str(path),))
         self.assertTrue((path.parent / "keeper.jsonl").is_file())
 
     def test_pi_exact_store_approval_and_lost_apply_reply(self):
@@ -551,13 +676,7 @@ class RemoteRecordsTests(unittest.TestCase):
         self.client, self.root = "orca", fixture.root
         key = base64.b64encode(bytes(range(32))).decode()
         (self.root / "orca-e2ee-keypair.json").write_text(json.dumps({"publicKeyB64": key, "secretKeyB64": "PRIVATE"}))
-        def separate(host, payload):
-            self.assertEqual(host, self.host)
-            script = "from tests.test_remote_records import orca_worker_fixture; raise SystemExit(orca_worker_fixture())"
-            result = subprocess.run([sys.executable, "-c", script, str(self.root)], input=payload, capture_output=True, timeout=90)
-            self.last_worker_reply = json.loads(result.stdout)
-            return result.returncode, result.stdout
-        self.transport.side_effect = separate
+        self.transport.side_effect = self.orca_transport
         sid = "orca_fixture_01"
         plan, owner_args = self.plan(sid, "--codex-bin", str(fixture.binary))
         self.assertEqual((plan["completion_scope"], plan["native_ids"]), ("orca_host_session", sorted([orca_support.HISTORY_ID, orca_support.CURRENT_ID])))
@@ -646,6 +765,320 @@ class RemoteRecordsTests(unittest.TestCase):
         self.assertEqual(json.loads((tab_root / "orca-data.json").read_bytes())["workspaceSessionsByHostId"], after)
         orca_support.replace_record(self.root, orca_support.make_record(fixture.home, sid))
         self.controller("operation", "verify", *op, ok=False)
+
+    def claude_pair(self, *, shared=False):
+        self.client = "orca"
+        self.transport.side_effect = self.orca_transport
+        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        sid, native = "orca_claude_selected", "bd75030a-9dfa-4123-84e7-b8eb94dc151f"
+        first, last = orca_support.HISTORY_ID, orca_support.CURRENT_ID
+        root = self.base / "controller"
+        root.mkdir()
+        public = base64.b64encode(b"E"*32).decode()
+        (self.root / "orca-e2ee-keypair.json").write_text(json.dumps({"publicKeyB64": public}))
+        (root / "orca-environments.json").write_text(json.dumps({"version": 1, "environments": [
+            {"id": "paired", "endpoints": [{"publicKeyB64": public}]}]}))
+        home = self.base / "actual-launch-home"
+        row = orca_support.make_record(self.base / "founding-home", sid)
+        row["provider"] = "claude"
+        row["launchDirectory"] = str(self.base / "repo")
+        row["accountHome"]["variable"] = "CLAUDE_CONFIG_DIR"
+        row["launchedAccount"] = {"fence": 2, "accountHome": {"variable": "CLAUDE_CONFIG_DIR", "path": str(home)}}
+        del row["lease"]["journalCheckpoint"]
+        row["acquiredAccount"] = {"version": 1, "hostId": "local", "sessionId": sid, "scope": "local\0\0workspace-fixture",
+            "context": None, "fence": 2, "observedThroughFence": 2, "generation": "g", "spawnToken": "PRIVATE",
+            "recipe": {"route": "system", "home": str(home), "configDir": str(home)}}
+        for i, link in enumerate(row["providerHandleChain"]):
+            link.update(handle={"provider": "claude", "sessionId": native, "leafUuid": (first, last)[i]},
+                        origin=("created", "resumed")[i])
+            link.pop("forkedFromKey", None)
+        rows = [row]
+        other = "orca_claude_sibling"
+        sibling = deepcopy(row)
+        sibling["sessionId"] = sibling["lease"]["sessionId"] = other
+        sibling.pop("acquiredAccount")
+        sibling["providerHandleChain"] = [dict(sibling["providerHandleChain"][0], origin="adopted")]
+        if not shared:
+            sibling["providerHandleChain"][0]["handle"]["sessionId"] = first
+        rows.append(sibling)
+        schema = (Path(__file__).parent / "fixtures/orca-domain-v2.sql").read_text(encoding="utf-8")
+        for profile, host in ((self.root, "local"), (root, "runtime:paired")):
+            with closing(sqlite3.connect(profile / "agent-session-domain.db")) as db:
+                db.executescript("BEGIN;\n" + schema)
+                db.execute("INSERT INTO agent_session_store_meta VALUES ('session_tabs_recorded','1')")
+                for original in rows:
+                    value = deepcopy(original)
+                    value["location"]["executionHostId"] = host
+                    identifier = value["sessionId"]
+                    db.execute("INSERT INTO agent_session_records(session_id,record_json) VALUES (?,?)",
+                               (identifier, json.dumps(value)))
+                    db.execute("INSERT INTO agent_session_tabs VALUES (?,?,0)", ("chat-tab-" + identifier, identifier))
+                    db.execute("INSERT INTO journal_chat_state(session_id,workspace_id,epoch) VALUES (?,'workspace-fixture','1')", (identifier,))
+                    db.execute("INSERT INTO journal_events VALUES (?,'1',1,1700000000000,'[]')", (identifier,))
+                db.commit()
+        def tabs(ids):
+            return {"unifiedTabs": {"workspace-fixture": [{"id": "chat-tab-"+s, "entityId": s, "contentType": "agent-session",
+                "agentSessionAgent": "claude", "worktreeId": "workspace-fixture", "groupId": "g"} for s in ids]}}
+        ui = root / "orca-data.json"
+        state = {"schemaVersion": 1, "workspaceSessionsByHostId": {"runtime:paired": tabs([sid, other]),
+            "runtime:else": tabs([sid]), "local": tabs([sid])}}
+        def snapshot(ids):
+            rows = [{"type": "agent-session", "id": "chat-tab-" + s, "sessionId": s, "agent": "claude",
+                     "title": "PRIVATE", "isActive": i == 0} for i, s in enumerate(ids)]
+            return {"workspaces": {"workspace-fixture": {"worktree": "workspace-fixture", "tabs": rows,
+                "publicationEpoch": "epoch", "snapshotVersion": 2, "activeGroupId": "g",
+                "agentSenderAssociations": {"associations": [], "attachments": [], "principals": [],
+                                            "revision": {"epoch": "epoch", "revision": 1}},
+                "activeTabId": rows[0]["id"], "activeTabType": "agent-session", "tabGroups": [
+                    {"id": "g", "activeTabId": rows[0]["id"], "tabOrder": [r["id"] for r in rows]}]}}}
+        state["remoteLayoutSnapshots"] = {"paired": snapshot([sid, other]), "else": snapshot([sid])}
+        ui.write_text(json.dumps(state))
+        from local_agent_manager import orca_profile_cleanup as profile_db
+        profile_path = root / "profiles/default/profile-state.db"
+        profile_path.parent.mkdir(parents=True)
+        profile_path.with_suffix(".db.authority").write_bytes(b"sqlite\n")
+        with closing(sqlite3.connect(profile_path)) as db:
+            db.executescript("PRAGMA user_version=3;" + profile_db.DDL + profile_db.PARTS_DDL)
+            db.executemany("INSERT INTO profile_state_meta VALUES(?,?)", [("revision", "2"), ("profile_id", "default")])
+            db.execute("INSERT INTO profile_state_automation_runs_meta VALUES('automationRuns','document',1,0,0,'')")
+            for domain in ("workspaceSessionsByHostId", "remoteLayoutSnapshots"):
+                payload = json.dumps(state[domain], separators=(",", ":"))
+                digest = hashlib.sha256(payload.encode()).hexdigest()
+                db.execute("INSERT INTO profile_state_documents VALUES(?,?,1,2,10,?)", (domain, payload, digest))
+                db.execute("INSERT INTO profile_state_document_parts_meta VALUES(?,1,2,10,?,2)", (domain, digest))
+                for i, (host, data) in enumerate(state[domain].items()):
+                    field, group = next(iter(data.items()))
+                    for key, items in group.items():
+                        part = json.dumps(items, separators=(",", ":"))
+                        path = json.dumps([host, field, key], separators=(",", ":"))
+                        db.execute("INSERT INTO profile_state_document_parts VALUES(?,?,?,?,?)",
+                                   (domain, path, i * 64, part, hashlib.sha256(part.encode()).hexdigest()))
+            db.commit()
+        project = home / "projects/repo"
+        project.mkdir(parents=True)
+        transcript = project / (native + ".jsonl")
+        lines = [{"sessionId": native, "uuid": first, "parentUuid": None, "type": "user", "message": "PRIVATE"},
+                 {"type": "file-history-snapshot", "messageId": first, "snapshot": {"messageId": first}},
+                 {"sessionId": native, "uuid": last, "parentUuid": first, "type": "assistant", "message": "PRIVATE"}]
+        lines[0]["cwd"] = row["launchDirectory"]
+        lines.append({"type": "last-prompt", "leafUuid": last, "sessionId": native})
+        transcript.write_text("".join(json.dumps(line) + "\n" for line in lines))
+        return sid, native, root, transcript, state
+
+    def run_claude_pair(self, *, shared, fork=False, interrupt=False, foreign_controller=False):
+        sid, native, root, transcript, state = self.claude_pair(shared=shared)
+        original = transcript.read_bytes()
+        preserved = {native: "shared_native_history"} if shared else {}
+        if fork:
+            fork_id = "aaaaaaaa-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            fork_path = transcript.with_name(fork_id + ".jsonl")
+            fork_bytes = original.replace(native.encode(), fork_id.encode())
+            fork_path.write_bytes(fork_bytes)
+            for profile in (self.root, root):
+                with closing(sqlite3.connect(profile / "agent-session-domain.db")) as db:
+                    raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
+                    record = json.loads(raw)
+                    first, last = record["providerHandleChain"]
+                    record["forkedFrom"] = {"sessionId": "orca_claude_sibling", "itemId": "source-item",
+                                            "childBoundary": {"kind": "item", "itemId": "child-item"}}
+                    last.update(origin="forked", forkedFromKey="claude:" + json.dumps(
+                        [native, first["handle"]["leafUuid"]], separators=(",", ":")))
+                    last["handle"]["sessionId"] = fork_id
+                    db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(record), sid))
+                    db.commit()
+            owner = self.invoke("records")["owner"]["store_id"]
+            blocked = self.invoke("plan", "--owner", owner, "--record-id", "orca_claude_sibling", ok=False)
+            self.assertIn("orca_claude_fork_source_still_required", json.dumps(blocked))
+            preserved = dict.fromkeys([native, fork_id], "fork_adoption_or_context_change")
+        plan, args = self.plan(sid)
+        self.assertEqual(plan["deleted_native_ids"], [] if preserved else [native])
+        self.assertEqual(plan["preserved_native"], preserved)
+        self.assertNotIn("PRIVATE", json.dumps(plan))
+        saved = self.base / "owner.json"
+        saved.write_text(json.dumps(plan))
+        if foreign_controller:
+            with closing(sqlite3.connect(root / "agent-session-domain.db")) as db:
+                raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
+                foreign = json.loads(raw)
+                foreign["location"]["executionHostId"] = "runtime:else"
+                db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(foreign), sid))
+                db.commit()
+        tabs_only = None
+        if not (shared or interrupt):
+            tabs_only_root = self.base / "tabs-only"
+            tabs_only_root.mkdir()
+            for name in ("orca-environments.json", "orca-data.json"):
+                (tabs_only_root / name).write_bytes((root / name).read_bytes())
+            tabs_only = self.controller("delete", "plan", "--client", "orca", "--orca-root", str(tabs_only_root),
+                                        "--record-id", sid, "--orca-remote-plan", str(saved))
+            self.assertTrue(tabs_only["capabilities"]["claude"]["frontend_session_delete"])
+        local = self.controller("delete", "plan", "--client", "orca", "--orca-root", str(root),
+                                "--record-id", sid, "--orca-remote-plan", str(saved))
+        self.assertNotIn("PRIVATE", json.dumps(local))
+        op = ("--operation-id", local["operation_id"], "--plan", local["plan_path"])
+        apply = ("delete", "apply", *op, "--plan-sha256", local["plan_sha256"], "--clients-closed")
+        self.assertFalse(self.controller(*apply, ok=False)["mutation_started"])
+        self.invoke("apply", *args, "--clients-closed", ok=False)
+        self.assertTrue(transcript.exists())
+        if interrupt:
+            self.interrupt_orca = True
+            lost = self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
+            self.assertEqual(lost["goal_status"], "unknown")
+            self.assertFalse(transcript.exists())
+            status = self.invoke("status", *args)["result"]
+            self.assertTrue(status["modified"] and status["mutation_started"], status)
+            self.assertEqual(status["batches"][0]["status"], "complete")
+            self.assertFalse(self.controller(*apply, ok=False)["mutation_started"])
+            self.assertEqual(json.loads((root / "orca-data.json").read_bytes()), state)
+            with closing(sqlite3.connect(self.root / "agent-session-domain.db")) as db:
+                raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
+                changed = json.loads(raw)
+                changed["providerHandleChain"][-1]["handle"]["leafUuid"] = orca_support.HISTORY_ID
+                db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(changed), sid))
+                db.commit()
+                changed_result = self.invoke("apply", *args, "--controller-plan", local["plan_path"], "--clients-closed", ok=False)
+                self.assertTrue(changed_result["result"]["modified"])
+                self.assertEqual(changed_result["result"]["batches"][0]["status"], "complete")
+                db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (raw, sid))
+                db.commit()
+        self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"])
+        self.assertEqual(self.invoke("verify", *args)["goal_status"], "complete")
+        self.assertEqual(self.controller(*apply)["goal_status"], "complete")
+        self.assertEqual(self.controller("operation", "verify", *op)["goal_status"], "complete")
+        if preserved:
+            self.assertEqual(transcript.read_bytes(), original)
+            if fork:
+                self.assertEqual(fork_path.read_bytes(), fork_bytes)
+        else:
+            self.assertFalse(transcript.exists())
+        for profile in (self.root, root):
+            with closing(sqlite3.connect(profile / "agent-session-domain.db")) as db:
+                expected = ["orca_claude_sibling"]
+                if profile == root and foreign_controller:
+                    expected.append(sid)
+                    self.assertEqual(db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone(),
+                                     (json.dumps(foreign),))
+                for table in ("agent_session_records", "agent_session_tabs", "journal_events", "journal_chat_state"):
+                    self.assertEqual(sorted(r[0] for r in db.execute(f"SELECT session_id FROM {table}")), sorted(expected))
+        if tabs_only:
+            tab_op = ("--operation-id", tabs_only["operation_id"], "--plan", tabs_only["plan_path"])
+            self.assertEqual(self.controller("delete", "apply", *tab_op, "--plan-sha256", tabs_only["plan_sha256"],
+                                             "--clients-closed")["goal_status"], "complete")
+            self.assertEqual(self.controller("operation", "verify", *tab_op)["goal_status"], "complete")
+            self.assertFalse((tabs_only_root / "agent-session-domain.db").exists())
+        after = json.loads((root / "orca-data.json").read_bytes())["workspaceSessionsByHostId"]
+        for host in ("runtime:else", "local"):
+            self.assertEqual(after[host], state["workspaceSessionsByHostId"][host])
+        self.assertEqual([t["entityId"] for t in after["runtime:paired"]["unifiedTabs"]["workspace-fixture"]], ["orca_claude_sibling"])
+        offline = json.loads((root / "orca-data.json").read_bytes())["remoteLayoutSnapshots"]
+        self.assertEqual(offline["else"], state["remoteLayoutSnapshots"]["else"])
+        self.assertEqual([t["sessionId"] for t in offline["paired"]["workspaces"]["workspace-fixture"]["tabs"]], ["orca_claude_sibling"])
+        profile_path = root / "profiles/default/profile-state.db"
+        self.assertEqual(profile_path.with_suffix(".db.authority").read_bytes(), b"sqlite\n")
+        with closing(sqlite3.connect(profile_path)) as db:
+            for domain, expected in (("workspaceSessionsByHostId", after), ("remoteLayoutSnapshots", offline)):
+                payload, digest = db.execute("SELECT payload,content_hash FROM profile_state_documents WHERE domain=?", (domain,)).fetchone()
+                self.assertEqual(json.loads(payload), expected)
+                self.assertEqual(db.execute("SELECT revision,legacy_revision,content_hash FROM profile_state_document_parts_meta WHERE domain=?",
+                                            (domain,)).fetchone(), (3, 3, digest))
+                for key, part in db.execute("SELECT part_key,payload FROM profile_state_document_parts WHERE domain=?", (domain,)):
+                    host, field, worktree = json.loads(key)
+                    self.assertEqual(json.loads(part), expected[host][field][worktree])
+
+    @unittest.skipUnless(os.name == "nt", "Orca closed-process verification requires Windows")
+    def test_orca_claude_paired_exclusive_linear_cursors(self):
+        self.run_claude_pair(shared=False)
+
+    @unittest.skipUnless(os.name == "nt", "Orca closed-process verification requires Windows")
+    def test_orca_claude_paired_shared_transcript(self):
+        self.run_claude_pair(shared=True, foreign_controller=True)
+
+    @unittest.skipUnless(os.name == "nt", "Orca closed-process verification requires Windows")
+    def test_orca_claude_fork_preserves_both_native_histories(self):
+        self.run_claude_pair(shared=True, fork=True)
+
+    @unittest.skipUnless(os.name == "nt", "Orca closed-process verification requires Windows")
+    def test_orca_claude_interrupted_between_native_and_frontend(self):
+        self.run_claude_pair(shared=False, interrupt=True)
+
+    @unittest.skipUnless(os.name == "nt", "Orca closed-process verification requires Windows")
+    def test_orca_claude_controller_restore_sources_guard_the_executor(self):
+        sid, native, root, transcript, _ = self.claude_pair()
+        plan, args = self.plan(sid)
+        saved = self.base / "owner.json"
+        saved.write_text(json.dumps(plan))
+        select = ("delete", "plan", "--client", "orca", "--orca-root", str(root),
+                  "--record-id", sid, "--orca-remote-plan", str(saved))
+        local = self.controller(*select)
+        apply = ("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"])
+        with closing(sqlite3.connect(root / "agent-session-domain.db")) as db:
+            other = "orca_claude_sibling"
+            raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (other,)).fetchone()
+            sibling = json.loads(raw)
+            sibling["providerHandleChain"][0]["handle"]["sessionId"] = native
+            db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(sibling), other))
+            db.commit()
+            self.invoke(*apply, ok=False)
+            db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (raw, other))
+            original = json.dumps({"version": 1, "record": json.dumps(sibling), "queued": []})
+            key = "journal.legacy-original:" + other + ":digest"
+            db.execute("INSERT INTO agent_session_store_meta VALUES(?,?)", (key, original))
+            db.commit()
+            self.controller(*select, ok=False)
+            self.invoke(*apply, ok=False)
+            db.execute("DELETE FROM agent_session_store_meta WHERE key=?", (key,))
+            db.commit()
+        with closing(sqlite3.connect(root / "profiles/default/profile-state.db")) as db:
+            db.execute("UPDATE profile_state_document_parts_meta SET legacy_revision=1 WHERE domain='remoteLayoutSnapshots'")
+            db.commit()
+            self.controller(*select, ok=False)
+            self.invoke(*apply, ok=False)
+        self.assertTrue(transcript.is_file())
+        self.assertFalse(self.invoke("status", *args)["result"]["mutation_started"])
+
+    @unittest.skipUnless(os.name == "nt", "Orca closed-process verification requires Windows")
+    def test_orca_claude_requires_matching_cursors_and_exclusive_transcript(self):
+        sid, native, controller, transcript, _ = self.claude_pair()
+        plan, args = self.plan(sid)
+        saved = self.base / "owner.json"
+        saved.write_text(json.dumps(plan))
+        select = ("delete", "plan", "--client", "orca", "--orca-root", str(controller),
+                  "--record-id", sid, "--orca-remote-plan", str(saved))
+        local = self.controller(*select)
+        with closing(sqlite3.connect(controller / "agent-session-domain.db")) as db:
+            raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
+            changed = json.loads(raw)
+            changed["providerHandleChain"][-1]["handle"]["leafUuid"] = orca_support.HISTORY_ID
+            db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(changed), sid))
+            db.commit()
+            self.controller(*select, ok=False)
+            self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
+            self.assertTrue(transcript.is_file())
+            db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (raw, sid))
+            db.commit()
+        original = transcript.read_bytes()
+        branch = {"sessionId": native, "type": "assistant", "uuid": "side", "parentUuid": orca_support.HISTORY_ID}
+        transcript.write_bytes(original + json.dumps(branch).encode() + b"\n")
+        self.invoke("apply", *args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
+        self.assertEqual(self.plan(sid)[0]["preserved_native"], {native: "transcript_or_cursor_not_exclusive"})
+        transcript.write_bytes(original)
+        with closing(sqlite3.connect(self.root / "agent-session-domain.db")) as db:
+            raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
+            row = json.loads(raw)
+            row["acquiredAccount"]["observedThroughFence"] = 1
+            db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(row), sid))
+            db.commit()
+            self.assertEqual(self.plan(sid)[0]["preserved_native"], {native: "launch_account_unproven"})
+            row["acquiredAccount"].update(observedThroughFence=2, hostId="runtime:else")
+            db.execute("UPDATE agent_session_records SET record_json=? WHERE session_id=?", (json.dumps(row), sid))
+            db.commit()
+            self.assertEqual(self.plan(sid)[0]["preserved_native"], {native: "launch_account_unproven"})
+            db.execute("INSERT INTO agent_session_store_meta VALUES(?,?)", ("journal.legacy-original:" + sid + ":digest", raw))
+            db.commit()
+            owner = self.invoke("records")["owner"]["store_id"]
+            self.invoke("plan", "--owner", owner, "--record-id", sid, ok=False)
+        self.assertEqual(transcript.read_bytes(), original)
 
     @unittest.skipUnless(os.name == "nt", "Full local lifecycle adapters require Windows")
     def test_full_owner_plans_delete_the_selected_native_transcript_and_frontend(self):

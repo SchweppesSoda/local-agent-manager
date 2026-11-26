@@ -156,7 +156,7 @@ healthy/native 记录及其已冻结的 frontend reference closure，以及 Cind
 Agent 在本机调用远程模型 API 时，按本机前端与原生存储清理。Agent 在另一台机器运行时，
 可用 `remote records` 经已信任的 SSH 主机盘点，由执行机上的管理器生成和执行精确计划。
 Cindy 可关联 SSH、同账号设备和直接共享 provider 的单条任务，并核验同账号 Pi 的控制端备份。
-配对的 Orca runtime 可按结构化会话 ID 清执行端 Codex 记录、journal，以及控制端对应的恢复标签和 journal 副本。
+同一来宾的多条任务可按控制端绑定和各自的原生工作目录区分。配对的 Orca runtime 可按结构化会话 ID 清执行端 journal、相应 Codex 记录或独占的 Claude 转录，以及控制端对应的恢复标签和 journal 副本。共用的 Claude 转录会完整保留。
 T3 和 Paseo 按各自服务器身份核验。云服务历史仍遵循适配器的 `remote_delete=false` 能力边界。
 见[远程记录命令与完成范围](docs/operation-cli.md#remote-provider-records)。逐项修改命令
 要求明确目标；专用 `purge` 命令则以 `--yes --clients-closed` 作为整批授权，相关路径
@@ -372,7 +372,7 @@ OpenAI 稳定 API。
 | Pi Agent | standalone 及每个 Cindy `<profile>/pi-agent-home/sessions` 的有界 JSONL 盘点 | 逐个精确删除可选 JSONL；live Cindy current/historical 引用阻止删除 |
 | Claude Code | effective config root 及可确定归属的 Cindy `claude-home`/默认 root | 逐 session 删除精确 manifest；共享配置、memory/history/index 保留 |
 | WorkBuddy | 独立 profile 的 5.6.2 SQLite 元数据、精确会话文件及 sidebar/pinned 引用 | `delete_workbuddy_session` 与独立 `remove_workbuddy_ui_reference`；已证明的本地终态会话或仅置顶引用，未知归属及云同步关联阻止删除 |
-| Orca | 本机 journal、profile 界面及恢复副本、已证明的 managed Codex home | 限定 Windows/Codex 组合支持完整操作及冷验证；未知恢复、其他引擎、runtime home 与远端写入关闭 |
+| Orca | 执行端 journal、已证明的 managed Codex home 或独占 Claude 转录、配对控制端的恢复副本 | Windows 结构化会话按已批准范围清理和冷验证。共享转录及无法证明归属的记录保留。 |
 | Herdr | 持久化 current/restore 引用及显式本机 live metadata | Windows 显式绑定支持原生记录、窗格、历史和恢复副本清理；默认无绑定盘点仍只读 |
 | 千问办公 CN | 已核实 CN schema、独占 SDK 记录、界面缓存与逐会话文件 | 本地会话分 SDK/profile 两批删除并冷验证；云端、共享或未知恢复引用阻止对应目标 |
 | Antigravity CLI | 独立 CLI 的会话数据库、摘要、恢复镜像和已知前端引用 | Windows 上按原生会话 ID 清理已核实归属的会话及其产物 |

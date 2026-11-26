@@ -112,6 +112,17 @@ def verify_native(proof, *, planning=False):
         raise ValueError("cindy_ssh_native_completion_unverified")
 
 
+def _require_settled_turn(row):
+    # Cindy retains the start timestamp even after a normal stop. The last
+    # completed turn or history clear can settle an earlier start.
+    started, ended, cleared = (row[k] if k in row.keys() else None for k in
+                               ("active_turn_started_at", "last_turn_ended_at", "cleared_at"))
+    if any(t is not None and (type(t) is not int or t < 0) for t in (started, ended, cleared)):
+        raise ValueError("cindy_ssh_turn_state_unverified")
+    if started is not None and started > max(ended or 0, cleared or 0):
+        raise ValueError("cindy_ssh_turn_unfinished")
+
+
 def guard_row(db, row, proof):
     """Checked again in the SQLite write transaction, including newly parked history."""
     sid, request = row["id"], proof["verify_request"]
@@ -121,14 +132,7 @@ def guard_row(db, row, proof):
             or host != "device:" + hosted["host_device"] and not host.startswith("share:")):
         raise ValueError("cindy_hosted_controller_mismatch")
     database = Path(db.execute("PRAGMA database_list").fetchone()[2])
-    # Cindy retains the start timestamp even after a normal stop. The last
-    # completed turn or history clear can settle an earlier start.
-    started, ended, cleared = (row[k] if k in row.keys() else None for k in
-                               ("active_turn_started_at", "last_turn_ended_at", "cleared_at"))
-    if any(t is not None and (type(t) is not int or t < 0) for t in (started, ended, cleared)):
-        raise ValueError("cindy_ssh_turn_state_unverified")
-    if started is not None and started > max(ended or 0, cleared or 0):
-        raise ValueError("cindy_ssh_turn_unfinished")
+    _require_settled_turn(row)
     if (sid != proof["session_id"] or remote.directory_identity(Path(proof["profile_root"])) != proof["profile_id"]
             or remote._owner("cindy", database)["store_id"] != proof["database_id"]
             or database != Path(proof["database"]) or execution_host(row) != host
@@ -158,23 +162,43 @@ def frozen(document):
     return proof
 
 
-def guard_references(proof):
+def guard_references(proof, *, selected_absent=False):
     database, profile, sid = Path(proof["database"]), Path(proof["profile_root"]), proof["session_id"]
     client = proof["verify_request"]["client"]
     engine = "codex" if client == "native" else client
     hosted = proof.get("hosted")
     host = hosted["execution_host"] if hosted else "ssh:" + proof["verify_request"]["destination"]
+    bindings = (hosted or {}).get("guest_bindings", {})
+    seen = set()
+    if bindings and not selected_absent:
+        with closing(connect_readonly(database)) as db:
+            for row in db.execute("SELECT * FROM sessions WHERE agent_device_id=?", (host,)):
+                _require_settled_turn(row)
     for namespace in resolve_cindy_profiles(root=profile, database=database):
         catalog = build_cindy_reference_catalog(namespace.database, profile_root=profile)
         if catalog.failures:
             raise ValueError("cindy_ssh_reference_inventory_incomplete")
         for r in catalog.references:
+            if bindings and not selected_absent:
+                task = cindy_hosted.host_session_id(hosted["guest_peer"], r.cindy_session_id)
+                if r.execution_host == host or task in bindings and r.database == database:
+                    if (r.database != database or task in seen or task not in bindings or r.execution_host != host or r.reference_kind != "current"
+                            or r.backend != engine or r.session_details.get("parent_session_id")
+                            or not cindy_hosted.locator_matches(r.remote_native_locator, bindings[task])):
+                        raise ValueError("cindy_guest_controller_tasks_unverified")
+                    seen.add(task)
+                if r.database == database and r.session_details.get("parent_session_id") == sid:
+                    raise ValueError("cindy_guest_controller_fork_reference")
             if r.database == database and r.cindy_session_id == sid or r.backend != engine:
+                continue
+            if hosted and r.execution_host.startswith("device:") and r.execution_host != "device:" + hosted["host_device"]:
                 continue
             if ((cindy_hosted.possible_reference(r.remote_native_locator, proof["native_id"])
                     or r.remote_native_locator == proof.get("native_record_id", proof["native_id"]))
                     and (hosted or r.execution_host in {host, "unknown"})):
                 raise ValueError("cindy_ssh_shared_native_handle")
+    if bindings and not selected_absent and seen != bindings.keys():
+        raise ValueError("cindy_guest_controller_tasks_unverified")
 
 
 def check_before_native(document, proof):
@@ -207,7 +231,7 @@ def context_for(coordinator, proof, *, allow_absent):
             raise ValueError("cindy_ssh_task_missing")
     # Check all DB namespaces of this userData root before handing the owner
     # its native operation. A second current or parked binding can still resume it.
-    guard_references(proof)
+    guard_references(proof, selected_absent=row is None)
     if "backup" in proof:
         current = cindy_hosted.backup(proof)
         if row is not None and current != proof["backup"] or row is None and not current.get("absent"):

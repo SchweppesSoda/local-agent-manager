@@ -336,7 +336,15 @@ def frozen_operation_roots(document: Mapping[str, Any]) -> tuple[Path, ...]:
             closure = validate_action(document, action)
             # A paired replica carries a foreign home locator. Its native
             # writer holds that lock on the executor; this plan owns only userData.
-            if "remote_owner" not in closure:
+            if "claude_history" in closure:
+                from .remote_records import directory_identity
+                history = closure["claude_history"]
+                if history["delete_ids"]:
+                    home = Path(history["home"])
+                    if directory_identity(home) != history["home_id"]:
+                        raise ValueError("orca_claude_home_changed")
+                    extra.add(home)
+            elif "remote_owner" not in closure:
                 for record in closure["records"]:
                     extra.add(prove_account_home(Path(closure["root"]), Path(record["home"])))
     return tuple(scope.root for scope in _merge_scopes(MutationScope(path, None)

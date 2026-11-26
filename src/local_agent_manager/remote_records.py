@@ -60,7 +60,8 @@ def _owner(client, root, pi_agent_dir=None):
         from .paseo_daemon_delete import _server_id
         instance = _server_id(root)
     elif client == "orca":
-        journal = frozen_files.checked_path(root, "agent-session-journal.db").lstat()
+        from .orca_metadata import journal_name
+        journal = frozen_files.checked_path(root, journal_name(root)).lstat()
         frozen_files._plain(journal)
         physical.extend((journal.st_dev, journal.st_ino))
         instance = None
@@ -86,10 +87,10 @@ def _owner(client, root, pi_agent_dir=None):
     return identity
 
 
-def _records(client, root, *, agent_dir=None, hosted_id=None):
+def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=()):
     if client == "orca":
-        from .orca_metadata import read_orca_journal
-        journal = frozen_files.checked_path(root, "agent-session-journal.db")
+        from .orca_metadata import journal_name, read_orca_journal
+        journal = frozen_files.checked_path(root, journal_name(root))
         for suffix in ("", "-wal", "-shm", "-journal"):
             try:
                 frozen_files._plain(Path(str(journal) + suffix).lstat())
@@ -100,7 +101,9 @@ def _records(client, root, *, agent_dir=None, hosted_id=None):
         if errors:
             raise ValueError("orca_journal_inventory_incomplete")
         return [{"record_id": r.session_id, "engine": r.provider, "execution_host": r.host, "wsl_distro": r.wsl_distro,
-                 "provider_home": r.home_locator, "native_ids": [h.native_id for h in r.handles]} for r in records]
+                 "provider_home": r.home_locator, "native_ids": [h.native_id for h in r.handles],
+                 **({"launched_home": r.launched_home, "leaf_uuids": [h.leaf_uuid for h in r.handles]}
+                    if r.provider == "claude" else {})} for r in records]
     if client == "cindy":
         from .cindy_references import build_cindy_reference_catalog
         catalog = build_cindy_reference_catalog(root)
@@ -161,20 +164,24 @@ def _records(client, root, *, agent_dir=None, hosted_id=None):
                    else build_claude_catalog(SimpleNamespace(claude_config_dir=root)))
     if catalog.errors:
         raise ValueError("remote_native_inventory_incomplete")
+    from .cindy_hosted import locator_key
+    locators = set(map(locator_key, hosted_locators))
+    def need_workspace(identifier, locator):
+        return hosted_id == identifier or locator_key(locator) in locators
     if client == "native":
         return [{"record_id": item.thread_id, **({"cwds": [r.cwd for r in item.rollouts], "rollouts": [str(r.path) for r in item.rollouts]}
-                 if hosted_id == item.thread_id else {})} for item in catalog.records
+                 if need_workspace(item.thread_id, item.thread_id) else {})} for item in catalog.records
                 if item.codex_home == root and (item.rollouts or item.indexed or item.artifact_present)]
     if client == "pi":
         return [{"record_id": item.session_id, "path": str(item.path),
-                 **({"cwds": [item.cwd]} if hosted_id == item.session_id else {})} for item in catalog.records
+                 **({"cwds": [item.cwd]} if need_workspace(item.session_id, str(item.path)) else {})} for item in catalog.records
                 if item.session_root == root]
     records = []
     for item in catalog.records:
         if item.config_dir != root or not item.manifest:
             continue
         record = {"record_id": item.session_id}
-        if hosted_id == item.session_id:
+        if need_workspace(item.session_id, item.session_id):
             from .claude_sessions import _read_transcript
             cwds = []
             for path in item.transcript_paths:
@@ -381,7 +388,7 @@ def _recheck_hosted(stored, owner, coverage, verb, receipt, approval):
         elif (cindy_hosted.index_phase(receipt, approval) == "complete"
                 or cindy_hosted.index_change(hosted, locator) != change):
             raise ValueError("cindy_host_index_changed_or_interrupted")
-    if cindy_hosted.observe(claim, owner, locator, record=record, retired=retired) != hosted:
+    if cindy_hosted.observe(claim, owner, locator, record=record, approved=hosted, retired=retired) != hosted:
         raise ValueError("cindy_hosted_session_binding_changed")
 
 
@@ -405,9 +412,12 @@ def dispatch(q):
         if not matches or client in {"pi", "claude", "native"} and len(matches) != 1:
             raise ValueError("remote_exact_record_not_found")
         args = _scope(client, root, record_id, frontend_only)
-        if (client == "orca" or client == "native" and "cindy_hosted" in q) and not q["codex_bin"]:
+        orca_codex = client == "orca" and matches[0]["engine"] == "codex"
+        if (orca_codex or client == "native" and "cindy_hosted" in q) and not q["codex_bin"]:
             raise ValueError("execution_host_codex_binary_required")
-        runtime = _codex_runtime(owner, q["codex_bin"]) if client in {"native", "orca"} else None
+        if client == "orca" and not orca_codex and q["codex_bin"]:
+            raise ValueError("orca_claude_does_not_use_codex_binary")
+        runtime = _codex_runtime(owner, q["codex_bin"]) if client == "native" or orca_codex else None
         if runtime:
             args.append("--codex-bin=" + runtime["path"])
         if q["bindings"] is not None:
@@ -466,26 +476,25 @@ def dispatch(q):
             raise ValueError("remote_operation_owner_mismatch")
         runtime = stored.get("codex_runtime")
         envelope["codex_runtime"] = runtime
-        if client == "orca":
-            h = stored["handle_chain_sha256"]
-            if verb == "apply" and any(r["record_id"] == scope["record_ids"][0] for r in _records(client, root)):
-                from .orca_remote import authoritative_chain
-                if authoritative_chain(root, scope["record_ids"][0]) != h:
-                    raise ValueError("orca_remote_handle_chain_changed")
-            envelope["handle_chain_sha256"] = h
-        if "cindy_hosted" in stored:
-            try:
+        try:
+            if client == "orca":
+                h = stored["handle_chain_sha256"]
+                if verb == "apply" and any(r["record_id"] == scope["record_ids"][0] for r in _records(client, root)):
+                    from .orca_remote import authoritative_chain
+                    if authoritative_chain(root, scope["record_ids"][0]) != h:
+                        raise ValueError("orca_remote_handle_chain_changed")
+                envelope["handle_chain_sha256"] = h
+            if "cindy_hosted" in stored:
                 _recheck_hosted(stored, owner, coverage, verb, index_receipt, q["approval"])
-            except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError) as exc:
-                # Authenticated owner and plan. Preserve the original native
-                # mutation receipt even when a hosted reference changed later.
-                _, prior = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
-                if prior.get("plan_sha256") != digest or not prior.get("mutation_started"):
-                    raise
-                goal = "completed_with_residuals" if completed_batches(prior, digest) else "unknown"
-                return 1, {**common, "operation_id": operation, "approval": q["approval"], "goal_status": goal,
-                           "error": str(exc), "result": {**prior, "goal_status": goal, "goal_satisfied": False}}
-            envelope.update({k: stored[k] for k in ("cindy_hosted", "pi_locator", "host_index") if k in stored})
+                envelope.update({k: stored[k] for k in ("cindy_hosted", "pi_locator", "host_index") if k in stored})
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, sqlite3.Error) as exc:
+            # A changed reference does not invalidate a completed child receipt.
+            _, prior = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
+            if prior.get("plan_sha256") != digest or not prior.get("mutation_started"):
+                raise
+            goal = "completed_with_residuals" if completed_batches(prior, digest) else "unknown"
+            return 1, {**common, "operation_id": operation, "approval": q["approval"], "goal_status": goal,
+                       "error": str(exc), "result": {**prior, "goal_status": goal, "goal_satisfied": False}}
         if stored != envelope:
             raise ValueError("remote_operation_owner_mismatch")
     approval = _digest(envelope)
@@ -511,6 +520,8 @@ def dispatch(q):
     if q["approval"] != approval:
         raise ValueError("remote_plan_approval_mismatch")
     if verb == "apply":
+        if client == "orca" and coverage.get("provider") == "claude" and not q.get("controller_approval"):
+            raise ValueError("orca_paired_controller_plan_required")
         if "cindy_hosted" in envelope:
             from .codex_desktop_state import running_related_clients
             from .frontend_session_cleanup import _require_client_closed
@@ -521,7 +532,7 @@ def dispatch(q):
             _require_client_closed(Path(envelope["cindy_hosted"]["profile"]), running_related_clients, owner_client="cindy")
         mode = bool(scope.get("paseo_only") or scope.get("t3code_only"))
         args = ["delete", "apply", *_scope(client, root, scope["record_ids"][0], mode), "--plan-sha256", digest]
-        if client in {"native", "orca"}:
+        if client == "native" or client == "orca" and coverage.get("provider") != "claude":
             if not runtime or _codex_runtime(owner, runtime["path"]) != runtime:
                 raise ValueError("remote_codex_runtime_changed")
             args.append("--codex-bin=" + runtime["path"])

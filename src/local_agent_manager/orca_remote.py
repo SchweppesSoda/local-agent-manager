@@ -25,16 +25,20 @@ def _key(value):
 def handle_chain(sid, raw):
     record = parse_orca_record(sid, raw)
     lease = raw["lease"]
-    if (record.unsupported_recovery or record.wsl_distro is not None or record.provider != "codex"
+    if (record.unsupported_recovery or record.wsl_distro is not None
             or record.lease.claim_status != "released" or record.lease.unreconciled or record.lease.owner_pid is not None
             or any(lease.get(k) is not None for k in ("handoffStage", "handoffOperationId", "reservedSpawnToken"))):
         raise ValueError("orca_remote_lease_unsettled")
-    return remote._digest([sid, raw["createdAt"], raw["location"]["workspaceKind"], raw["location"]["workspaceId"],
-                           raw["accountHome"], record.provider, raw["providerHandleChain"]])
+    identity = [sid, raw["createdAt"], raw["location"]["workspaceKind"], raw["location"]["workspaceId"],
+                raw["accountHome"], record.provider, raw["providerHandleChain"]]
+    if record.provider == "claude":
+        identity.extend([lease["runtimeFence"], raw.get("launchDirectory"), raw.get("launchedAccount"), raw.get("acquiredAccount"),
+                         raw.get("forkedFrom"), raw.get("providerContextBoundary")])
+    return remote._digest(identity)
 
 
 def authoritative_chain(root, sid):
-    with closing(connect_readonly(frozen_sqlite.path_for(root, journal.RELATIVE))) as db:
+    with closing(connect_readonly(frozen_sqlite.path_for(root, journal.writer_name(root)))) as db:
         db.execute("BEGIN")
         journal.qualify(db)
         row = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
@@ -54,6 +58,16 @@ def owner_scope(doc, root, sid):
             or "remote_owner" in closures[0] or len(closures[0]["records"]) != 1):
         raise ValueError("orca_authoritative_session_required")
     record, = closures[0]["records"]
+    _, raw = frozen_files.read_file(root, "orca-e2ee-keypair.json", content=True, limit=8192)
+    fingerprint = _key(journal.decode(raw)["publicKeyB64"])
+    scope = {"completion_scope": "orca_host_session", "frontend_ids": [sid], "authority": fingerprint,
+             "workspace": record["workspace_id"], "native_ids": record["native_ids"], "provider_home": record["home"]}
+    if record.get("provider") == "claude":
+        from .orca_claude import validate_actions
+        validate_actions(doc, closures[0])
+        history = closures[0]["claude_history"]
+        return {**scope, "provider": "claude", "deleted_native_ids": history["delete_ids"],
+                "preserved_native": history["preserved"]}
     native = evidence_for_actions(doc, doc["actions"])
     covered = set()
     for item in native:
@@ -64,10 +78,7 @@ def owner_scope(doc, root, sid):
         covered.update(frozen["affected_thread_ids"])
     if not covered or covered != set(record["native_ids"]):
         raise ValueError("orca_complete_native_handle_chain_required")
-    _, raw = frozen_files.read_file(root, "orca-e2ee-keypair.json", content=True, limit=8192)
-    fingerprint = _key(journal.decode(raw)["publicKeyB64"])
-    return {"completion_scope": "orca_host_session", "frontend_ids": [sid], "authority": fingerprint,
-            "workspace": record["workspace_id"], "native_ids": sorted(covered), "provider_home": record["home"]}
+    return scope
 
 
 def controller_route(root, authority):
@@ -110,7 +121,8 @@ def from_plan(path, root, sid):
     remote._validate(request)
     return {"request": request, "root": str(root), "profile_id": remote.directory_identity(root),
             "sid": sid, "host": controller_route(root, plan["authority"]),
-            **{k: plan[k] for k in ("authority", "workspace", "native_ids", "provider_home", "handle_chain_sha256")}}
+            **{k: plan[k] for k in ("authority", "workspace", "native_ids", "provider_home", "handle_chain_sha256")},
+            **({k: plan[k] for k in ("provider", "deleted_native_ids", "preserved_native")} if "provider" in plan else {})}
 
 
 def check_pairing(pair):
@@ -129,6 +141,8 @@ def verify(pair, *, planning=False):
     if (code or reply.get("completion_scope") != "orca_host_session" or reply.get("frontend_ids") != [pair["sid"]]
             or any(reply.get(k) != pair[k] for k in ("authority", "workspace", "native_ids", "provider_home", "handle_chain_sha256"))):
         raise ValueError("orca_executor_session_unverified")
+    if any(reply.get(k) != pair.get(k) for k in ("provider", "deleted_native_ids", "preserved_native")):
+        raise ValueError("orca_executor_native_scope_unverified")
     if planning and reply.get("goal_status") in {"ready", "complete"}:
         return
     result = reply.get("result") or {}
@@ -147,26 +161,41 @@ def controller_metadata(root, pair, sources):
         owned = record.host == pair["host"]
         ids = {h.native_id for h in record.handles}
         if sid != selected:
-            if owned and ids.intersection(pair["native_ids"]):
-                raise ValueError("orca_remote_native_handle_shared")
+            if owned and record.provider == pair.get("provider", "codex"):
+                journal.guard_fork_source(raw, {selected}, pair["host"])
+                deleted = set(pair.get("deleted_native_ids", pair["native_ids"]))
+                if record.provider == "claude":
+                    from .orca_claude import references_native
+                    shared = deleted and references_native(raw, record, selected, deleted)
+                else:
+                    shared = ids & deleted
+                if shared:
+                    raise ValueError("orca_remote_native_handle_shared")
             return
-        if owned and (record.provider != "codex" or record.wsl_distro is not None or record.unsupported_recovery
-                or record.home_locator != pair["provider_home"] or raw["location"]["workspaceId"] != pair["workspace"]
+        home = record.home_locator
+        if owned and record.provider == "claude":
+            home = record.launched_home or home
+        if owned and (record.provider != pair.get("provider", "codex") or record.wsl_distro is not None or record.unsupported_recovery
+                or home != pair["provider_home"] or raw["location"]["workspaceId"] != pair["workspace"]
                 or ids != set(pair["native_ids"]) or handle_chain(sid, raw) != pair["handle_chain_sha256"]):
             raise ValueError("orca_remote_journal_owner_mismatch")
         copies.append(owned)
-    if frontend._exists(root, journal.RELATIVE):
-        with closing(connect_readonly(frozen_sqlite.path_for(root, journal.RELATIVE))) as db:
+    relative = journal.writer_name(root)
+    if frontend._exists(root, relative):
+        with closing(connect_readonly(frozen_sqlite.path_for(root, relative))) as db:
             db.execute("BEGIN")
             journal.qualify(db)
             for sid, raw in journal.rows(db, "SELECT session_id,record_json FROM agent_session_records"):
                 observe(sid, journal.decode(raw))
-            if not copies and any(db.execute(f"SELECT 1 FROM {table} WHERE session_id=? LIMIT 1", (selected,)).fetchone()
-                                  for table in journal.SESSION_TABLES if table != "agent_session_records"):
+            if pair.get("deleted_native_ids"):
+                from .orca_claude import journal_may_restore_native
+                if journal_may_restore_native(db, set(pair["deleted_native_ids"])):
+                    raise ValueError("orca_remote_native_handle_shared")
+            if not copies and journal.count_remaining(db, {selected}):
                 raise ValueError("orca_controller_journal_owner_unproven")
             for tab, in journal.rows(db, "SELECT tab_id FROM agent_session_tabs WHERE session_id=?", (selected,)):
                 tabs[tab] = [selected]
-    elif any(frontend._exists(root, journal.RELATIVE + suffix) for suffix in ("-shm", "-wal", "-journal")):
+    elif any(frontend._exists(root, relative + suffix) for suffix in ("-shm", "-wal", "-journal")):
         raise ValueError("orca_controller_journal_sidecar_unverified")
     for relative, family in sources:
         if family == "legacy_records":
@@ -231,7 +260,7 @@ def context_for(coordinator, pair, approved):
     storage = StorageLocation(storage_id_for_path(root), "Orca paired session", root, scan_status=ScanStatus.OK)
     actions = ()
     if changed:
-        impact = ActionImpact(owner_client="orca", owner_process_root=str(root), external_engine="codex",
+        impact = ActionImpact(owner_client="orca", owner_process_root=str(root), external_engine=pair.get("provider", "codex"),
             external_storage_root=str(root), resource_path=str(root), affected_thread_ids=(sid,),
             external_action_payload={"frontend_session_id": sid, "orca_frontend_evidence": closure, "requires_action_ids": []},
             frontend_references_preserved=False)

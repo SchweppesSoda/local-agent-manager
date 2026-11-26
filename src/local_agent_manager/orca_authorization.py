@@ -69,6 +69,10 @@ def execution_scope(document, actions, *, clients_closed):
     from .orca_cleanup import frontend_evidence
     frontends = tuple(frontend_evidence(document).values())
     pending = evidence_for_actions(document, actions)
+    if any((a["kind"] if isinstance(a, dict) else a.kind.value) == "delete_claude_session" for a in actions):
+        from .orca_claude import recheck_before_native
+        closure, = frontends
+        recheck_before_native(closure)
     values = _qualified(pending) if pending or not frontends else []
     token = _current.set(_Ticket(json.dumps(values, sort_keys=True).encode(), True, sha, json.dumps(frontends).encode()))
     try:
