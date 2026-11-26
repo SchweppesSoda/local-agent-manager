@@ -88,7 +88,11 @@ def _layout(value, removed, depth=0):
     return {**value, "first": first, "second": second}
 
 
-def workspace(value, selected, known_tabs, native_ids):
+def _tab_owner(tab, namespace):
+    return tab.get("executionHostId", namespace)
+
+
+def workspace(value, selected, known_tabs, native_ids, *, namespace="local", remote=None):
     value = deepcopy(mapping(value))
     if set(value) - _WORKSPACE_FIELDS:
         fail("workspace_restore_fields_unverified")
@@ -101,15 +105,17 @@ def workspace(value, selected, known_tabs, native_ids):
             if (not all(text(tab.get(key)) for key in ("id", "entityId", "contentType", "groupId", "worktreeId"))
                     or tab["worktreeId"] != worktree):
                 fail("unified_tab_unverified")
-            local = tab.get("executionHostId", "local") == "local"
-            if local and tab["contentType"] == "agent-session" and tab["entityId"] in selected:
+            owned = _tab_owner(tab, namespace) == (remote["host"] if remote else "local")
+            if owned and tab["contentType"] == "agent-session" and tab["entityId"] in selected:
+                if remote and worktree != remote["workspace"]:
+                    fail("remote_tab_workspace_mismatch")
                 removed_tabs.add(tab["id"])
                 worktree_tabs.setdefault(worktree, set()).add(tab["id"])
             else:
                 # A native title on a terminal is not proof that its resume
                 # argv, buffers and provider home belong to this selection.
                 title = tab.get("aiVaultTitle")
-                if local and isinstance(title, dict) and title.get("agent") == "codex" and title.get("sessionId") in native_ids:
+                if owned and isinstance(title, dict) and title.get("agent") == "codex" and title.get("sessionId") in native_ids:
                     fail("terminal_restore_binding_unverified")
                 kept.append(tab)
                 kept_tabs.add(tab["id"])
@@ -176,7 +182,7 @@ def workspace(value, selected, known_tabs, native_ids):
     return value, worktree_tabs, worktree_groups
 
 
-def ui_state(value, selected, known_tabs=(), native_ids=()):
+def ui_state(value, selected, known_tabs=(), native_ids=(), *, remote=None):
     value = deepcopy(mapping(value))
     removed_tabs, removed_groups = {}, {}
     def merge(target, values):
@@ -188,36 +194,36 @@ def ui_state(value, selected, known_tabs=(), native_ids=()):
         return f"{tab}:{digest[:8]}-{digest[8:12]}-4{digest[13:16]}-a{digest[17:20]}-{digest[20:]}"
     if isinstance(known_tabs, dict):
         pane_keys.update(pane(tab, sid) for tab, sids in known_tabs.items() for sid in sids if sid in selected)
-    def clean_workspace(before):
+    target_host = remote["host"] if remote else "local"
+    def clean_workspace(before, namespace):
         for entries in mapping(before.get("unifiedTabs", {})).values():
             for tab in sequence(entries):
-                if (tab.get("executionHostId", "local") == "local" and tab.get("contentType") == "agent-session"
+                if (_tab_owner(tab, namespace) == target_host and tab.get("contentType") == "agent-session"
                         and tab.get("entityId") in selected):
                     pane_keys.add(pane(tab["id"], tab["entityId"]))
-        return workspace(before, selected, known_tabs, set(native_ids))
+        return workspace(before, selected, known_tabs, set(native_ids), namespace=namespace, remote=remote)
     if "workspaceSession" in value:
-        value["workspaceSession"], tabs, groups = clean_workspace(mapping(value["workspaceSession"]))
+        value["workspaceSession"], tabs, groups = clean_workspace(mapping(value["workspaceSession"]), "local")
         merge(removed_tabs, tabs); merge(removed_groups, groups)
     if "workspaceSessionsByHostId" in value:
         hosts = mapping(value["workspaceSessionsByHostId"])
-        if "local" in hosts:
-            hosts["local"], tabs, groups = clean_workspace(mapping(hosts["local"]))
+        if target_host in hosts:
+            hosts[target_host], tabs, groups = clean_workspace(mapping(hosts[target_host]), target_host)
             merge(removed_tabs, tabs); merge(removed_groups, groups)
-        # Remote namespaces, including same raw session IDs, are preserved.
     retained_panes, remote_tabs, remote_groups = set(), {}, {}
-    def observe_retained(state, *, remote=False):
+    def observe_retained(state, *, foreign=False):
         for worktree, entries in mapping(mapping(state).get("unifiedTabs", {})).items():
             for tab in sequence(entries):
                 tab = mapping(tab)
                 if tab.get("contentType") == "agent-session" and text(tab.get("id")) and text(tab.get("entityId")):
                     retained_panes.add(pane(tab["id"], tab["entityId"]))
-                if remote or tab.get("executionHostId", "local") != "local":
+                if remote or foreign or tab.get("executionHostId", "local") != "local":
                     remote_tabs.setdefault(worktree, set()).add(tab.get("id"))
                     remote_groups.setdefault(worktree, set()).add(tab.get("groupId"))
     if "workspaceSession" in value:
         observe_retained(value["workspaceSession"])
     for host, state in mapping(value.get("workspaceSessionsByHostId", {})).items():
-        observe_retained(state, remote=host != "local")
+        observe_retained(state, foreign=host != target_host)
     for devices in mapping(value.get("mobileClientTabSelectionsByDeviceId", {})).values():
         for worktree, selection in mapping(devices).items():
             mapping(selection)
@@ -244,14 +250,14 @@ def ui_state(value, selected, known_tabs=(), native_ids=()):
     return value
 
 
-def transform(raw, *, family, selected, known_tabs=(), native_ids=()):
+def transform(raw, *, family, selected, known_tabs=(), native_ids=(), remote=None):
     value = decode(raw)
     if family == "legacy_records":
         after = legacy_state(value, selected)
     elif family == "profile_json":
         if mapping(value).get("schemaVersion") != 1:
             fail("profile_json_schema_unverified")
-        after = ui_state(value, selected, known_tabs, native_ids)
+        after = ui_state(value, selected, known_tabs, native_ids, remote=remote)
     else:
         fail("json_family_unverified")
     return raw if after == value else (encode(after) + "\n").encode("utf-8")

@@ -171,6 +171,7 @@ class OperationCoordinator:
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         magpie_bindings: Path | None = None,
         cindy_remote_plan: Path | None = None,
+        orca_remote_plan: Path | None = None,
         **_unused: Any,
     ) -> dict[str, Any]:
         normalized_scope = self._scope(
@@ -185,6 +186,13 @@ class OperationCoordinator:
             self._validate_scope(normalized_scope, require_selection=True)
             client_name = str(normalized_scope["client"])
             remote_proof = None
+            orca_pair = None
+            if orca_remote_plan is not None:
+                from .orca_remote import from_plan
+                if (client_name != "orca" or len(orca_roots) != 1 or len(normalized_scope["record_ids"]) != 1
+                        or normalized_scope["engines"] or normalized_scope["projects"] or normalized_scope["all_projects"]):
+                    raise OperationCoordinatorError("orca_remote_exact_frontend_scope_required")
+                orca_pair = from_plan(orca_remote_plan, Path(orca_roots[0]), normalized_scope["record_ids"][0])
             if cindy_remote_plan is not None:
                 from .cindy_remote import from_remote_plan
                 if (not _unused.get("cindy_db") or client_name != "cindy" or len(normalized_scope["record_ids"]) != 1
@@ -223,6 +231,7 @@ class OperationCoordinator:
                 workbuddy_roots=workbuddy_roots,
                 builtin_root=builtin_root, builtin_module=builtin_module,
                 cindy_remote_proof=remote_proof,
+                orca_pair=orca_pair,
             )
             self._emit_progress(
                 progress_callback,
@@ -346,6 +355,10 @@ class OperationCoordinator:
             self._validate_apply_scope(document, normalized_scope)
             from .cindy_remote import frozen as cindy_remote_binding
             remote_proof = cindy_remote_binding(document)
+            from .orca_remote import frozen as orca_remote_binding
+            paired_orca = orca_remote_binding(document)
+            if paired_orca and (not plan_sha256 or orca_roots and tuple(map(Path, orca_roots)) != (Path(paired_orca["root"]),)):
+                raise OperationCoordinatorError("orca_remote_approved_plan_and_profile_required")
             if remote_proof:
                 if not plan_sha256:
                     raise OperationCoordinatorError("cindy_ssh_approved_plan_sha256_required")
@@ -1508,7 +1521,11 @@ class OperationCoordinator:
         for key, evidence in frontend_evidence(document).items():
             terminal = cls._workbuddy_terminal_verified(document, evidence["root"], "delete_orca_frontend")
             remains = remaining(evidence, terminal_verified=terminal)
-            remains += sum(not _native_absent(record["home"], record["native_ids"]) for record in evidence["records"])
+            if "remote_owner" in evidence:
+                from .orca_remote import verify
+                verify(evidence["remote_owner"])
+            else:
+                remains += sum(not _native_absent(record["home"], record["native_ids"]) for record in evidence["records"])
             if remains:
                 residuals.extend(a["action_id"] for a in document["actions"] if a.get("kind") == "delete_orca_frontend"
                     and canonical_path(a["impact"]["owner_process_root"]) == key)
@@ -1772,7 +1789,14 @@ class OperationCoordinator:
         approved_document=None,
         builtin_root=None, builtin_module=None,
         cindy_remote_proof=None,
+        orca_pair=None,
     ) -> tuple[Any, ...]:
+        if client == "orca":
+            from .orca_remote import context_for, frozen
+            approved = frozen(approved_document or {})
+            if orca_pair or approved:
+                result = context_for(self, orca_pair or approved["remote_owner"], approved)
+                return result if include_action_contexts else result[:5]
         if client == "cindy":
             from .cindy_remote import context_for, frozen
             proof = cindy_remote_proof or frozen(approved_document or {})
@@ -3917,6 +3941,11 @@ class OperationCoordinator:
         payload["related_stores"] = {"magpie": {"included": bool(magpie_cleanup.evidences(payload)),
             "scope": "explicit_profiles_and_native_bindings" if magpie_cleanup.evidences(payload) else "excluded",
             "excluded": ["other_profiles", "request_archives", "remote_sync_and_backups", "webview_and_os_caches"]}}
+        if scope["client"] == "orca" and payload["goal_status"] == "ready":
+            from .orca_remote import frozen
+            if frozen(payload):
+                capabilities["codex"].update(frontend_session_delete=True, verify=True, mode="partial",
+                    reason="Exact paired controller session with independently verified executor completion")
         payload["plan_sha256"] = plan_sha256(payload)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(payload)
@@ -4113,6 +4142,8 @@ class OperationCoordinator:
         validate_guard_sources(document)
         from .cindy_remote import frozen as cindy_remote_binding
         cindy_remote_binding(document)
+        from .orca_remote import frozen as orca_remote_binding
+        orca_remote_binding(document)
         magpie_cleanup.validate_document(document)
         from .orca_target_safety import validate_document_targets
         validate_document_targets(document)

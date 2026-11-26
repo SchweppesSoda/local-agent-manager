@@ -228,7 +228,11 @@ def guard_cindy_session_rows(
         _guard_non_cascade_references(db, ids)
     for item in evidence:
         if item.remote_native:
-            from .cindy_remote import verify_native
+            from .cindy_remote import guard_references, verify_native
+            from .cindy_hosted import backup
+            guard_references(item.remote_native)
+            if backup(item.remote_native) != item.remote_native.get("backup"):
+                raise FrontendSessionGuardError("cindy_native_history_backup_changed")
             verify_native(item.remote_native)
     return current
 
@@ -240,7 +244,13 @@ def verify_cindy_session_rows(
     database = _one_database(evidence)
     ids = tuple(item.session_id for item in evidence)
     with closing(connect_readonly(database)) as db:
-        return tuple(sorted(_selected_ids(db, "sessions", "id", ids)))
+        remaining = set(_selected_ids(db, "sessions", "id", ids))
+    from .cindy_hosted import backup
+    for item in evidence:
+        if item.remote_native and item.remote_native.get("backup"):
+            if not backup(item.remote_native).get("absent"):
+                remaining.add(item.session_id)
+    return tuple(sorted(remaining))
 
 
 def execute_cindy_session_cleanup(
@@ -348,6 +358,14 @@ def execute_cindy_session_cleanup(
         attempted = True
         db.commit()
         committed = True
+        for item in evidence:
+            if item.remote_native and item.remote_native.get("backup"):
+                from . import cindy_hosted, frozen_files
+                change = item.remote_native["backup"]
+                if cindy_hosted.backup(item.remote_native) != change:
+                    raise FrontendSessionGuardError("cindy_native_history_backup_changed")
+                if not change.get("absent"):
+                    frozen_files.apply_remove(process_root, change)
     except Exception as exc:
         rolled_back = False
         if db is not None and not committed:

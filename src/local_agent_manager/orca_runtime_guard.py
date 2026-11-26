@@ -49,9 +49,15 @@ def require_closed(evidence, *, client_inspector=None):
     declared = {item["pid"] for item in evidence["runtime_observations"] if "pid" in item}
     if related(rows, root) or any(row["pid"] in declared for row in rows):
         fail("writer_running")
+    if evidence.get("remote_owner") and evidence["journal"].get("absent"):
+        from .orca_frontend import _exists
+        if _exists(root, "agent-session-journal.db"):
+            fail("controller_journal_appeared")
+        return
     records, errors = read_orca_journal(root / "agent-session-journal.db", root)
     if errors:
         fail("writer_lease_unverified")
-    report = inspect_orca_target_processes(record.lease for record in records)
+    leases = (record.lease for record in records if not evidence.get("remote_owner") or record.host == "local")
+    report = inspect_orca_target_processes(leases)
     if report.get("clients_closed") is not True:
         fail("writer_lease_unverified")

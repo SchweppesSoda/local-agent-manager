@@ -334,8 +334,11 @@ def frozen_operation_roots(document: Mapping[str, Any]) -> tuple[Path, ...]:
             from .orca_cleanup import validate_action
             from .orca_discovery import prove_account_home
             closure = validate_action(document, action)
-            for record in closure["records"]:
-                extra.add(prove_account_home(Path(closure["root"]), Path(record["home"])))
+            # A paired replica carries a foreign home locator. Its native
+            # writer holds that lock on the executor; this plan owns only userData.
+            if "remote_owner" not in closure:
+                for record in closure["records"]:
+                    extra.add(prove_account_home(Path(closure["root"]), Path(record["home"])))
     return tuple(scope.root for scope in _merge_scopes(MutationScope(path, None)
                  for path in {*extra, *(paths[key] for key in involved)}))
 

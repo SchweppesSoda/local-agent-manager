@@ -534,7 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_arguments(delete, progress=True)
     _add_operation_scope_arguments(delete)
-    delete.add_argument("--cindy-remote-plan", type=Path, help="SSH 执行机生成的原生删除计划 JSON，控制端写入前核验其完成回执")
+    delete.add_argument("--cindy-remote-plan", type=Path, help="执行机生成的原生删除计划 JSON，控制端写入前核验其完成回执")
+    delete.add_argument("--orca-remote-plan", type=Path, help="配对执行机生成的 Orca 会话计划 JSON")
     delete.add_argument("--magpie-bindings", type=Path,
         help="将显式配置及原生会话映射中的 Magpie 列表、缓存、网关历史与回收站纳入冻结计划")
     delete.add_argument(
@@ -1519,6 +1520,9 @@ def _run_operation_backend(
                 and (getattr(args, "cindy_db", None) or getattr(args, "cindy_root", None))):
             supplied_adapters = _create_default_adapters(args)
         if verb == "plan":
+            if (supplied_adapters is None and (scope or {}).get("client") == "orca"
+                    and getattr(args, "codex_bin", None)):
+                supplied_adapters = _create_default_adapters(args)
             if supplied_adapters is None and not ((scope or {}).get("paseo_only") or (scope or {}).get("t3code_only")) and ((scope or {}).get("client") in {"qwenwork", "paseo", "t3code"}
                     or (scope or {}).get("client") == "herdr" and getattr(args, "herdr_bindings", None)):
                 supplied_adapters = _create_default_adapters(args)
@@ -1552,6 +1556,8 @@ def _run_operation_backend(
             operation_kwargs.update(agy_options)
             if getattr(args, "cindy_remote_plan", None):
                 operation_kwargs["cindy_remote_plan"] = args.cindy_remote_plan
+            if getattr(args, "orca_remote_plan", None):
+                operation_kwargs["orca_remote_plan"] = args.orca_remote_plan
             if getattr(args, "magpie_bindings", None):
                 operation_kwargs["magpie_bindings"] = args.magpie_bindings
             result = coordinator.plan_operation(**operation_kwargs)
@@ -1592,6 +1598,12 @@ def _run_operation_backend(
                                      if getattr(args, key, None)})
             if getattr(args, "magpie_bindings", None):
                 operation_kwargs["magpie_bindings"] = args.magpie_bindings
+            # The coordinator supplies these same defaults itself. Passing them
+            # as overrides prevents a frozen Orca plan from using its own runtime.
+            if app_server_factory is CodexAppServer:
+                operation_kwargs.pop("app_server_factory")
+            if binary_resolver is choose_codex_binary:
+                operation_kwargs.pop("binary_resolver")
             result = coordinator.apply_operation(**operation_kwargs)
         elif verb == "run":
             if bool(getattr(args, "handoff", False)):
@@ -1716,6 +1728,10 @@ def _run_delete_operation(
 ) -> int:
     verb = str(args.delete_action)
     try:
+        if getattr(args, "orca_remote_plan", None) and (
+                verb != "plan" or args.client != "orca" or len(args.orca_root) != 1 or len(args.record_id or ()) != 1
+                or args.engine or args.magpie_bindings or args.handoff or args.paseo_only or args.t3code_only):
+            raise ValueError("--orca-remote-plan requires delete plan --client orca --orca-root and one --record-id")
         if getattr(args, "cindy_remote_plan", None) and (
                 verb != "plan" or args.client != "cindy" or not args.cindy_db or len(args.record_id or ()) != 1
                 or args.engine or args.magpie_bindings or args.handoff or args.paseo_only or args.t3code_only):
@@ -1896,8 +1912,12 @@ def main(
             json_output=args.json, stdout=output, stderr=error_output)
 
     if args.command == "remote":
+        import sqlite3
         from .remote_records import run
-        return run(args, output, error_output)
+        try:
+            return run(args, output, error_output)
+        except (ValueError, RuntimeError, OSError, KeyError, TypeError, AttributeError, sqlite3.Error) as exc:
+            return _emit_fatal_error("remote", exc, json_output=True, stdout=output, stderr=error_output)
     if args.command == "environment":
         return run_environment_command(args, stdout=output, stderr=error_output)
 

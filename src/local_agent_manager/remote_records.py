@@ -86,7 +86,7 @@ def _owner(client, root, pi_agent_dir=None):
     return identity
 
 
-def _records(client, root, *, agent_dir=None):
+def _records(client, root, *, agent_dir=None, hosted_id=None):
     if client == "orca":
         from .orca_metadata import read_orca_journal
         journal = frozen_files.checked_path(root, "agent-session-journal.db")
@@ -162,12 +162,31 @@ def _records(client, root, *, agent_dir=None):
     if catalog.errors:
         raise ValueError("remote_native_inventory_incomplete")
     if client == "native":
-        return [{"record_id": item.thread_id} for item in catalog.records
+        return [{"record_id": item.thread_id, **({"cwds": [r.cwd for r in item.rollouts], "rollouts": [str(r.path) for r in item.rollouts]}
+                 if hosted_id == item.thread_id else {})} for item in catalog.records
                 if item.codex_home == root and (item.rollouts or item.indexed or item.artifact_present)]
     if client == "pi":
-        return [{"record_id": item.session_id, "path": str(item.path)} for item in catalog.records
+        return [{"record_id": item.session_id, "path": str(item.path),
+                 **({"cwds": [item.cwd]} if hosted_id == item.session_id else {})} for item in catalog.records
                 if item.session_root == root]
-    return [{"record_id": item.session_id} for item in catalog.records if item.config_dir == root and item.manifest]
+    records = []
+    for item in catalog.records:
+        if item.config_dir != root or not item.manifest:
+            continue
+        record = {"record_id": item.session_id}
+        if hosted_id == item.session_id:
+            from .claude_sessions import _read_transcript
+            cwds = []
+            for path in item.transcript_paths:
+                frozen_files._plain(frozen_files.checked_path(root, path.relative_to(root).as_posix()).lstat())
+                values = set()
+                _read_transcript(path, working_dirs=values)
+                if not values:
+                    raise ValueError("cindy_claude_workspace_missing")
+                cwds.extend(values)
+            record["cwds"] = cwds
+        records.append(record)
+    return records
 
 
 def _scope(client, root, record_id, frontend_only):
@@ -178,6 +197,8 @@ def _scope(client, root, record_id, frontend_only):
         flags.append(f"--{client}-root={root}")
         if frontend_only:
             flags.append(f"--{client}-only")
+    elif client == "orca":
+        flags.append(f"--orca-root={root}")
     elif client == "native":
         flags.append(f"--codex-home={root}")
     return flags
@@ -198,7 +219,7 @@ def _operation(client, root, args, *, agent_dir=None, runtime=None):
         if frozen_files.read_file(path.parent, path.name)[0] != runtime["identity"]:
             raise ValueError("remote_codex_runtime_changed")
         return path
-    options = {"binary_resolver": bound_binary} if runtime else {}
+    options = {"binary_resolver": bound_binary} if runtime and client == "native" else {}
     code = main([*args, "--json"], operation_coordinator=coordinator, stdout=output, stderr=io.StringIO(), **options)
     return code, strict_json(output.getvalue())
 
@@ -252,6 +273,9 @@ def _physical_scope(doc, owner):
         return {"completion_scope": "bound_frontend_and_native", "frontend_ids": ids,
                 "native_targets": [{k: t[k] for k in ("engine", "root", "ids", "paths")} for t in e["native_targets"]],
                 "desktop_profiles_on_owner": [p["root"] for p in e["binding_manifest"]["desktop_profiles"]]}
+    if client == "orca":
+        from .orca_remote import owner_scope
+        return owner_scope(doc, root, record_id)
     kinds = {"pi": "delete_pi_session", "claude": "delete_claude_session", "native": "delete_conversation"}
     action, = doc["actions"]
     impact = action["impact"]
@@ -273,6 +297,15 @@ def _physical_scope(doc, owner):
 def _validate(q):
     verb = q.get("verb")
     required = {"protocol", "verb", "destination", "client", "root"}
+    if "cindy_hosted" in q:
+        required.add("cindy_hosted")
+        h = q["cindy_hosted"]
+        if (verb != "plan" or q.get("client") not in {"pi", "claude", "native"}
+                or not isinstance(h, dict) or set(h) != {"task_id", "profile", "controller_device"}
+                or not isinstance(h["profile"], str) or any(ord(c) < 32 for c in h["profile"])
+                or not isinstance(h["task_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", h["task_id"])
+                or not isinstance(h["controller_device"], str) or not HASH.fullmatch(h["controller_device"])):
+            raise ValueError("cindy_hosted_request_invalid")
     if "pi_agent_dir" in q:
         required.add("pi_agent_dir")
         if (q.get("client") != "pi" or not isinstance(q["pi_agent_dir"], str)
@@ -286,12 +319,14 @@ def _validate(q):
         required.update(("operation_id", "approval"))
     if verb == "apply":
         required.add("clients_closed")
+        if "controller_approval" in q:
+            required.add("controller_approval")
     if (set(q) != required or q["protocol"] != PROTOCOL or verb not in VERBS or q["client"] not in CLIENTS
             or not isinstance(q["destination"], str) or not HOST.fullmatch(q["destination"])
             or not isinstance(q["root"], str) or not 0 < len(q["root"]) <= 32767
             or any(ord(char) < 32 for char in q["root"])):
         raise ValueError("remote_request_invalid")
-    for key in ("owner", "approval"):
+    for key in ("owner", "approval", "controller_approval"):
         if key in q and (not isinstance(q[key], str) or not HASH.fullmatch(q[key])):
             raise ValueError("remote_binding_invalid")
     for key in ("clients_closed", "frontend_only"):
@@ -299,7 +334,7 @@ def _validate(q):
             raise ValueError("remote_scope_invalid")
     if "operation_id" in q:
         validate_operation_id(q["operation_id"])
-    if verb != "records" and q["client"] in {"cindy", "orca"}:
+    if verb != "records" and q["client"] == "cindy":
         raise ValueError("select_the_provider_on_its_execution_host")
     if verb == "plan" and q["bindings"] is not None:
         if (q["client"] not in {"paseo", "t3code"} or q["frontend_only"]
@@ -307,11 +342,47 @@ def _validate(q):
                 or any(ord(c) < 32 for c in q["bindings"])):
             raise ValueError("remote_binding_manifest_invalid")
     if verb == "plan" and q["codex_bin"] is not None and (
-            q["client"] != "native" or not isinstance(q["codex_bin"], str) or any(ord(c) < 32 for c in q["codex_bin"])):
+            q["client"] not in {"native", "orca"} or not isinstance(q["codex_bin"], str) or any(ord(c) < 32 for c in q["codex_bin"])):
         raise ValueError("remote_codex_binary_invalid")
     if verb == "plan" and (not isinstance(q["record_id"], str) or not 0 < len(q["record_id"]) <= 512
                            or q["record_id"] != q["record_id"].strip() or any(ord(c) < 32 for c in q["record_id"])):
         raise ValueError("remote_exact_record_id_required")
+
+
+def completed_batches(status, digest):
+    batches = status.get("batches")
+    return (status.get("plan_sha256") == digest and status.get("goal_status") == "complete"
+            and status.get("modified") is True and status.get("mutation_started") is True
+            and bool(batches) and all(b.get("status") == "complete" for b in batches))
+
+
+def _recheck_hosted(stored, owner, coverage, verb, receipt, approval):
+    from . import cindy_hosted
+    hosted = stored["cindy_hosted"]
+    client = owner["client"]
+    locator = coverage["native_locator"]
+    if client == "pi":
+        if Path(stored["pi_locator"]) != Path(locator):
+            raise ValueError("cindy_hosted_native_file_mismatch")
+        locator = coverage["native_locator"] = stored["pi_locator"]
+    claim = {k: hosted[k] for k in ("profile", "task_id", "controller_device")}
+    record = None
+    if verb == "apply":
+        selected, = coverage["native_ids"]
+        rows = [r for r in _records(client, Path(owner["root"]), agent_dir=owner.get("agent_dir"), hosted_id=selected)
+                if r["record_id"] == selected]
+        if rows:
+            record, = rows
+    retired = None
+    if "host_index" in stored:
+        change = stored["host_index"]
+        if cindy_hosted.index_settled(receipt, approval, change, hosted, locator):
+            retired = hosted
+        elif (cindy_hosted.index_phase(receipt, approval) == "complete"
+                or cindy_hosted.index_change(hosted, locator) != change):
+            raise ValueError("cindy_host_index_changed_or_interrupted")
+    if cindy_hosted.observe(claim, owner, locator, record=record, retired=retired) != hosted:
+        raise ValueError("cindy_hosted_session_binding_changed")
 
 
 def dispatch(q):
@@ -329,11 +400,14 @@ def dispatch(q):
         raise ValueError("remote_owner_changed")
     if verb == "plan":
         record_id, frontend_only = q["record_id"], q["frontend_only"]
-        matches = [r for r in _records(client, root, agent_dir=agent_dir) if r["record_id"] == record_id]
+        matches = [r for r in _records(client, root, agent_dir=agent_dir,
+                   hosted_id=record_id if "cindy_hosted" in q else None) if r["record_id"] == record_id]
         if not matches or client in {"pi", "claude", "native"} and len(matches) != 1:
             raise ValueError("remote_exact_record_not_found")
         args = _scope(client, root, record_id, frontend_only)
-        runtime = _codex_runtime(owner, q["codex_bin"]) if client == "native" else None
+        if (client == "orca" or client == "native" and "cindy_hosted" in q) and not q["codex_bin"]:
+            raise ValueError("execution_host_codex_binary_required")
+        runtime = _codex_runtime(owner, q["codex_bin"]) if client in {"native", "orca"} else None
         if runtime:
             args.append("--codex-bin=" + runtime["path"])
         if q["bindings"] is not None:
@@ -357,23 +431,76 @@ def dispatch(q):
         raise ValueError("remote_frozen_scope_invalid")
     coverage = _physical_scope(doc, owner)
     envelope_path = path.parent / "remote-bindings" / path.name
+    index_receipt = envelope_path.parent / "host-index" / path.name
+    frozen_args = ["--operation-id", operation, "--plan", str(path)]
     envelope = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner,
                 "operation_id": operation, "plan_sha256": digest}
+    if client == "orca":
+        envelope["authority"] = coverage["authority"]
     if owner != _owner(client, root, q.get("pi_agent_dir")):
         raise ValueError("remote_owner_changed")
     if verb == "plan":
         envelope["codex_runtime"] = runtime
+        if client == "orca":
+            from .orca_remote import authoritative_chain
+            envelope["handle_chain_sha256"] = authoritative_chain(root, record_id)
+        if "cindy_hosted" in q:
+            from .cindy_hosted import index_change, observe
+            if coverage.get("native_ids") != [record_id]:
+                raise ValueError("cindy_hosted_native_cascade_unverified")
+            if client == "pi":
+                native_path = matches[0]["path"]
+                if not Path(native_path).samefile(coverage["native_locator"]):
+                    raise ValueError("cindy_hosted_native_file_mismatch")
+                envelope["pi_locator"] = coverage["native_locator"] = native_path
+            hosted = observe(q["cindy_hosted"], owner, coverage["native_locator"], record=matches[0])
+            envelope["cindy_hosted"] = hosted
+            if "guest_key" in hosted or "thread_location" in hosted:
+                envelope["host_index"] = index_change(hosted, coverage["native_locator"])
         write_new_json(envelope_path, envelope)
     else:
         stored = strict_json_load(envelope_path)
+        if q["approval"] != _digest(stored):
+            raise ValueError("remote_plan_approval_mismatch")
+        if any(stored.get(k) != v for k, v in envelope.items()):
+            raise ValueError("remote_operation_owner_mismatch")
         runtime = stored.get("codex_runtime")
         envelope["codex_runtime"] = runtime
+        if client == "orca":
+            h = stored["handle_chain_sha256"]
+            if verb == "apply" and any(r["record_id"] == scope["record_ids"][0] for r in _records(client, root)):
+                from .orca_remote import authoritative_chain
+                if authoritative_chain(root, scope["record_ids"][0]) != h:
+                    raise ValueError("orca_remote_handle_chain_changed")
+            envelope["handle_chain_sha256"] = h
+        if "cindy_hosted" in stored:
+            try:
+                _recheck_hosted(stored, owner, coverage, verb, index_receipt, q["approval"])
+            except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError) as exc:
+                # Authenticated owner and plan. Preserve the original native
+                # mutation receipt even when a hosted reference changed later.
+                _, prior = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
+                if prior.get("plan_sha256") != digest or not prior.get("mutation_started"):
+                    raise
+                goal = "completed_with_residuals" if completed_batches(prior, digest) else "unknown"
+                return 1, {**common, "operation_id": operation, "approval": q["approval"], "goal_status": goal,
+                           "error": str(exc), "result": {**prior, "goal_status": goal, "goal_satisfied": False}}
+            envelope.update({k: stored[k] for k in ("cindy_hosted", "pi_locator", "host_index") if k in stored})
         if stored != envelope:
             raise ValueError("remote_operation_owner_mismatch")
     approval = _digest(envelope)
     binding = {**common, "operation_id": operation, "approval": approval,
                "plan_sha256": digest, "scope": scope, "plan_path_on_owner": str(path), **coverage,
+               **({"handle_chain_sha256": envelope["handle_chain_sha256"]} if client == "orca" else {}),
+               **({"cindy_hosted": envelope["cindy_hosted"]} if "cindy_hosted" in envelope else {}),
                **({"codex_runtime": runtime} if runtime else {})}
+    if "host_index" in envelope:
+        change = envelope["host_index"]
+        if change["kind"] == "remove":
+            binding["thread_location_to_remove"] = change["path"]
+        else:
+            binding["guest_index"] = {"path": change["before"]["path"], "remove_host_session_id": envelope["cindy_hosted"]["host_session_id"],
+                                      "remove_native_locator": coverage["native_locator"]}
     if verb == "plan":
         actions = [{"kind": a["kind"], "target": a["target"],
                     "affected_thread_ids": a["impact"].get("affected_thread_ids", []),
@@ -384,9 +511,17 @@ def dispatch(q):
     if q["approval"] != approval:
         raise ValueError("remote_plan_approval_mismatch")
     if verb == "apply":
+        if "cindy_hosted" in envelope:
+            from .codex_desktop_state import running_related_clients
+            from .frontend_session_cleanup import _require_client_closed
+            if not q["clients_closed"]:
+                raise ValueError("cindy_executor_clients_closed_required")
+            if not q.get("controller_approval"):
+                raise ValueError("cindy_hosted_controller_plan_required")
+            _require_client_closed(Path(envelope["cindy_hosted"]["profile"]), running_related_clients, owner_client="cindy")
         mode = bool(scope.get("paseo_only") or scope.get("t3code_only"))
         args = ["delete", "apply", *_scope(client, root, scope["record_ids"][0], mode), "--plan-sha256", digest]
-        if client == "native":
+        if client in {"native", "orca"}:
             if not runtime or _codex_runtime(owner, runtime["path"]) != runtime:
                 raise ValueError("remote_codex_runtime_changed")
             args.append("--codex-bin=" + runtime["path"])
@@ -394,32 +529,54 @@ def dispatch(q):
             args.append("--clients-closed")
     else:
         args = ["operation", verb]
-    frozen_args = ["--operation-id", operation, "--plan", str(path)]
+    # An interrupted host index change can finish from a verified native
+    # receipt. It must never send that provider another deletion request.
+    resume_index = False
+    if verb == "apply" and "host_index" in envelope:
+        status_code, prior = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
+        resume_index = not status_code and completed_batches(prior, digest)
+        if resume_index:
+            args = ["operation", "verify"]
     status = None
-    if verb == "verify" and coverage["completion_scope"] == "provider_native":
+    if (verb == "verify" or resume_index) and coverage["completion_scope"] in {"provider_native", "orca_host_session"}:
         # An ordinary verify can settle a journal. Read the execution receipts
         # first so a missing transcript alone cannot establish that we deleted it.
         status_code, status = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
         if status.get("plan_sha256") != digest or not status.get("batches") or not status.get("mutation_started"):
             return 1, {**binding, "goal_status": "unknown", "error": "native_receipt_unverified", "result": status}
-        remaining = {r["record_id"] for r in _records(client, root, agent_dir=agent_dir)}.intersection(coverage["native_ids"])
+        ids = coverage["frontend_ids"] if client == "orca" else coverage["native_ids"]
+        remaining = {r["record_id"] for r in _records(client, root, agent_dir=agent_dir)}.intersection(ids)
         if remaining:
             goal = "completed_with_residuals" if status.get("goal_status") == "complete" else "unknown"
             return 1, {**binding, "goal_status": goal, "error": "native_record_present",
-                       "remaining_native_ids": sorted(remaining), "result": status}
+                       "remaining_native_ids": sorted(remaining),
+                       "result": {**status, "goal_status": goal, "goal_satisfied": False}}
     code, result = _operation(client, root, [*args, *frozen_args], agent_dir=agent_dir, runtime=runtime if verb == "apply" else None)
     if status is not None:
         if status_code or status.get("goal_status") != "complete":
             # Verification may have reconciled an interrupted child without
             # replaying its mutation. Only its durable outcome can release Cindy.
             status_code, status = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
-        if (status_code or status.get("plan_sha256") != digest or status.get("goal_status") != "complete"
-                or not status.get("modified") or not status.get("mutation_started") or not status.get("batches")
-                or any(b.get("status") != "complete" for b in status["batches"])):
+        if status_code or not completed_batches(status, digest):
             return 1, {**binding, "goal_status": "unknown", "error": "native_receipt_unverified", "result": status}
         result.update(batches=status["batches"], modified=status["modified"], mutation_started=status["mutation_started"])
         result.update(scope=scope, counts={**result["counts"], "batch_count": len(status["batches"]),
                                           "action_count": len(doc["actions"])})
+    if "host_index" in envelope and not code and result["goal_status"] == "complete":
+        from .cindy_hosted import finish_index, index_settled
+        change, hosted, locator = envelope["host_index"], envelope["cindy_hosted"], coverage["native_locator"]
+        try:
+            if verb == "apply":
+                receipt_code, receipt = _operation(client, root, ["operation", "status", *frozen_args], agent_dir=agent_dir)
+                if (receipt_code or not completed_batches(receipt, digest)
+                        or any(r["record_id"] in coverage["native_ids"] for r in _records(client, root, agent_dir=agent_dir))):
+                    raise ValueError("cindy_hosted_native_completion_unverified")
+                finish_index(index_receipt, approval, change, hosted, locator)
+            if not index_settled(index_receipt, approval, change, hosted, locator):
+                raise ValueError("cindy_host_index_pending")
+        except (OSError, ValueError, RuntimeError) as exc:
+            return 1, {**binding, "goal_status": "completed_with_residuals", "error": str(exc),
+                       "result": {**result, "goal_satisfied": False, "goal_status": "completed_with_residuals"}}
     return code, {**binding, "goal_status": result["goal_status"], "result": result}
 
 
@@ -455,22 +612,27 @@ def add_arguments(parser):
         sub = subs.add_parser(verb)
         sub.add_argument("--progress", action="store_true", help="在标准错误输出请求阶段及结果计数")
         sub.add_argument("--ssh-host", required=True, help="已信任的 OpenSSH 主机别名")
-        clients = CLIENTS if verb == "records" else tuple(c for c in CLIENTS if c not in {"cindy", "orca"})
+        clients = CLIENTS if verb == "records" else tuple(c for c in CLIENTS if c != "cindy")
         sub.add_argument("--client", required=True, choices=clients)
         sub.add_argument("--pi-agent-dir", help="执行端独立配置的 Pi Agent 目录")
         sub.add_argument("--root", required=True, help="执行端的绝对路径，Cindy 填数据库文件，其他客户端填存储目录")
         if verb != "records":
             sub.add_argument("--owner", required=True, help="remote records 返回的 owner.store_id")
         if verb == "plan":
-            sub.add_argument("--record-id", required=True)
+            sub.add_argument("--record-id", help="完整记录 ID；提供控制端 Cindy 数据库时可由任务 ID 定位")
             sub.add_argument("--frontend-only", action="store_true", help="仅执行 T3 或 Paseo 自带的前端删除")
             sub.add_argument("--bindings", help="执行端 T3 或 Paseo 原生存储绑定清单的绝对路径")
             sub.add_argument("--codex-bin", help="执行端实际使用的 Codex 程序绝对路径")
+            sub.add_argument("--cindy-task", help="同账号设备或共享 provider 的完整 Cindy 任务 ID")
+            sub.add_argument("--cindy-db", type=Path, help="读取任务原生定位符的控制机 Cindy 数据库")
+            sub.add_argument("--cindy-host-profile", help="执行机 Cindy userData 的绝对路径")
+            sub.add_argument("--cindy-controller-profile", type=Path, help="控制机 Cindy userData 的绝对路径")
         if verb in {"apply", "status", "verify"}:
             sub.add_argument("--operation-id", required=True)
             sub.add_argument("--approval", required=True, help="remote plan 返回的主机与计划批准摘要")
         if verb == "apply":
             sub.add_argument("--clients-closed", action="store_true")
+            sub.add_argument("--controller-plan", type=Path, help="在发出执行端删除前重查已批准的控制端会话")
 
 
 def _ssh(host, payload):
@@ -516,6 +678,33 @@ def exchange(request):
     return code, reply
 
 
+def _check_controller_plan(path, request):
+    from . import cindy_remote, orca_remote
+    doc = strict_json_load(path)
+    registered = manager_state_base() / PLANS_DIRECTORY / (validate_operation_id(doc["operation_id"]) + ".json")
+    digest = plan_sha256(doc)
+    if (doc.get("plan_sha256") != digest or doc.get("goal_status") != "ready"
+            or strict_json_load(registered) != doc or not request["clients_closed"]):
+        raise ValueError("approved_controller_plan_and_closed_clients_required")
+    if doc["scope"]["client"] == "cindy":
+        proof = cindy_remote.frozen(doc)
+        if not proof:
+            raise ValueError("controller_remote_binding_required")
+        expected = proof["verify_request"]
+    else:
+        proof = orca_remote.frozen(doc)
+        if not proof:
+            raise ValueError("controller_remote_binding_required")
+        expected = proof["remote_owner"]["request"]
+    if any(expected[k] != request[k] for k in ("client", "destination", "root", "owner", "operation_id", "approval")):
+        raise ValueError("controller_remote_operation_mismatch")
+    if doc["scope"]["client"] == "cindy":
+        cindy_remote.check_before_native(doc, proof)
+    else:
+        orca_remote.check_before_native(proof)
+    return digest
+
+
 def run(args, output, errors):
     request = {"protocol": PROTOCOL, "destination": args.ssh_host, "verb": args.remote_verb,
                "client": args.client, "root": args.root}
@@ -524,12 +713,41 @@ def run(args, output, errors):
             request[name] = getattr(args, name)
     if args.pi_agent_dir is not None:
         request["pi_agent_dir"] = args.pi_agent_dir
+    if getattr(args, "controller_plan", None):
+        request["controller_approval"] = _check_controller_plan(args.controller_plan, request)
+    task = None
+    if any(getattr(args, key, None) for key in ("cindy_task", "cindy_host_profile", "cindy_controller_profile", "cindy_db")):
+        from .cindy_hosted import device_id
+        if not all((args.cindy_task, args.cindy_host_profile, args.cindy_controller_profile)):
+            raise ValueError("cindy_hosted_task_and_both_profiles_required")
+        request["cindy_hosted"] = {"task_id": args.cindy_task, "profile": args.cindy_host_profile,
+                                   "controller_device": device_id(args.cindy_controller_profile)}
+        if args.cindy_db:
+            from .cindy_remote import hosted_task_reference
+            task = hosted_task_reference(args.cindy_db, args.cindy_controller_profile, args.cindy_task, args.client)
+            if args.client == "pi" and not args.record_id:
+                from .cindy_hosted import locator_matches
+                listing = {k: request[k] for k in ("protocol", "destination", "client", "root", "pi_agent_dir") if k in request}
+                code, reply = exchange({**listing, "verb": "records"})
+                if code or reply["owner"]["store_id"] != args.owner:
+                    raise ValueError("cindy_pi_executor_inventory_unverified")
+                matches = [r["record_id"] for r in reply["records"] if locator_matches(r["path"], task.remote_native_locator)]
+                if len(matches) != 1:
+                    raise ValueError("cindy_pi_exact_task_file_required")
+                request["record_id"], = matches
+            elif not args.record_id:
+                request["record_id"] = task.remote_native_locator
     from .progress import ProgressReporter
     progress = ProgressReporter(errors) if args.progress else None
     stage = "inventory" if args.remote_verb == "records" else args.remote_verb
     if progress:
         progress(stage=stage, status="started", operation_id=request.get("operation_id"))
     code, reply = exchange(request)
+    if task is not None and not code:
+        from .cindy_hosted import locator_matches
+        if (reply["cindy_hosted"]["execution_host"] != task.execution_host
+                or not locator_matches(reply["native_locator"], task.remote_native_locator)):
+            raise ValueError("cindy_hosted_task_executor_mismatch")
     if progress:
         counts = dict((reply.get("result") or {}).get("counts") or {})
         if "records" in reply:

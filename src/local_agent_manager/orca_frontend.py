@@ -324,23 +324,30 @@ def _runtime_metadata(root):
     return result
 
 
-def freeze(root, selected, *, timestamp=None, frozen=None):
+def freeze(root, selected, *, timestamp=None, frozen=None, remote_owner=None):
     root = Path(root)
     selected = sorted(set(selected))
     if not selected or any(not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", sid) for sid in selected):
         fail("frontend_selection_invalid")
     json_sources, profile_dbs = sources(root)
-    records, tabs = _metadata(root, set(selected), json_sources)
-    if frozen is None and set(selected) - {record["session_id"] for record in records}:
+    if remote_owner:
+        from .orca_remote import controller_metadata
+        records, tabs = controller_metadata(root, remote_owner, json_sources)
+    else:
+        records, tabs = _metadata(root, set(selected), json_sources)
+    if not remote_owner and frozen is None and set(selected) - {record["session_id"] for record in records}:
         fail("selected_record_not_found")
     if frozen is not None:
         records, tabs = frozen["records"], frozen["tab_ids"]
-    native_ids = {sid for record in records for sid in record["native_ids"]}
+    native_ids = set(remote_owner["native_ids"]) if remote_owner else {sid for record in records for sid in record["native_ids"]}
+    journal_ids = set(selected) if records else set()
+    ui_tabs = {} if remote_owner else tabs
     timestamp = int(time.time() * 1000) if timestamp is None else timestamp
     json_files, json_hashes = [], {}
     for relative, family in json_sources:
         def transform(raw):
-            return json_transform(raw, family=family, selected=set(selected), known_tabs=tabs, native_ids=native_ids)
+            ids = journal_ids if family == "legacy_records" else set(selected)
+            return json_transform(raw, family=family, selected=ids, known_tabs=ui_tabs, native_ids=native_ids, remote=remote_owner)
         item = frozen_files.freeze_rewrite(root, relative, transform)
         json_files.append({"family": family, "evidence": item})
         if family == "profile_json":
@@ -348,11 +355,14 @@ def freeze(root, selected, *, timestamp=None, frozen=None):
     evidence = {"schema_version": SCHEMA, "root": str(root), "session_ids": selected,
         "indexes": _indexes(root),
         "records": records, "tab_ids": tabs, "timestamp": timestamp,
-        "journal": journal.freeze(root, set(selected)), "json_files": json_files, "json_hashes": json_hashes,
-        "profile_databases": [profile.freeze(root, relative, set(selected), tabs, native_ids,
-            timestamp=timestamp, json_hashes=json_hashes) for relative in profile_dbs],
+        "journal": ({"root": str(root), "absent": True} if remote_owner and not _exists(root, journal.RELATIVE)
+                    else journal.freeze(root, journal_ids)), "json_files": json_files, "json_hashes": json_hashes,
+        "profile_databases": [profile.freeze(root, relative, set(selected), ui_tabs, native_ids,
+            timestamp=timestamp, json_hashes=json_hashes, remote=remote_owner) for relative in profile_dbs],
         "removals": _legacy_journals(root, records), "hook_observations": _hooks(root, native_ids, tabs),
         "runtime_observations": _runtime_metadata(root)}
+    if remote_owner:
+        evidence["remote_owner"] = remote_owner
     from .adapters.orca import OrcaAdapter
     from .orca_cleanup import covers_error
     errors = OrcaAdapter(profile_root=root).snapshot_references(refresh=True).errors
@@ -373,6 +383,9 @@ def validate(evidence):
 
 
 def _arguments(evidence):
+    if "remote_owner" in evidence:
+        pair = evidence["remote_owner"]
+        return {"selected": {pair["sid"]}, "known_tabs": {}, "native_ids": set(pair["native_ids"]), "remote": pair}
     return {"selected": set(evidence["session_ids"]), "known_tabs": evidence["tab_ids"],
             "native_ids": {sid for record in evidence["records"] for sid in record["native_ids"]}}
 
@@ -381,7 +394,7 @@ def apply(evidence, *, phase_callback, require_closed):
     """Execute one frozen frontend child after its native children completed."""
     root = validate(evidence)
     require_closed()
-    current = freeze(root, evidence["session_ids"], timestamp=evidence["timestamp"])
+    current = freeze(root, evidence["session_ids"], timestamp=evidence["timestamp"], remote_owner=evidence.get("remote_owner"))
     if current != evidence:
         fail("frontend_evidence_changed")
     arguments = _arguments(evidence)
@@ -403,7 +416,8 @@ def apply(evidence, *, phase_callback, require_closed):
     for change in evidence["removals"]:
         checkpoint("mutation_started")
         frozen_files.apply_remove(root, change)
-    journal.apply(evidence["journal"], arguments["selected"], phase_callback=checkpoint)
+    if evidence["records"] and not evidence["journal"].get("absent"):
+        journal.apply(evidence["journal"], arguments["selected"], phase_callback=checkpoint)
     require_closed()
     if remaining(evidence):
         fail("frontend_targets_remain")
@@ -424,13 +438,23 @@ def remaining(evidence, *, terminal_verified=False):
         fail("frontend_runtime_metadata_changed")
     if not terminal_verified and observed != evidence["hook_observations"]:
         fail("frontend_hook_sources_changed")
-    count = journal.remaining(evidence["journal"], arguments["selected"], terminal_verified=terminal_verified)
+    journal_ids = arguments["selected"] if evidence["records"] else set()
+    if evidence["journal"].get("absent"):
+        if _exists(root, journal.RELATIVE):
+            fail("controller_journal_appeared")
+        count = 0
+    else:
+        count = journal.remaining(evidence["journal"], journal_ids, terminal_verified=terminal_verified)
+    if "remote_owner" in evidence:
+        from .orca_remote import controller_metadata
+        count += len(controller_metadata(root, evidence["remote_owner"], json_sources)[0])
     count += sum(profile.remaining(item, **arguments, terminal_verified=terminal_verified)
                  for item in evidence["profile_databases"])
     for item in evidence["json_files"]:
         change = item["evidence"]
         _, raw = frozen_files.read_file(root, change["before"]["path"], content=True)
-        residue = json_transform(raw, family=item["family"], **arguments) != raw
+        args = {**arguments, "selected": journal_ids} if item["family"] == "legacy_records" else arguments
+        residue = json_transform(raw, family=item["family"], **args) != raw
         count += residue
         if not residue and not terminal_verified and not frozen_files.satisfied(root, change):
             fail("frontend_json_after_state_unverified")

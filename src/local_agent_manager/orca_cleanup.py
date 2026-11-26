@@ -44,6 +44,9 @@ def covers_error(evidence, error):
     paths.update(canonical_path(root / item["path"]) for item in evidence["hook_observations"] if "sha256" in item)
     source = canonical_path(error.source)
     covered = (error.message == "legacy_or_profile_restore_source_not_read" and source in paths
+        or evidence.get("remote_owner") and source == canonical_path(root / journal.RELATIVE) and (
+            error.message == "journal_unavailable" and evidence["journal"].get("absent")
+            or error.message == "record_native_root_unproven" and not evidence["journal"].get("absent"))
         or error.message == "agent_hooks_namespaces_not_covered" and source == canonical_path(root / "agent-hooks")
         or error.message == "runtime_verification_not_covered" and source == canonical_path(root / "orca-runtime.json")
             and any(item["path"] == "orca-runtime.json" and "pid" in item for item in evidence["runtime_observations"]))
@@ -54,7 +57,7 @@ def covers_error(evidence, error):
 def covers_reference(evidence, reference):
     native = reference.native_record
     from .client_contracts import ReferenceKind
-    if (reference.client != "orca" or reference.evidence_complete is not True or native is None
+    if (evidence.get("remote_owner") or reference.client != "orca" or reference.evidence_complete is not True or native is None
             or reference.host != "local" or reference.path_namespace != "local" or native.store.backend != "codex"
             or reference.engine != "codex" or reference.kind not in {ReferenceKind.CURRENT, ReferenceKind.HISTORY}
             or canonical_path(reference.source) != canonical_path(Path(evidence["root"]) / journal.RELATIVE)
@@ -86,6 +89,10 @@ def validate_action(document, action):
     payload = impact.get("external_action_payload", {})
     closure = payload.get("orca_frontend_evidence")
     frontend.validate(closure)
+    if closure.get("remote_owner"):
+        from .orca_remote import frozen
+        if frozen(document) != closure:
+            journal.fail("remote_frontend_approval_mismatch")
     sid = value.get("target", {}).get("thread_id")
     root = closure["root"]
     if (value.get("kind") != KIND or value.get("action_id") != action_id(root, sid)
@@ -318,9 +325,13 @@ def execute(evidence, *, client_inspector, phase_callback):
     from .orca_authorization import permits_frontend_evidence
     if not permits_frontend_evidence(evidence):
         journal.fail("frontend_execution_ticket_required")
-    for record in evidence["records"]:
-        if not _native_absent(record["home"], record["native_ids"]):
-            journal.fail("native_dependency_remains")
+    if "remote_owner" in evidence:
+        from .orca_remote import verify
+        verify(evidence["remote_owner"])
+    else:
+        for record in evidence["records"]:
+            if not _native_absent(record["home"], record["native_ids"]):
+                journal.fail("native_dependency_remains")
     frontend.apply(evidence, phase_callback=phase_callback,
         require_closed=lambda: require_closed(evidence, client_inspector=client_inspector))
     return OrcaCleanupResult(tuple(evidence["session_ids"]))

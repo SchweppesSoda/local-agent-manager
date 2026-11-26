@@ -155,7 +155,8 @@ healthy/native 记录及其已冻结的 frontend reference closure，以及 Cind
 声称 `records` 已统一覆盖全部异常类型。live reference 会 fail closed 并使动作不可选。
 Agent 在本机调用远程模型 API 时，按本机前端与原生存储清理。Agent 在另一台机器运行时，
 可用 `remote records` 经已信任的 SSH 主机盘点，由执行机上的管理器生成和执行精确计划。
-Cindy 可区分 SSH、设备和共享 provider，单一 SSH 绑定可凭原生操作回执再清控制端任务。
+Cindy 可关联 SSH、同账号设备和直接共享 provider 的单条任务，并核验同账号 Pi 的控制端备份。
+配对的 Orca runtime 可按结构化会话 ID 清执行端 Codex 记录、journal，以及控制端对应的恢复标签和 journal 副本。
 T3 和 Paseo 按各自服务器身份核验。云服务历史仍遵循适配器的 `remote_delete=false` 能力边界。
 见[远程记录命令与完成范围](docs/operation-cli.md#remote-provider-records)。逐项修改命令
 要求明确目标；专用 `purge` 命令则以 `--yes --clients-closed` 作为整批授权，相关路径

@@ -38,6 +38,7 @@ local-agent-manager remote verify @target @operation
 | 上述命令显式加 `--frontend-only` 到 `remote plan` | 使用在运行的 Windows 产品实例。T3 核验该 thread 的软删标记，Paseo 核验 daemon 查询和 agent 注册文件消失。`provider_history=preserved` 表示原生会话保留。 |
 | `--client native`、`claude`、`pi` | 分别指定执行机的 Codex home、Claude 配置根、Pi session 根。Codex 可用 `--codex-bin` 选择真实可执行文件，Pi 的独立配置目录用 `--pi-agent-dir` 在每条命令中指定。只接受精确匹配且物理目标在所选根内的原生计划。 |
 | `remote records --client cindy` 或 `orca` | 分别指定 Cindy 数据库文件或 Orca profile。可查看执行主机及原生定位符。以设备、分享、Orca runtime 或 WSL 标识定位的句柄须在其实际执行环境单独核实。 |
+| `remote plan --client orca` | 在执行机选择 Orca profile 和完整结构化会话 ID。`orca_host_session` 涵盖该机已冻结的 journal、前端副本及完整 Codex 句柄链。 |
 
 若 SSH 在 apply 期间断开，保留原来的 `$target` 和 `$operation`，用
 `local-agent-manager remote status @target @operation` 读取执行端日志，再用
@@ -70,9 +71,64 @@ local-agent-manager operation verify @controller --json
 控制端计划核实任务与原生操作的主机、引擎、ID、同一 profile 下其他任务的绑定。若实际
 Electron profile 与数据库父目录不同，计划另传 `--cindy-root`。控制端写入前要独立取得原生批次
 成功回执并读回目标已消失。活动回合、换机历史、执行机不可达或原生记录重新出现都会保留任务。
-同账号设备、分享 provider 及其他电脑的桌面副本可以有独立恢复数据，它们需要各自的归属证据。
 若控制机保留了 T3 的其他环境缓存，可按其环境 ID、标签和缓存会话集合在控制机单独生成
 `plan-cache` 并核验。[T3 桌面副本操作](#t3-code-完整本地操作)
+
+### Cindy 同账号设备和共享 provider
+
+在发起任务的控制机运行下面的命令。选择一个完整的 Cindy 任务 ID，并提供两端实际的目录。管理器从控制端数据库取出原生定位符。Pi 的定位符是执行端文件路径，管理器会在指定存储中匹配文件头的原生 ID。执行端按 Cindy 的算法复算控制设备和任务派生的影子工作目录，再与原生记录中的目录比对。Cindy 已回收影子目录的已结束任务仍可据此核对。
+
+```powershell
+$task = '<完整 Cindy 任务 ID>'
+$profile = '<控制端 Cindy userData>'
+$db = '<控制端任务数据库>'
+$target = @('--ssh-host', 'worker', '--client', 'pi', '--root', '<执行端 Pi session 目录>', '--pi-agent-dir', '<执行端 Pi Agent 目录>')
+$owner = (local-agent-manager remote records @target | ConvertFrom-Json).owner.store_id
+$json = local-agent-manager remote plan @target --owner $owner --cindy-task $task --cindy-db $db --cindy-controller-profile $profile --cindy-host-profile '<执行端 Cindy userData>'
+if ($LASTEXITCODE -ne 0) { throw '执行端没有生成可批准的计划。' }
+$json | Set-Content -Encoding utf8NoBOM ./provider-plan.json
+$remotePlan = $json | ConvertFrom-Json
+$localPlan = local-agent-manager delete plan --client cindy --cindy-root $profile --cindy-db $db --record-id $task --cindy-remote-plan ./provider-plan.json --json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $localPlan.goal_status -ne 'ready') { throw '请查看控制端归属检查。' }
+$operation = @('--owner', $owner, '--operation-id', $remotePlan.operation_id, '--approval', $remotePlan.approval)
+$controller = @('--operation-id', $localPlan.operation_id, '--plan', $localPlan.plan_path)
+local-agent-manager remote apply @target @operation --controller-plan $localPlan.plan_path --clients-closed
+if ($LASTEXITCODE -ne 0) { throw '用原操作查询执行机的 status 和 verify。' }
+local-agent-manager delete apply @controller --plan-sha256 $localPlan.plan_sha256 --clients-closed --json
+if ($LASTEXITCODE -ne 0) { throw '用原控制端操作查询 status 和 verify。' }
+local-agent-manager operation verify @controller --json
+```
+
+两端计划均为 `ready` 后，先核对计划并关闭相关客户端及托管进程，再执行两个 apply。首个 apply 用 `--controller-plan` 重新核对控制端会话后才向执行机发出删除请求。控制端 apply 会独立读取执行回执并验证目标已经消失。
+
+Codex 和 Claude 分别使用 `--client native`、`--client claude` 和各自实际的 home。Codex 计划另传 `--codex-bin` 指定执行端使用的程序。同账号 Codex 须有唯一的线程位置索引，索引须属于控制端任务的账号，且其中的 rollout 和 SQLite home 均须指向选中的存储。原生删除后会清除该条位置索引。Claude 使用默认目录或原生会话绑定的订阅账号目录。Pi 会核对执行机 Cindy profile 下的 Agent 目录和相应会话目录。
+
+同账号 Pi 的已发布备份须位于该任务数据库对应的账号目录。校验通过的备份出现在控制端计划的 `remote_native.backup`。直接分享须有来宾索引、原生工作目录和控制设备三方吻合；计划的 `guest_index` 列出要清除的两个条目。若原生已删而索引未写完，`remote status` 和 `remote verify` 会报告残留；确认索引仍为批准时的版本后，重用原操作执行 `remote apply` 可完成索引写入。多个任务共用一份无法逐条配对的来宾索引、设备迁移、中转、未完成回合或自定义设备身份无法复核时，保留任务。授权关系、其他来宾、附件目录与工作文件均在会话清理范围之外。
+
+### Orca 配对执行机的结构化会话
+
+在执行机的配置中确认 Orca 实际使用的 Codex 程序和 profile。执行机须满足[Orca 原生写入条件](adapters.md#orca精确原生删除的限定组合)。
+
+```powershell
+$sid = '<完整 Orca 会话 ID>'
+$target = @('--ssh-host', 'worker', '--client', 'orca', '--root', '<执行端 Orca profile>')
+$owner = (local-agent-manager remote records @target | ConvertFrom-Json).owner.store_id
+$json = local-agent-manager remote plan @target --owner $owner --record-id $sid --codex-bin '<执行端 Codex 可执行文件>'
+if ($LASTEXITCODE -ne 0) { throw '请核对执行端的 journal、账号 home 和原生计划。' }
+$json | Set-Content -Encoding utf8NoBOM ./orca-owner.json
+$remotePlan = $json | ConvertFrom-Json
+$localPlan = local-agent-manager delete plan --client orca --orca-root '<控制端 Orca profile>' --record-id $sid --orca-remote-plan ./orca-owner.json --json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $localPlan.goal_status -ne 'ready') { throw '请查看控制端归属检查。' }
+$operation = @('--owner', $owner, '--operation-id', $remotePlan.operation_id, '--approval', $remotePlan.approval)
+local-agent-manager remote apply @target @operation --controller-plan $localPlan.plan_path --clients-closed
+if ($LASTEXITCODE -ne 0) { throw '用原操作查询执行机的 status 和 verify。' }
+$controller = @('--operation-id', $localPlan.operation_id, '--plan', $localPlan.plan_path)
+local-agent-manager delete apply @controller --plan-sha256 $localPlan.plan_sha256 --clients-closed --json
+if ($LASTEXITCODE -ne 0) { throw '用原控制端操作查询 status 和 verify。' }
+local-agent-manager operation verify @controller --json
+```
+
+控制端可只有配对环境的恢复标签。若还有 journal 副本，其会话 ID、工作区、provider home、创建时间和有序句柄链必须与执行机相符。配对公钥变化、多个环境指向同一身份、句柄被其他会话使用或租约尚未释放都会阻挡对应操作。执行机已完成的批次可用原操作 ID 查看。仅有旧 SSH 终端标题、睡眠终端、WSL 路径或移动端缓存时，这套命令无法确认其两端归属。
 
 ## Joint CLI reservation recovery
 

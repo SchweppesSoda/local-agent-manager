@@ -448,14 +448,16 @@ manual、GUI 和直接服务入口使用相同 gate，阻止绕过已有 journal
 
 | 客户端和核对版本 | 用于定位的证据 | 已实现的清理范围 |
 |---|---|---|
-| Cindy 0.1.146 | `remote_host_id` 是 SSH alias，工程与 Agent 都在远端。`agent_device_id` 指同账号的另一台电脑或 `share:…`。这时项目和命令仍属控制端。切换历史按 `fromAgentDeviceId` 逐段解析，保留回退过的边界。 | 无引擎或设备切换的 SSH 任务可分两端批准。执行端核实该启动器的 Codex 或 Claude 专属 home，控制端重新核实原生删除和 SQLite 行再清任务。同账号设备或分享会话可独立盘点、清理有物理证据的原生存储。控制端备份、迁移副本及共享来宾的整套数据在该操作范围之外。[会话字段](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/localDb/schema.ts) · [设备切换](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-ipc/sessionAgentSwitchHandler.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
+| Cindy 0.1.146 | `remote_host_id` 标出 SSH alias。`agent_device_id` 标出同账号设备或 `share:…`。执行机用控制设备身份和任务 ID 派生影子工作目录，共享会话另带分享和成员身份。 | 单一 SSH 绑定支持 Codex、Claude。设备和直接分享支持具有匹配原生工作目录的 Codex、Claude、Pi。共享来宾只剩一个任务和一个原生定位符时，可精确移除这两个索引项。同账号 Pi 同时核对控制端账号目录、任务、来源设备和备份正文摘要。迁移、分叉、中转及多重绑定保留供核对。[任务 ID 派生](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/sessionIdentity.ts) · [来宾索引](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [分享身份](https://github.com/makecindy/cindy/blob/v0.1.146/packages/device-link/src/providerSharePeer.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
 | T3 Code Nightly 0.1.13-nightly.20261125.5245 | 环境使用持久化的 `environment-id`。thread 和 provider 恢复句柄从该环境的数据库读取，同 ID 的 v1/v2 投影归入一条远程清单记录。 | 在具备运行时与绑定的 Windows 执行端，可清理选中 thread、已绑定原生会话及计划列出的依赖。若只请求产品自带删除，会标记 thread 为已删除。peer 环境或未解决的跨线程、工作流、反馈引用会阻挡完整删除。[远程架构](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/docs/internals/05_remote.md) · [工作流的执行环境](https://github.com/pingdotgg/t3code/blob/1c3f0ee88fc75440e173704cf45eae4d15f2cf95/apps/server/src/persistence/Migrations/110_Workflows.ts) |
 | Paseo 0.17.4 | daemon 保存 `server-id`，agent ID 和恢复句柄属于这台服务器。`paseo.parent-server-id` 描述父任务所在服务器。 | 在具备运行时与绑定的 Windows 执行端，可清注册记录、绑定的原生会话及已列入计划的桌面副本。仅请求 daemon 删除时，核验 RPC 与注册文件。其他电脑的桌面副本单独核对。[跨服务器父子关系](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/tools/paseo-tools.ts) · [daemon 存储](https://github.com/getpaseo/paseo/blob/v0.17.4/packages/server/src/server/agent/agent-storage.ts) |
-| Orca 1.4.274 | 独立 Orca 的 journal 保存 `executionHostId`、`wslDistro`、账号 home 与 provider 句柄链。 | 可盘点本机、SSH 和 runtime 的记录。远端标识及 WSL 路径在控制端保持原样，实际执行端上有确切物理存储时可单独处理原生记录。跨机 Orca journal 与恢复状态只读。[会话对象](https://github.com/stablyai/orca/blob/v1.4.274/src/shared/agent-session/lifecycle/agent-session-record.ts) · [执行主机](https://github.com/stablyai/orca/blob/v1.4.274/src/shared/execution-host/execution-host.ts) |
+| Orca 1.4.277 | 结构化会话由执行机的 journal 持有。控制端的 `runtime:<environmentId>` 分区通过配对端点公钥定位该 profile。两端有 journal 时还须匹配工作区、账号 home 和完整句柄链。 | 已验证的 Windows Codex 组合可清执行端原生记录、journal 和恢复副本。执行端完成后，控制端可清对应结构化标签、布局、已识别 profile 恢复副本及归属吻合的 journal。旧 SSH 终端、WSL、未配对主机及其它 provider 只报告可见元数据。[执行主机](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/execution-host/execution-host.ts) · [配对环境](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-catalog/runtime-environments.ts) · [执行端公钥](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-store/runtime-e2ee-keypair-file.ts) · [结构化启动](https://github.com/stablyai/orca/blob/v1.4.277/src/main/runtime/agent-session/launch/structured-agent-launch-composition.ts) |
 
 SSH worker 使用执行端权威 checkout 的锁、计划和收据。远程计划绑定 SSH alias、物理存储身份、
 产品实例、原生目录和批准摘要。源自 Windows 绑定的完整 writer 仍要求执行端具备相应运行时。
 各阶段的输入和断线恢复见[远程记录命令](operation-cli.md#remote-provider-records)。
+
+Cindy 同账号托管的 Codex 会话以执行端账号目录下该线程的位置索引为准。只有索引中的 rollout、SQLite home 与原生计划一致时，才会将该条索引纳入删除。共享 Codex 使用来宾专属 home。Claude 根据历史原生 ID 查找订阅账号配置目录，Pi 根据执行端 profile 确定 Agent 目录及普通或来宾会话目录。[Codex 线程定位](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-host/codex-thread-locations.ts) · [Claude 历史账号](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/subscription-accounts/store.ts) · [Pi 会话目录](https://github.com/makecindy/cindy/blob/v0.1.146/packages/maker-core/src/agents/pi/index.ts)
 
 Cindy 的 SSH 启动器指定执行端的 Codex home 和程序。控制端判断一轮是否结束时核对开始、结束和清空时间，
 已完成的任务可以保留非空的开始时间。Cindy 自带的协同 Worker 另用 `orca_remote_lead` 标记派工方，
@@ -677,7 +679,7 @@ voice history 和全局日志不属于单条记录清理范围。支持依据是
 
 原生删除组合限 Windows、本机 journal4/record2、明确 managed account home、
 显式选择的 Codex 原生记录及其必须后代。未被完整前端操作覆盖的 current/history/restore
-引用或 bridge 仍阻挡；runtime home、Claude/Pi、远端写入继续关闭。
+引用或 bridge 仍阻挡。runtime home 与 Claude/Pi 缺少原生写入资格。配对执行机上的管理器可按上述限定组合处理其本机记录，再由控制端清理对应的前端副本。[配对执行机操作](operation-cli.md#orca-配对执行机的结构化会话)
 调用 `delete plan --client orca --record-id ID --engine codex` 时，协调器逐目标冻结并核查
 资格；品牌、目录名和 marker 不独立授予写权限。
 

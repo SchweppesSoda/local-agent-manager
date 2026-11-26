@@ -569,7 +569,8 @@ def _discover_transcripts(config: Path) -> list[tuple[Path, Path]]:
     return sorted(result, key=lambda item: _normalized_path(item[0]))
 
 
-def _read_transcript(path: Path) -> tuple[str, int, int]:
+def _read_transcript(path: Path, *, working_dirs: set[str] | None = None) -> tuple[str, int, int]:
+    from .providers.t3 import strict_json
     session_id = _validate_session_id(path.stem)
     before = _safe_lstat(path)
     if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
@@ -592,14 +593,18 @@ def _read_transcript(path: Path) -> tuple[str, int, int]:
                     continue
                 line_count += 1
                 try:
-                    entry = json.loads(raw_line)
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    entry = json.loads(raw_line) if working_dirs is None else strict_json(raw_line.decode("utf-8"))
+                except ValueError as exc:
                     raise ClaudeInventoryError(f"Claude transcript has invalid JSON at line {line_count}") from exc
                 if not isinstance(entry, Mapping):
                     raise ClaudeInventoryError(f"Claude transcript entry at line {line_count} is not an object")
                 embedded = entry.get("sessionId", entry.get("session_id"))
                 if embedded is not None and embedded != session_id:
                     raise ClaudeInventoryError("Claude transcript session ID does not match its filename")
+                if working_dirs is not None and embedded == session_id and "cwd" in entry:
+                    if not isinstance(entry["cwd"], str):
+                        raise ClaudeInventoryError("Claude transcript working directory is invalid")
+                    working_dirs.add(entry["cwd"])
     except OSError as exc:
         raise ClaudeInventoryError("Unable to read Claude transcript") from exc
     after = _safe_lstat(path)

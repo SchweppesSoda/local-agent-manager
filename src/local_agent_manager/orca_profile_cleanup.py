@@ -85,9 +85,9 @@ def projection(db):
     return {domain: decode(payload) for domain, payload in rows(db, "SELECT domain,payload FROM profile_state_documents") if domain in DOMAINS}
 
 
-def transform(db, selected, known_tabs, native_ids, *, timestamp, json_hashes):
+def transform(db, selected, known_tabs, native_ids, *, timestamp, json_hashes, remote=None):
     before = projection(db)
-    after = ui_state(before, selected, known_tabs, native_ids)
+    after = ui_state(before, selected, known_tabs, native_ids, remote=remote)
     changes = {domain: value for domain, value in after.items() if before[domain] != value}
     metadata, revision = meta(db)
     acceptance = None
@@ -133,14 +133,14 @@ def transform(db, selected, known_tabs, native_ids, *, timestamp, json_hashes):
     db.execute("INSERT INTO profile_state_meta(key,value) VALUES ('revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(revision + 1),))
 
 
-def freeze(root, relative, selected, known_tabs, native_ids, *, timestamp, json_hashes):
+def freeze(root, relative, selected, known_tabs, native_ids, *, timestamp, json_hashes, remote=None):
     expected = relative.split("/")[1] if relative.startswith("profiles/") else None
     def qualified(db):
         qualify(db)
         if expected is not None and meta(db)[0]["profile_id"] != expected:
             fail("profile_identity_mismatch")
     evidence = frozen_sqlite.freeze(root, relative, qualifier=qualified,
-        transform=lambda db: transform(db, selected, known_tabs, native_ids, timestamp=timestamp, json_hashes=json_hashes))
+        transform=lambda db: transform(db, selected, known_tabs, native_ids, timestamp=timestamp, json_hashes=json_hashes, remote=remote))
     return {**evidence, "profile_id": expected}
 
 
@@ -156,13 +156,13 @@ def _qualifier(evidence):
     return qualified
 
 
-def apply(evidence, selected, known_tabs, native_ids, *, timestamp, json_hashes, phase_callback):
+def apply(evidence, selected, known_tabs, native_ids, *, timestamp, json_hashes, phase_callback, remote=None):
     frozen_sqlite.apply(evidence, qualifier=_qualifier(evidence), phase_callback=phase_callback,
-        transform=lambda db: transform(db, selected, known_tabs, native_ids, timestamp=timestamp, json_hashes=json_hashes))
+        transform=lambda db: transform(db, selected, known_tabs, native_ids, timestamp=timestamp, json_hashes=json_hashes, remote=remote))
 
 
-def remaining(evidence, selected, known_tabs, native_ids, *, terminal_verified=False):
+def remaining(evidence, selected, known_tabs, native_ids, *, terminal_verified=False, remote=None):
     def count(db):
         value = projection(db)
-        return int(ui_state(value, selected, known_tabs, native_ids) != value)
+        return int(ui_state(value, selected, known_tabs, native_ids, remote=remote) != value)
     return frozen_sqlite.remaining(evidence, qualifier=_qualifier(evidence), count=count, terminal_verified=terminal_verified)
