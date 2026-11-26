@@ -10,6 +10,7 @@ import json
 import re
 import sqlite3
 import unicodedata
+from urllib.parse import quote, unquote
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,9 @@ from .sqlite_utils import connect_readonly
 UPSTREAM_REVISION = "1c61fb73e5ddbacbe1465d2e0506483f57017c5f"
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{8,128}\Z")
 _LINK_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_NAMESPACE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
+_HOME_VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
+_PROFILE_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z", re.I)
 _MAX_RECORD_BYTES = 1024 * 1024
 DOMAIN_JOURNAL = "agent-session-domain.db"
 LEGACY_JOURNAL = "agent-session-journal.db"
@@ -48,6 +52,7 @@ class OrcaHandle:
     native_id: str
     leaf_uuid: str | None
     origin: str
+    transport: str
 
 
 @dataclass(frozen=True)
@@ -75,13 +80,36 @@ class OrcaRecord:
     session_id: str
     provider: str
     host: str
+    workspace_id: str
     wsl_distro: str | None
-    home_variable: str
-    home_locator: str
+    home_variable: str | None
+    home_locator: str | None
     handles: tuple[OrcaHandle, ...]
     unsupported_recovery: bool
     lease: OrcaLease
     launched_home: str | None = None
+    account_locator: dict[str, str] | None = None
+
+    @property
+    def execution_route(self) -> str:
+        if self.host == "local":
+            return "wsl" if self.wsl_distro is not None else "local"
+        return (canonical_execution_host(self.host) or "unknown").partition(":")[0]
+
+
+def canonical_execution_host(host):
+    if host == "local":
+        return host
+    if not isinstance(host, str):
+        return None
+    kind, _, encoded = host.partition(":")
+    if kind not in {"runtime", "ssh"} or not encoded or "|" in encoded or re.search(r"%(?![0-9a-fA-F]{2})", encoded):
+        return None
+    try:
+        identifier = unquote(encoded, errors="strict")
+        return kind + ":" + quote(identifier, safe="-_.!~*'()")
+    except UnicodeError:
+        return None
 
 
 def _text(value: Any, maximum: int = 512) -> bool:
@@ -99,21 +127,56 @@ def _require(condition: bool, code: str) -> None:
         raise OrcaMetadataError(code)
 
 
-def _handle(value: Any) -> tuple[OrcaHandle, str, str]:
+def _handle(value: Any) -> tuple[OrcaHandle, str, str, str | None]:
     _require(isinstance(value, dict), "provider_handle_invalid")
     handle = value.get("handle")
     _require(isinstance(handle, dict), "provider_handle_invalid")
     provider = handle.get("provider")
-    native = handle.get("threadId") if provider == "codex" else handle.get("sessionId")
-    leaf = handle.get("leafUuid") if provider == "claude" else None
-    _require(provider in ("codex", "claude") and _text(native) and native == native.strip(), "provider_handle_invalid")
-    _require(provider != "claude" or "leafUuid" in handle and (leaf is None or _text(leaf) and leaf == leaf.strip()), "provider_handle_invalid")
+    if "provider" in handle:
+        _require(provider in ("codex", "claude") and not ({"agent", "transport", "nativeId", "resumeCursor"} & handle.keys()),
+                 "provider_handle_invalid")
+        transport = "codex-app-server" if provider == "codex" else "claude-sdk"
+        native = handle.get("threadId") if provider == "codex" else handle.get("sessionId")
+        cursor = handle.get("leafUuid") if provider == "claude" else None
+        _require(provider != "claude" or "leafUuid" in handle and (cursor is None or _text(cursor) and cursor == cursor.strip()),
+                 "provider_handle_invalid")
+        namespace = provider
+    else:
+        provider, transport, native = handle.get("agent"), handle.get("transport"), handle.get("nativeId")
+        _require(all(isinstance(v, str) and _NAMESPACE.fullmatch(v) for v in (provider, transport))
+                 and provider not in ("codex", "claude"), "provider_handle_invalid")
+        cursor = handle.get("resumeCursor")
+        _require("resumeCursor" not in handle or isinstance(cursor, str)
+                 and 0 < len(cursor.encode("utf-16-le", errors="surrogatepass")) // 2 <= 4096, "provider_handle_invalid")
+        namespace = f"{transport}/{provider}"
+    _require(_text(native) and native == native.strip(), "provider_handle_invalid")
     _require(isinstance(value.get("linkId"), str) and bool(_LINK_ID.fullmatch(value["linkId"])), "provider_link_invalid")
     _require(value.get("origin") in {"created", "adopted", "resumed", "forked"}, "provider_link_invalid")
     _require(_integer(value.get("mintedAtFence"), 0) and _integer(value.get("observedAt")), "provider_link_invalid")
-    key = provider + ":" + json.dumps([native, leaf] if provider == "claude" else native, ensure_ascii=False, separators=(",", ":"))
-    root = provider + ":" + json.dumps(native, ensure_ascii=False, separators=(",", ":"))
-    return OrcaHandle(value["linkId"], provider, native, leaf, value["origin"]), key, root
+    root = namespace + ":" + json.dumps(native, ensure_ascii=False)
+    key = "claude:" + json.dumps([native, cursor], ensure_ascii=False, separators=(",", ":")) if provider == "claude" else root
+    # Opaque resume cursors participate in retry detection but never leave this parser.
+    return OrcaHandle(value["linkId"], provider, native, cursor if provider == "claude" else None,
+                      value["origin"], transport), key, root, cursor
+
+
+def _account_home(home, provider):
+    _require(isinstance(home, dict), "record_account_home_invalid")
+    if "kind" in home:
+        locator = home.get("locator")
+        _require(provider not in ("codex", "claude") and home["kind"] == "opencode" and isinstance(locator, dict),
+                 "record_account_home_invalid")
+        if locator.get("kind") == "unmanaged":
+            return None, None, {"kind": "unmanaged"}
+        identifier = locator.get("managedProfileId")
+        _require(locator.get("kind") == "managed" and isinstance(identifier, str) and _PROFILE_ID.fullmatch(identifier),
+                 "record_account_home_invalid")
+        return None, None, {"kind": "managed", "managedProfileId": identifier}
+    variable, path = home.get("variable"), home.get("path")
+    _require(isinstance(variable, str) and _HOME_VARIABLE.fullmatch(variable) and _text(path, 4096)
+             and variable == {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR"}.get(provider, variable),
+             "record_account_home_invalid")
+    return variable, path, None
 
 
 def launch_home(raw):
@@ -163,34 +226,41 @@ def parse_orca_record(row_id: Any, value: Any) -> OrcaRecord:
         and "wslDistro" in location and (location["wslDistro"] is None or _text(location["wslDistro"]))
         and _text(location.get("workspaceId")) and location.get("workspaceKind") in {"folder", "git-worktree"}, "record_location_invalid")
     provider = value.get("provider")
-    _require(provider in {"codex", "claude"}, "record_provider_unsupported")
-    _require(isinstance(home, dict) and home.get("variable") == ("CODEX_HOME" if provider == "codex" else "CLAUDE_CONFIG_DIR")
-        and _text(home.get("path"), 4096), "record_account_home_invalid")
+    _require(isinstance(provider, str) and bool(_NAMESPACE.fullmatch(provider)), "record_provider_unsupported")
+    home_variable, home_locator, account_locator = _account_home(home, provider)
     chain = value.get("providerHandleChain")
     _require(isinstance(chain, list) and len(chain) <= 256, "provider_chain_invalid")
     handles: list[OrcaHandle] = []
     link_ids: set[str] = set()
-    previous_key = previous_root = None
+    previous_key = previous_root = previous_cursor = None
+    key_limit = 512 if provider in ("codex", "claude") else 8192
     previous_fence = -1
     for link in chain:
-        handle, key, root = _handle(link)
+        handle, key, root, cursor = _handle(link)
         fence = link["mintedAtFence"]
         _require(handle.provider == provider and handle.link_id not in link_ids and fence >= previous_fence, "provider_chain_invalid")
-        if not handles:
+        if handles:
+            _require(handle.transport == handles[-1].transport, "provider_chain_invalid")
+        if "replaces" in link:
+            replacement = link["replaces"]
+            _require(bool(handles) and key_limit == 8192 and handle.origin == "created" and root != previous_root
+                     and isinstance(replacement, dict) and replacement.get("key") == previous_key
+                     and _text(replacement.get("reason"), 64) and _integer(replacement.get("replacedAt"), 0), "provider_chain_invalid")
+        elif not handles:
             _require(handle.origin in {"created", "adopted"}, "provider_chain_invalid")
         elif handle.origin == "resumed":
-            _require(root == previous_root and not (key == previous_key and fence == previous_fence), "provider_chain_resume_invalid")
+            _require(root == previous_root and (cursor != previous_cursor or fence != previous_fence), "provider_chain_resume_invalid")
         elif handle.origin == "forked":
             fork_key = link.get("forkedFromKey")
-            _require(root != previous_root and _text(fork_key) and fork_key == fork_key.strip()
+            _require(root != previous_root and _text(fork_key, key_limit) and fork_key == fork_key.strip()
                      and fork_key == previous_key, "provider_chain_fork_invalid")
         else:
             raise OrcaMetadataError("provider_chain_invalid")
         _require(handle.origin == "forked" or "forkedFromKey" not in link, "provider_chain_invalid")
-        _require("supersedesKey" not in link or handle.origin == "created" and _text(link["supersedesKey"]), "provider_chain_invalid")
+        _require("supersedesKey" not in link or handle.origin == "created" and _text(link["supersedesKey"], key_limit), "provider_chain_invalid")
         handles.append(handle)
         link_ids.add(handle.link_id)
-        previous_key, previous_root, previous_fence = key, root, fence
+        previous_key, previous_root, previous_fence, previous_cursor = key, root, fence, cursor
     _require(isinstance(lease, dict) and lease.get("sessionId") == session_id, "record_lease_invalid")
     _require(lease.get("runtimeKind") in {"native", "tui"} and _integer(lease.get("runtimeFence"), 0)
         and "handoffStage" in lease and lease["handoffStage"] in {None, "preparing", "old-owner-stopped", "new-owner-proving", "recovering", "manual-recovery"}, "record_lease_invalid")
@@ -209,14 +279,14 @@ def parse_orca_record(row_id: Any, value: Any) -> OrcaRecord:
         and _integer(checkpoint.get("epoch"), 0) and _integer(checkpoint.get("sequence"), 0), "record_lease_invalid")
     death = lease.get("deathEvidence")
     _require("deathEvidence" in lease and (death is None or isinstance(death, dict)
-        and death.get("kind") in {"exit-observed", "pid-absent", "identity-mismatch"} and _text(death.get("detail"))
+        and death.get("kind") in {"exit-observed", "kill-delivered", "pid-absent", "identity-mismatch"} and _text(death.get("detail"))
         and _integer(death.get("observedAt"), 0)
         and ("ownerFence" not in death or _integer(death["ownerFence"], 0))
         and ("lastProvenAliveAt" not in death or _integer(death["lastProvenAliveAt"], 0)
              and death["lastProvenAliveAt"] <= death["observedAt"])), "record_lease_invalid")
     if lease["claimStatus"] == "live":
-        _require(owner is not None and bool(handles) and lease["provenHandleLinkId"] == handles[-1].link_id
-            and lease["runtimeFence"] == previous_fence, "record_live_lease_invalid")
+        _require(owner is not None and (lease["provenHandleLinkId"] is None or bool(handles)
+            and lease["provenHandleLinkId"] == handles[-1].link_id and lease["runtimeFence"] == previous_fence), "record_live_lease_invalid")
     _require(_integer(value.get("createdAt")) and _integer(value.get("updatedAt")) and "launchEnv" not in value, "record_shape_invalid")
     if "options" in value:
         options = value["options"]
@@ -236,15 +306,23 @@ def parse_orca_record(row_id: Any, value: Any) -> OrcaRecord:
                  "record_launch_args_invalid")
     recovery = (lease["runtimeKind"] != "native" or lease["handoffStage"] in {"preparing", "old-owner-stopped", "manual-recovery"}
                 or any(key in value for key in ("rewind", "conversationCommand"))
-                or any("supersedesKey" in link for link in chain))
-    return OrcaRecord(session_id, provider, location["executionHostId"], location["wslDistro"],
-                      home["variable"], home["path"], tuple(handles), recovery,
+                or any("supersedesKey" in link or "replaces" in link for link in chain))
+    launched = value.get("launchedAccount")
+    if provider == "codex" and "launchedAccount" in value:
+        _require(isinstance(launched, dict) and _integer(launched.get("fence"), 1), "record_account_home_invalid")
+        _, actual_home, _ = _account_home(launched.get("accountHome"), provider)
+        # Codex can copy history across accounts on resume. The founding home alone no longer covers this session.
+        recovery |= actual_home != home_locator or launched["fence"] > lease["runtimeFence"]
+    else:
+        actual_home = launch_home(value) if provider == "claude" else None
+    return OrcaRecord(session_id, provider, location["executionHostId"], location["workspaceId"], location["wslDistro"],
+                      home_variable, home_locator, tuple(handles), recovery,
                       OrcaLease(lease["claimStatus"], lease["unreconciled"], lease["runtimeKind"],
                                 lease["handoffStage"], owner["hostId"] if owner else None,
                                 owner["pid"] if owner else None,
                                 owner["processStartTimeMs"] if owner else None,
                                 death["kind"] if death else None),
-                      launch_home(value) if provider == "claude" else None)
+                      actual_home, account_locator)
 
 
 def read_orca_journal(path: Path, profile_root: Path) -> tuple[tuple[OrcaRecord, ...], tuple[SourceFailure, ...]]:

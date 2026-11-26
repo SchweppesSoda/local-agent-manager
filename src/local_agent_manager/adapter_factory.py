@@ -7,7 +7,7 @@ from typing import Any
 
 from .adapters import CindyAdapter, NativeIntegrityAdapter, OrcaAdapter, HerdrAdapter, WorkBuddyAdapter, OfficeAdapter
 from .herdr_discovery import default_herdr_locators, local_herdr_path
-from .orca_discovery import OrcaDiscoveryError, default_orca_root, local_orca_path, reverse_account_profile
+from .orca_discovery import OrcaDiscoveryError, default_orca_root, default_orcad_root, local_orca_path, reverse_account_profile
 from .record_identity import canonical_path
 from .cleanup_service import selected_platforms
 from .discovery import (
@@ -27,6 +27,18 @@ def discover_orca_guards(args: Any) -> tuple[OrcaAdapter, ...]:
     selected = str(getattr(args, "client", "")) == "orca" or "orca" in (getattr(args, "platform", ()) or ())
     roots = [local_orca_path(root) for root in requested]
     if not requested:
+        explicit_daemon = bool(os.environ.get("ORCA_USER_DATA"))
+        try:
+            daemon = default_orcad_root()
+        except OrcaDiscoveryError:
+            if selected or explicit_daemon:
+                raise
+        else:
+            from .orca_metadata import DOMAIN_JOURNAL, LEGACY_JOURNAL
+            journal_files = [db + suffix for db in (DOMAIN_JOURNAL, LEGACY_JOURNAL) for suffix in ("", "-shm", "-wal", "-journal")]
+            if explicit_daemon or any(os.path.lexists(daemon / marker) for marker in (
+                    *journal_files, "orcad.lock", "orca-runtime.json", "orca-e2ee-keypair.json", "codex-accounts", "orca-data.json")):
+                roots.append(daemon)
         try:
             default = default_orca_root(appdata=getattr(args, "appdata", None))
         except OrcaDiscoveryError:
@@ -38,7 +50,7 @@ def discover_orca_guards(args: Any) -> tuple[OrcaAdapter, ...]:
             try:
                 default.lstat()
             except FileNotFoundError:
-                if selected or os.environ.get("ORCA_USER_DATA_PATH"):
+                if (selected and not roots) or os.environ.get("ORCA_USER_DATA_PATH"):
                     roots.append(default)
             except OSError:
                 roots.append(default)

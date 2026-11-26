@@ -932,8 +932,102 @@ class RemoteRecordsTests(unittest.TestCase):
         result = self.invoke("records")
         record, = result["records"]
         self.assertEqual(record["execution_host"], "ssh:connection-from-orca")
+        output = io.StringIO()
+        self.assertEqual(main(["remote", "records", "--local", "--client", "orca", "--root", str(self.root)], stdout=output), 0)
+        self.assertEqual(json.loads(output.getvalue())["records"], result["records"])
+        self.assertEqual((record["execution_route"], record["provider_transport"]), ("ssh", "codex-app-server"))
+        denied = self.invoke("plan", "--owner", result["owner"]["store_id"], "--record-id", record["record_id"], ok=False)
+        self.assertIn("orca_execution_host_session_required", str(denied))
         self.assertEqual(record["native_ids"], [orca_support.HISTORY_ID, orca_support.CURRENT_ID])
         self.assertNotIn(orca_support.SENTINEL, json.dumps(result))
+
+    def test_orca_offline_controller_cleans_only_selected_environment_and_workspace(self):
+        sid, workspace, environment = "orca_fixture_01", "workspace-fixture", "office/B"
+        host = "runtime:office%2fB"  # Orca canonicalizes alternate percent encodings to the same environment.
+        root = self.base / "controller"
+        other_host_home, = orca_support.create_profile(self.base / "offline-host", accounts=1)
+        native = other_host_home / "sessions" / "history.jsonl"
+        native.write_bytes(b"retained on peer")
+        self.transport.side_effect = AssertionError("offline peer contacted")
+        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        orca_support.create_profile(root, accounts=0)
+        pairing = root / "orca-environments.json"
+        def register(key):
+            pairing.write_text(json.dumps({"version": 1, "environments": [{"id": environment, "endpoints": [
+                {"publicKeyB64": base64.b64encode(key).decode(), "deviceToken": "PRIVATE-TOKEN"}]}]}))
+        register(b"B" * 32)
+        local = orca_support.make_record(other_host_home, sid)
+        orca_support.replace_record(root, local)
+        def tabs(tab):
+            return {"unifiedTabs": {workspace: [{"id": tab, "entityId": sid, "contentType": "agent-session",
+                "worktreeId": workspace, "groupId": "g", "agentSessionAgent": "opencode"}]}}
+        state = {"schemaVersion": 1, "workspaceSessionsByHostId": {host: tabs("target"), "local": tabs("local"),
+            "runtime:other": tabs("keeper")}, "remoteLayoutSnapshots": {environment: {"workspaces": {workspace: {
+                "worktree": workspace, "tabs": [{"id": "saved", "type": "agent-session", "agent": "opencode", "sessionId": sid}]}}}}}
+        ui = root / "orca-data.json"
+        ui.write_text(json.dumps(state))
+        select = ("delete", "plan", "--client", "orca", "--orca-root", str(root), "--record-id", sid, "--orca-controller-only", environment)
+        self.controller(*select, "wrong-workspace", ok=False)
+        self.controller(*select, workspace, "--orca-remote-plan", "other.json", ok=False)
+        plan = self.controller(*select, workspace)
+        self.assertEqual(plan["scope"]["orca_controller_only"], [environment, workspace])
+        self.assertFalse(plan["capabilities"]["orca"]["native_delete"])
+        self.assertNotIn("PRIVATE-TOKEN", json.dumps(plan))
+        op = ("--operation-id", plan["operation_id"], "--plan", plan["plan_path"])
+        apply = ("delete", "apply", *op, "--plan-sha256", plan["plan_sha256"], "--clients-closed")
+        self.controller(*apply, "--orca-controller-only", environment, "wrong-workspace", ok=False)
+        with self.assertRaisesRegex(ValueError, "controller_remote_binding_required"):
+            remote._check_controller_plan(Path(plan["plan_path"]), {"clients_closed": True})
+        register(b"C" * 32)
+        self.controller(*apply, ok=False)
+        self.assertEqual(json.loads(ui.read_bytes()), state)
+        register(b"B" * 32)
+        self.assertEqual(self.controller(*apply)["goal_status"], "complete")
+        self.assertEqual(self.controller("operation", "verify", *op)["goal_status"], "complete")
+        after = json.loads(ui.read_bytes())
+        self.assertEqual(after["workspaceSessionsByHostId"][host]["unifiedTabs"][workspace], [])
+        for owner in ("local", "runtime:other"):
+            self.assertEqual(after["workspaceSessionsByHostId"][owner], state["workspaceSessionsByHostId"][owner])
+        self.assertEqual(after["remoteLayoutSnapshots"][environment]["workspaces"][workspace]["tabs"], [])
+        with closing(sqlite3.connect(root / "agent-session-journal.db")) as db:
+            raw, = db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)).fetchone()
+        self.assertEqual(json.loads(raw), local)
+        self.assertEqual(native.read_bytes(), b"retained on peer")
+        self.transport.assert_not_called()
+
+    def test_orca_registered_provider_can_clean_a_paired_mirror_without_an_engine_writer(self):
+        self.client, self.root = "orca", self.base / "registered-controller"
+        orca_support.create_profile(self.root, accounts=0)
+        sid = "orca_registry_chat"
+        row = orca_support.make_record(self.base / "unused", sid, empty=True)
+        row.update(provider="cc", accountHome={"kind": "opencode", "locator": {"kind": "unmanaged"}})
+        row["providerHandleChain"] = [{"linkId": "link", "origin": "created", "mintedAtFence": 1, "observedAt": 1,
+            "handle": {"agent": "cc", "transport": "acp", "nativeId": "opaque", "resumeCursor": "PRIVATE-CURSOR"}}]
+        orca_support.replace_record(self.root, row)
+        inventory = self.invoke("records")
+        record, = inventory["records"]
+        self.assertEqual((record["engine"], record["provider_transport"], record["account_locator"]), ("cc", "acp", {"kind": "unmanaged"}))
+        self.assertNotIn("PRIVATE-CURSOR", json.dumps(inventory))
+        self.assertIn("orca_provider_native_binding_unverified", str(self.invoke("plan", "--owner",
+            inventory["owner"]["store_id"], "--record-id", sid, ok=False)))
+        (self.root / "orca-environments.json").write_text(json.dumps({"version": 1, "environments": [
+            {"id": "peer", "endpoints": [{"publicKeyB64": base64.b64encode(b"B" * 32).decode()}]}]}))
+        row["location"]["executionHostId"] = "runtime:peer"
+        orca_support.replace_record(self.root, row)
+        self.transport.side_effect = AssertionError("offline peer contacted")
+        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        plan = self.controller("delete", "plan", "--client", "orca", "--orca-root", str(self.root), "--record-id", sid,
+                               "--orca-controller-only", "peer", record["workspace_id"])
+        self.assertFalse(plan["capabilities"]["unsupported:cc"]["native_delete"])
+        self.assertNotIn("PRIVATE-CURSOR", json.dumps(plan))
+        op = ("--operation-id", plan["operation_id"], "--plan", plan["plan_path"])
+        self.assertEqual(self.controller("delete", "apply", *op, "--plan-sha256", plan["plan_sha256"],
+                                         "--clients-closed")["goal_status"], "complete")
+        self.assertEqual(self.controller("operation", "verify", *op)["goal_status"], "complete")
+        with closing(sqlite3.connect(self.root / "agent-session-journal.db")) as db:
+            self.assertIsNone(db.execute("SELECT session_id FROM agent_session_records WHERE session_id=?", (sid,)).fetchone())
 
     @unittest.skipUnless(os.name == "nt", "The executor requires the qualified Orca Codex runtime")
     def test_orca_paired_runtime_cleans_host_and_only_its_controller_tabs(self):
@@ -1003,6 +1097,7 @@ class RemoteRecordsTests(unittest.TestCase):
         local = self.controller(*select)
         op = ("--operation-id", local["operation_id"], "--plan", local["plan_path"])
         apply = ("delete", "apply", *op, "--plan-sha256", local["plan_sha256"], "--clients-closed")
+        self.controller(*apply, "--orca-controller-only", "environment", "workspace-fixture", ok=False)
         self.assertTrue(local["capabilities"]["codex"]["frontend_session_delete"])
         self.assertFalse(self.controller(*apply, ok=False)["mutation_started"])
         self.assertEqual(json.loads(ui.read_bytes()), state)

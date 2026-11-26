@@ -187,12 +187,18 @@ class OperationCoordinator:
             client_name = str(normalized_scope["client"])
             remote_proof = None
             orca_pair = None
-            if orca_remote_plan is not None:
-                from .orca_remote import from_plan
+            controller_selection = normalized_scope.get("orca_controller_only")
+            if orca_remote_plan is not None or controller_selection is not None:
+                from .orca_remote import controller_only, from_plan
                 if (client_name != "orca" or len(orca_roots) != 1 or len(normalized_scope["record_ids"]) != 1
-                        or normalized_scope["engines"] or normalized_scope["projects"] or normalized_scope["all_projects"]):
+                        or normalized_scope["engines"] or normalized_scope["projects"] or normalized_scope["all_projects"]
+                        or cindy_remote_plan or magpie_bindings or _unused.get("paseo_bindings") or _unused.get("t3code_bindings")
+                        or any(normalized_scope.get(k) for k in ("cindy_controller_only", "paseo_only", "t3code_only"))
+                        or controller_selection is not None and orca_remote_plan is not None):
                     raise OperationCoordinatorError("orca_remote_exact_frontend_scope_required")
-                orca_pair = from_plan(orca_remote_plan, Path(orca_roots[0]), normalized_scope["record_ids"][0])
+                root, sid = Path(orca_roots[0]), normalized_scope["record_ids"][0]
+                orca_pair = (controller_only(root, sid, controller_selection) if controller_selection is not None
+                             else from_plan(orca_remote_plan, root, sid))
             if normalized_scope.get("cindy_controller_only"):
                 from .cindy_remote import controller_proof
                 if (client_name != "cindy" or not _unused.get("cindy_db") or len(normalized_scope["record_ids"]) != 1
@@ -1747,6 +1753,8 @@ class OperationCoordinator:
         engines: Sequence[str],
     ) -> dict[str, Any]:
         raw = dict(scope or {})
+        if isinstance(raw.get("orca_controller_only"), tuple):
+            raw["orca_controller_only"] = list(raw["orca_controller_only"])
         selected_client = client or raw.get("client")
         normalized_client = normalize_client(selected_client) if selected_client else None
         return {
@@ -1754,6 +1762,7 @@ class OperationCoordinator:
             **({"paseo_only": True} if raw.get("paseo_only") is True else {}),
             **({"t3code_only": True} if raw.get("t3code_only") is True else {}),
             **({"cindy_controller_only": True} if raw.get("cindy_controller_only") is True else {}),
+            **({"orca_controller_only": raw["orca_controller_only"]} if "orca_controller_only" in raw else {}),
             "projects": tuple(dict.fromkeys(
                 str(value).strip()
                 for value in (projects or raw.get("projects", ()))
@@ -3963,8 +3972,11 @@ class OperationCoordinator:
             from .orca_remote import frozen
             pair = frozen(payload)
             if pair:
-                capabilities[pair["remote_owner"].get("provider", "codex")].update(frontend_session_delete=True, verify=True, mode="partial",
-                    reason="Exact paired controller session with independently verified executor completion")
+                local_only = pair["remote_owner"].get("controller_only") is True
+                capabilities[self._action_engine(context, candidates[0])].update(native_delete=False,
+                    frontend_session_delete=True, verify=True, mode="partial",
+                    reason="Controller copies in the selected paired workspace" if local_only else
+                           "Exact paired controller session with independently verified executor completion")
             elif any(a["kind"] == "delete_orca_frontend" and a["impact"].get("external_engine") == "claude" for a in action_docs):
                 capabilities["claude"].update(native_delete=any(a["kind"] == "delete_claude_session" for a in action_docs),
                     frontend_session_delete=True, verify=True, mode="partial",
@@ -4196,7 +4208,8 @@ class OperationCoordinator:
         # supplied is compared against the immutable plan, not just client;
         # this prevents a valid hash from being replayed against another
         # project, record, or engine by a stale CLI invocation.
-        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only", "t3code_only", "cindy_controller_only"):
+        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only", "t3code_only",
+                    "cindy_controller_only", "orca_controller_only"):
             value = requested.get(key)
             if key == "all_projects":
                 if value is not True:

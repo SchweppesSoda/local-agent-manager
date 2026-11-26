@@ -169,6 +169,19 @@ B 的 `complete` 表示所选原生记录及计划列出的任务索引已清理
 
 ### Orca 配对执行机的结构化会话
 
+**只清控制端 A。** B 可以离线。选用 A 上的 Orca profile、配对环境 ID、工作区 ID 和完整 Orca 会话 ID。环境和工作区名称可能与 ID 不同。有 journal 的机器可以运行 `local-agent-manager remote records --local --client orca --root '<Orca profile>'`，读取 `record_id`、`execution_host` 和 `workspace_id`。
+
+```powershell
+$plan = local-agent-manager delete plan --client orca --orca-root '<A 上的 Orca profile>' --record-id '<完整 Orca 会话 ID>' --orca-controller-only '<配对环境 ID>' '<工作区 ID>' --json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $plan.goal_status -ne 'ready') { throw '请核对控制端的配对环境、工作区和会话。' }
+$op = @('--operation-id', $plan.operation_id, '--plan', $plan.plan_path)
+local-agent-manager delete apply @op --plan-sha256 $plan.plan_sha256 --clients-closed --json
+if ($LASTEXITCODE -ne 0) { throw '查看本机 operation status 和 verify。' }
+local-agent-manager operation verify @op --json
+```
+
+计划冻结 A 上该环境的公钥、工作区、会话和本地恢复副本。`complete` 表示这些副本已清理。B 上的会话仍可在重连时重新投影到 A。若目标是 B 上的权威会话，可直接在 B 针对实际 Orca profile 运行 `delete plan --client orca`，再按该计划执行和核验。若要同时清两端，使用下面的配对流程。
+
 选择执行端实际使用的 Orca profile。下例适用于已配对的 Windows 结构化 Claude 会话。若选中的是 Codex，在 `remote plan` 加上 `--codex-bin '<执行端 Codex 可执行文件>'`，并核对其[原生写入条件](adapters.md#orca精确原生删除的限定组合)。
 
 ```powershell

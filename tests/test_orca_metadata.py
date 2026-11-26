@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from local_agent_manager.orca_discovery import (
@@ -128,6 +129,53 @@ class OrcaMetadataTests(unittest.TestCase):
             read_orca_journal(self.database, self.root)
         self.assertLess(trace.index("BEGIN"), trace.index("PRAGMA user_version"))
 
+    def test_registry_handle_history_keeps_namespace_and_opaque_cursors_private(self):
+        from local_agent_manager.adapters.orca import OrcaAdapter
+        from tests.orca_support import replace_record
+        row = make_record(self.homes[0], "registry_session")
+        locator = {"kind": "managed", "managedProfileId": "9af36af4-936d-4ee1-8ecb-f9ecf552061b"}
+        # A registered adapter may have a slug that is a CLI alias for a different engine.
+        row.update(provider="codex-cli", accountHome={"kind": "opencode", "locator": locator})
+        chain = row["providerHandleChain"]
+        chain[0]["handle"] = {"transport": "acp", "agent": "codex-cli", "nativeId": "one", "resumeCursor": SENTINEL}
+        chain[1].update(handle={**chain[0]["handle"], "resumeCursor": "updated"}, origin="resumed", mintedAtFence=1)
+        del chain[1]["forkedFromKey"]
+        chain.append({**chain[0], "linkId": "replacement", "handle": {**chain[0]["handle"], "nativeId": "two"},
+            "replaces": {"key": 'acp/codex-cli:"one"', "reason": "restore-failed", "replacedAt": 1}})
+        record = parse_orca_record(row["sessionId"], row)
+        self.assertEqual([h.native_id for h in record.handles], ["one", "one", "two"])
+        self.assertEqual(record.account_locator, locator)
+        self.assertIsNone(record.home_locator)
+        self.assertNotIn(SENTINEL, repr(record))
+        replace_record(self.root, row)
+        snapshot = OrcaAdapter(profile_root=self.root).snapshot_references()
+        refs = [ref for ref in snapshot.references if ref.frontend_id == row["sessionId"]]
+        self.assertEqual(len(refs), 3)
+        self.assertTrue(all(ref.engine == "unsupported:codex-cli" and ref.native_record is None for ref in refs))
+        self.assertNotIn(SENTINEL, str([ref.to_dict() for ref in refs]))
+        for overrides in ({"transport": "other"}, {"provider": "codex"}, {"resumeCursor": SENTINEL}):
+            duplicate = copy.deepcopy(row)
+            duplicate["providerHandleChain"][1]["handle"].update(overrides)
+            with self.assertRaises(OrcaMetadataError):
+                parse_orca_record(duplicate["sessionId"], duplicate)
+
+    def test_new_live_lease_and_codex_launch_home_do_not_qualify_a_writer(self):
+        from local_agent_manager.adapters.orca import OrcaAdapter
+        from tests.orca_support import replace_record
+        row = make_record(self.homes[0])
+        row.update(launchedAccount={"fence": 2, "accountHome": {"variable": "CODEX_HOME", "path": str(self.homes[1])}})
+        row["lease"].update(claimStatus="live", ownerProcess={"hostId": "local", "pid": 9, "processStartTimeMs": None, "spawnToken": SENTINEL},
+                            deathEvidence={"kind": "kill-delivered", "detail": "SIGTERM", "observedAt": 2})
+        record = parse_orca_record(row["sessionId"], row)
+        self.assertEqual(record.launched_home, str(self.homes[1]))
+        self.assertTrue(record.unsupported_recovery)
+        replace_record(self.root, row)
+        snapshot = OrcaAdapter(profile_root=self.root).snapshot_references()
+        refs = [ref for ref in snapshot.references if ref.frontend_id == row["sessionId"]]
+        self.assertTrue(refs)
+        self.assertTrue(all(ref.native_record is None and ref.evidence_complete is False for ref in refs))
+        self.assertIn("record_recovery_metadata_not_covered", {e.message for e in snapshot.errors if e.blocks_delete})
+
 
 class OrcaDiscoveryTests(unittest.TestCase):
     def setUp(self):
@@ -163,6 +211,19 @@ class OrcaDiscoveryTests(unittest.TestCase):
             with self.assertRaises(OrcaDiscoveryError):
                 default_orca_root(appdata=self.root.parent, environ={"ORCA_USER_DATA_PATH": raw})
         self.assertEqual(default_orca_root(environ={"ORCA_USER_DATA_PATH": str(self.root)}), self.root)
+
+    def test_standalone_and_desktop_user_data_are_resolved_independently(self):
+        from local_agent_manager.adapter_factory import discover_orca_guards
+        from local_agent_manager.orca_discovery import default_orcad_root
+        standalone = self.root.parent / "separate-daemon"
+        create_profile(standalone, accounts=0)
+        args = SimpleNamespace(client="orca")
+        with patch.dict(os.environ, {"ORCA_USER_DATA_PATH": str(self.root), "ORCA_USER_DATA": str(standalone)}):
+            self.assertEqual({a.profile_root for a in discover_orca_guards(args)}, {self.root, standalone})
+            self.assertEqual([a.profile_root for a in discover_orca_guards(SimpleNamespace(orca_root=[self.root]))], [self.root])
+            with patch.dict(os.environ, {"ORCA_USER_DATA": str(self.root)}):
+                self.assertEqual([a.profile_root for a in discover_orca_guards(args)], [self.root])
+        self.assertEqual(default_orcad_root(environ={"XDG_DATA_HOME": str(self.root.parent)}), self.root.parent / "Orca")
 
     def test_marker_read_failure_is_not_missing_evidence_success(self):
         with patch("pathlib.Path.open", side_effect=PermissionError("fixture")):

@@ -79,6 +79,42 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         with patch("local_agent_manager.orca_runtime_probe.probe_contract", side_effect=AssertionError):
             self.assertIn("orca_runtime_binary_changed", recheck_orca_target(evidence, self.adapter))
 
+    def test_daemon_pid_machine_and_lock_revision_are_bound_independently_of_version(self):
+        from local_agent_manager.orca_frontend import _runtime_metadata
+        from local_agent_manager.orca_runtime_guard import related, require_closed, runtime_observation
+        guid = "6fb942c0-49fa-45d9-9357-610a6752b338"
+        lock = {"pid": 27, "identity": "secret-identity", "startedAtMs": None,
+                "acquiredAt": "2026-11-26T00:00:00.000Z", "version": "1234.99.7", "role": "orcad",
+                "nonce": SENTINEL, "machineIdentity": "win32-machine-guid:" + guid}
+        self.enterContext(patch("local_agent_manager.orca_runtime.windows_machine_guid", return_value=guid.upper()))
+        path = self.profile / "orcad.lock"
+        empty = self.freeze()
+        path.write_text(json.dumps(lock))
+        self.assertIn("orca_target_boundary_changed", recheck_orca_target(empty, self.adapter))
+        self.assertEqual(runtime_observation(self.profile), {"lock_state": "recorded", "role": "orcad", "version": "1234.99.7"})
+        frozen = self.freeze()
+        self.assertTrue(frozen["preflight_complete"], frozen["blocker_codes"])
+        for private in (SENTINEL, guid, "secret-identity"):
+            self.assertNotIn(private, json.dumps(frozen))
+        rows = [{"process_id": 27, "parent_process_id": 1, "name": "node.exe"},
+                {"process_id": 31, "parent_process_id": 27, "name": "worker.exe"}]
+        self.assertEqual(self.freeze(process_records=rows)["runtime_observation"]["blocking_process_ids"], [27, 31])
+        self.assertEqual(related([{"pid": 50, "parent": 1, "name": "node.exe", "command": '"node" "D:/node bundle/orcad-server.js"'},
+                                  {"pid": 51, "parent": 50, "name": "worker.exe"}], self.profile), {50, 51})
+        observation = {"root": str(self.profile), "runtime_observations": _runtime_metadata(self.profile)}
+        path.write_text(json.dumps({**lock, "nonce": "another-launch", "role": "desktop"}))
+        self.assertEqual(runtime_observation(self.profile)["role"], "desktop")
+        with self.assertRaisesRegex(RuntimeError, "instance_lock_changed"):
+            require_closed(observation, client_inspector=lambda *a, **k: ())
+        path.write_text(json.dumps({**lock, "machineIdentity": "linux-machine-id:other"}))
+        self.assertIn("orca_instance_lock_machine_unverified", self.freeze()["blocker_codes"])
+        path.write_text(json.dumps({k: v for k, v in lock.items() if k not in {"role", "machineIdentity"}}))
+        self.assertIsNone(runtime_observation(self.profile)["role"])
+        self.assertTrue(self.freeze()["preflight_complete"])
+        path.write_text("incomplete")
+        self.assertEqual(runtime_observation(self.profile)["lock_state"], "unverified")
+        self.assertFalse(self.freeze()["preflight_complete"])
+
     def test_shared_store_requiring_migration_blocks_before_native_start(self):
         from local_agent_manager.orca_codex_schema import SCHEMA_METADATA, ATTACHED_STATE_SCHEMA
         existing = SCHEMA_METADATA["state_5.sqlite"]

@@ -157,7 +157,8 @@ Agent 在本机调用远程模型 API 时，按本机前端与原生存储清理
 可用 `remote records` 经已信任的 SSH 主机盘点，由执行机上的管理器生成和执行精确计划。
 Cindy 可关联 SSH、同账号设备和直接共享 provider 的单条任务，并核验同账号 Pi 的控制端备份。
 当 A 的 Cindy 调用 B 的 provider，可在 B 离线时只清 A 的任务与消息，也可在 A 离线时只清 B 上能独立确认归属的原生历史及任务索引。共享授权保留。双端清理继续先核验 B 的完成回执，再清 A。[Cindy 单端清理命令](docs/operation-cli.md#cindy-单端清理)
-同一来宾的多条任务可按控制端绑定和各自的原生工作目录区分。配对的 Orca runtime 可按结构化会话 ID 清执行端 journal、相应 Codex 记录或独占的 Claude 转录，以及控制端对应的恢复标签和 journal 副本。共用的 Claude 转录会完整保留。
+同一来宾的多条任务可按控制端绑定和各自的原生工作目录区分。
+Orca 桌面端和 `orca serve` 都可提供远程 runtime。只清控制端时，`--orca-controller-only` 按配对环境、工作区和会话 ID 清理本机副本，执行端可以离线。双端清理会先核验执行端的 journal、已绑定的 Codex 记录或独占 Claude 转录，再清控制端。共享的 Claude 转录会完整保留。[Orca 配对清理命令](docs/operation-cli.md#orca-配对执行机的结构化会话)
 T3 按环境 ID、Paseo 按 server ID 定位记录。`remote plan --frontend-only` 调用该实例的产品删除接口，`--provider-only` 可单独清理已绑定的 Codex、Claude 或 Pi 原生历史。T3 peer 委派和 Paseo 跨服务器父任务在各自所在机器上处理。[T3 与 Paseo 单端操作](docs/operation-cli.md#按-t3-thread-或-paseo-agent-只清原生历史)
 云服务历史仍遵循适配器的 `remote_delete=false` 能力边界。
 见[远程记录命令与完成范围](docs/operation-cli.md#remote-provider-records)。逐项修改命令

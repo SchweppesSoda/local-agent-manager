@@ -111,10 +111,16 @@ class OrcaAdapter:
 
         for record in records:
             store = None
+            builtin = record.provider in ("codex", "claude")
+            engine = record.provider if builtin else "unsupported:" + record.provider
             complete = not record.unsupported_recovery
-            if record.unsupported_recovery:
+            if record.unsupported_recovery and builtin:
                 failure("record_recovery_metadata_not_covered")
-            if record.provider != "codex":
+            if not builtin:
+                # Registered transports own their ID spaces. Even a slug such as
+                # "codex-cli" or "pi" can carry an unrelated opaque handle.
+                complete = False
+            elif record.provider != "codex":
                 complete = False
                 candidate = None
                 if record.host == "local" and record.wsl_distro is None:
@@ -123,6 +129,9 @@ class OrcaAdapter:
                     except ValueError:
                         pass
                 failure("provider_native_catalog_not_supported", store=candidate)
+            elif record.launched_home is not None and record.launched_home != record.home_locator:
+                # A single native RecordKey cannot represent both sides of an account transition.
+                complete = False
             else:
                 candidate_store = None
                 try:
@@ -148,10 +157,13 @@ class OrcaAdapter:
             for index, handle in enumerate(record.handles):
                 kind = ReferenceKind.CURRENT if index == len(record.handles) - 1 else ReferenceKind.HISTORY
                 locator = f"agent_session_records/{record.session_id}/providerHandleChain/{handle.link_id}"
-                binding = json.dumps(("orca", canonical_path(journal), record.session_id, handle.link_id,
-                                      kind.value, handle.provider, handle.native_id, handle.leaf_uuid), separators=(",", ":"))
+                identity = ("orca", canonical_path(journal), record.session_id, handle.link_id,
+                            kind.value, handle.provider, handle.native_id, handle.leaf_uuid)
+                if not builtin:
+                    identity += (handle.transport,)
+                binding = json.dumps(identity, separators=(",", ":"))
                 references.append(ClientReference(
-                    "orca", journal, record.session_id, handle.native_id, handle.provider, handle.provider, binding,
+                    "orca", journal, record.session_id, handle.native_id, handle.provider, engine, binding,
                     native_record=RecordKey(store, handle.native_id) if store is not None else None,
                     kind=kind, lifecycle=ReferenceLifecycle.HISTORICAL if kind is ReferenceKind.HISTORY else ReferenceLifecycle.UNKNOWN,
                     source_locator=locator, evidence_complete=complete,

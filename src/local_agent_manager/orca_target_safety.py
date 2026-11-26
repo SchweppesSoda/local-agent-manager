@@ -292,7 +292,7 @@ def _windows_process_snapshot() -> tuple[dict[str, Any], ...]:
 
 
 def inspect_orca_target_processes(leases: Iterable[OrcaLease], *,
-                                  records: Iterable[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                                  records: Iterable[Mapping[str, Any]] | None = None, lock_pid: int | None = None) -> dict[str, Any]:
     """Reject known main processes, exact lease owners and known descendants.
 
     A released lease is not an acknowledgement. PID absence is one observation,
@@ -311,8 +311,12 @@ def inspect_orca_target_processes(leases: Iterable[OrcaLease], *,
                     or not item["name"] or item["process_id"] in by_pid):
                 raise ValueError("orca_process_probe_invalid")
             by_pid[item["process_id"]] = item
-        blocked.update(pid for pid, item in by_pid.items() if item["name"].casefold() == "orca.exe")
+        blocked.update(pid for pid, item in by_pid.items() if item["name"].casefold() in {"orca.exe", "orcad.exe", "orca-daemon.exe"})
         owner_ids = {lease.owner_pid for lease in leases if lease.owner_pid is not None}
+        if lock_pid is not None:
+            owner_ids.add(lock_pid)
+            if lock_pid in by_pid:
+                blocked.add(lock_pid)
         seeds = blocked | owner_ids
         for lease in leases:
             if (lease.claim_status != "released" or lease.unreconciled or lease.runtime_kind != "native"
@@ -523,7 +527,13 @@ def freeze_orca_target(adapter: Any, home: Path, record_id: str, *,
         related = tuple(row for row in rows if row.provider == "codex" and row.host == "local" and
                         row.wsl_distro is None and canonical_path(row.home_locator) == canonical_path(home))
         frozen["leases"] = [{"session_id": row.session_id, **row.lease.to_dict()} for row in related]
-        runtime = inspect_orca_target_processes((row.lease for row in related), records=process_records)
+        from .orca_runtime_guard import check_lock_host, instance_lock
+        lock = instance_lock(root)
+        if lock:
+            check_lock_host(root, lock[1])
+            frozen["instance_lock"] = lock[0]
+        runtime = inspect_orca_target_processes((row.lease for row in related), records=process_records,
+                                                lock_pid=lock[1]["pid"] if lock else None)
         frozen["sqlite_schemas"] = {}
         for name in _DATABASES:
             if (home / name).exists():

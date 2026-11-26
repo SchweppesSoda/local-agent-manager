@@ -11,7 +11,7 @@ from urllib.parse import quote
 from . import frozen_files, frozen_sqlite, orca_frontend as frontend, orca_journal_cleanup as journal
 from . import remote_records as remote
 from .operation_store import strict_json_load
-from .orca_metadata import parse_orca_record
+from .orca_metadata import canonical_execution_host, parse_orca_record
 from .sqlite_utils import connect_readonly
 
 
@@ -81,6 +81,21 @@ def owner_scope(doc, root, sid):
     return scope
 
 
+def _environments(root):
+    _, raw = frozen_files.read_file(root, "orca-environments.json", content=True, limit=1024*1024)
+    store = journal.decode(raw)
+    if not isinstance(store, dict) or type(store.get("version")) is not int or store["version"] != 1 or not isinstance(store.get("environments"), list):
+        raise ValueError("orca_pairing_store_invalid")
+    result = {}
+    for env in store["environments"]:
+        identifier = env["id"]
+        if not journal.text(identifier) or identifier in result or not isinstance(env.get("endpoints"), list):
+            raise ValueError("orca_pairing_environment_invalid")
+        keys = {_key(endpoint["publicKeyB64"]) for endpoint in env["endpoints"]}
+        result[identifier] = (keys, env.get("source"))
+    return result
+
+
 def controller_route(root, authority):
     try:
         _, local = frozen_files.read_file(root, "orca-e2ee-keypair.json", content=True, limit=8192)
@@ -89,24 +104,60 @@ def controller_route(root, authority):
     else:
         if _key(journal.decode(local)["publicKeyB64"]) == authority:
             raise ValueError("orca_controller_and_executor_key_not_distinct")
-    _, raw = frozen_files.read_file(root, "orca-environments.json", content=True, limit=1024*1024)
-    store = journal.decode(raw)
-    if type(store.get("version")) is not int or store["version"] != 1 or not isinstance(store.get("environments"), list):
-        raise ValueError("orca_pairing_store_invalid")
-    hosts, seen_ids = [], set()
-    for env in store["environments"]:
-        identifier = env["id"]
-        if not isinstance(identifier, str) or not identifier or identifier in seen_ids:
-            raise ValueError("orca_pairing_environment_invalid")
-        seen_ids.add(identifier)
-        keys = {_key(endpoint["publicKeyB64"]) for endpoint in env["endpoints"]}
+    hosts = []
+    for identifier, (keys, source) in _environments(root).items():
         if authority in keys:
-            if keys != {authority} or env.get("source") == "ephemeral-vm" or identifier == "unresolved-owner":
+            if keys != {authority} or source == "ephemeral-vm" or identifier == "unresolved-owner":
                 raise ValueError("orca_pairing_environment_ambiguous")
             hosts.append("runtime:" + quote(identifier, safe="-_.!~*'()"))
     if len(hosts) != 1:
         raise ValueError("orca_paired_host_unverified")
     return hosts[0]
+
+
+def controller_only(root, sid, selection):
+    """Bind a controller's own copies without requesting or authorizing anything on its peer."""
+    if not isinstance(selection, (list, tuple)) or len(selection) != 2 or not all(journal.text(v) for v in selection):
+        raise ValueError("orca_controller_environment_and_workspace_required")
+    environment, workspace = selection
+    profile_id = remote.directory_identity(root)
+    keys, _ = _environments(root).get(environment, (set(), None))
+    if len(keys) != 1:
+        raise ValueError("orca_controller_environment_and_workspace_required")
+    authority, = keys
+    host = controller_route(root, authority)
+    if host != "runtime:" + quote(environment, safe="-_.!~*'()"):
+        raise ValueError("orca_paired_host_unverified")
+    pair = {"controller_only": True, "environment": environment, "root": str(root),
+            "profile_id": profile_id, "authority": authority, "host": host, "workspace": workspace,
+            "sid": sid, "provider": None, "provider_home": None, "native_ids": [], "deleted_native_ids": []}
+
+    def observe(raw):
+        record = parse_orca_record(sid, raw)
+        if canonical_execution_host(record.host) != host:
+            return
+        identity = {"provider": record.provider, "provider_home": record.launched_home or record.home_locator,
+                    "native_ids": sorted({h.native_id for h in record.handles}), "handle_chain_sha256": handle_chain(sid, raw)}
+        if record.workspace_id != workspace or pair["provider"] and any(pair[k] != v for k, v in identity.items()):
+            raise ValueError("orca_remote_journal_owner_mismatch")
+        pair.update(identity)
+
+    relative = journal.writer_name(root)
+    if frontend._exists(root, relative):
+        with closing(connect_readonly(frozen_sqlite.path_for(root, relative))) as db:
+            db.execute("BEGIN")
+            journal.qualify(db)
+            for raw, in db.execute("SELECT record_json FROM agent_session_records WHERE session_id=?", (sid,)):
+                observe(journal.decode(raw))
+    for relative, family in frontend.sources(root)[0]:
+        if family == "legacy_records":
+            _, raw = frozen_files.read_file(root, relative, content=True)
+            value = journal.decode(raw)
+            for name in ("records", "unusableRecords"):
+                if sid in value.get(name, {}):
+                    item = value[name][sid]
+                    observe(item if name == "records" else item["raw"])
+    return pair
 
 
 def from_plan(path, root, sid):
@@ -134,6 +185,10 @@ def check_pairing(pair):
 
 def verify(pair, *, planning=False):
     check_pairing(pair)
+    if pair.get("controller_only") is True:
+        if "request" in pair or pair["deleted_native_ids"] != []:
+            raise ValueError("orca_controller_only_scope_invalid")
+        return
     request = pair["request"]
     if request["verb"] != "verify" or request["client"] != "orca":
         raise ValueError("orca_owner_request_invalid")
@@ -156,13 +211,18 @@ def controller_metadata(root, pair, sources):
     """An executor's local journal and an unrelated same-ID local chat may coexist."""
     selected = pair["sid"]
     copies, tabs = [], {}
+    foreign_replacement = False
     def observe(sid, raw):
+        nonlocal foreign_replacement
         record = parse_orca_record(sid, raw)
-        owned = record.host == pair["host"]
+        owned = canonical_execution_host(record.host) == pair["host"]
         ids = {h.native_id for h in record.handles}
         if sid != selected:
+            if owned:
+                journal.guard_fork_source(raw, {selected}, record.host)
+            elif raw.get("conversationCommand"):
+                foreign_replacement |= journal.record_references(raw, {selected}) != raw
             if owned and record.provider == pair.get("provider", "codex"):
-                journal.guard_fork_source(raw, {selected}, pair["host"])
                 deleted = set(pair.get("deleted_native_ids", pair["native_ids"]))
                 if record.provider == "claude":
                     from .orca_claude import references_native
@@ -207,7 +267,7 @@ def controller_metadata(root, pair, sources):
             for row in value.get("sessionTabs", ()):
                 if row["sessionId"] == selected:
                     tabs[row["tabId"]] = [selected]
-    if True in copies and False in copies:
+    if True in copies and (False in copies or foreign_replacement):
         raise ValueError("orca_controller_journal_namespace_conflict")
     if True not in copies:
         if not copies and frontend._legacy_journals(root, [{"session_id": selected, "workspace_id": pair["workspace"]}]):
@@ -221,10 +281,19 @@ def frozen(document):
     from .orca_cleanup import frontend_evidence
     found = [v for v in frontend_evidence(document).values() if "remote_owner" in v]
     if not found:
+        if "orca_controller_only" in document.get("scope", {}) and document.get("goal_status") == "ready":
+            raise ValueError("orca_controller_only_evidence_required")
         return None
     e, = found
     action, = document["actions"]
     pair, scope = e["remote_owner"], document["scope"]
+    if pair.get("controller_only"):
+        if (pair["controller_only"] is not True or "request" in pair or pair.get("deleted_native_ids") != []
+                or scope.get("orca_controller_only") != [pair["environment"], pair["workspace"]]
+                or pair["host"] != "runtime:" + quote(pair["environment"], safe="-_.!~*'()")):
+            raise ValueError("orca_controller_only_scope_invalid")
+    elif "orca_controller_only" in scope:
+        raise ValueError("orca_controller_only_scope_invalid")
     if (scope["client"] != "orca" or scope["record_ids"] != [pair["sid"]] or scope["engines"] or scope["projects"]
             or scope["all_projects"] or e["session_ids"] != [pair["sid"]] or e["root"] != pair["root"]
             or action["target"]["thread_id"] != pair["sid"] or document.get("target_safety_evidence")):
@@ -260,7 +329,10 @@ def context_for(coordinator, pair, approved):
     storage = StorageLocation(storage_id_for_path(root), "Orca paired session", root, scan_status=ScanStatus.OK)
     actions = ()
     if changed:
-        impact = ActionImpact(owner_client="orca", owner_process_root=str(root), external_engine=pair.get("provider", "codex"),
+        engine = pair.get("provider", "codex")
+        if engine not in (None, "codex", "claude"):
+            engine = "unsupported:" + engine
+        impact = ActionImpact(owner_client="orca", owner_process_root=str(root), external_engine=engine or "orca",
             external_storage_root=str(root), resource_path=str(root), affected_thread_ids=(sid,),
             external_action_payload={"frontend_session_id": sid, "orca_frontend_evidence": closure, "requires_action_ids": []},
             frontend_references_preserved=False)

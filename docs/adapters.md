@@ -453,7 +453,8 @@ manual、GUI 和直接服务入口使用相同 gate，阻止绕过已有 journal
 | Cindy 0.1.146 | `remote_host_id` 标出 SSH alias。`agent_device_id` 标出同账号设备或 `share:…`。执行机用控制设备身份和任务 ID 派生影子工作目录，共享会话另带分享和成员身份。 | 单一 SSH 绑定支持 Codex、Claude。设备和直接分享支持具有匹配原生工作目录的 Codex、Claude、Pi。直接来宾多任务可在控制端任务、影子工作目录和原生历史逐一吻合时，精确移除选中的一对索引项。同账号 Pi 同时核对控制端账号目录、任务、来源设备和备份正文摘要。迁移、分叉、中转及无法区分的绑定保留供核对。[任务 ID 派生](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/sessionIdentity.ts) · [来宾索引](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [分享身份](https://github.com/makecindy/cindy/blob/v0.1.146/packages/device-link/src/providerSharePeer.ts) · [控制端原生备份](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/controller/nativeHistoryBackup.ts) |
 | T3 Code Nightly 0.1.13-nightly.20261125.5258 | `environment-id` 标识环境。thread、provider instance 和原生恢复句柄从该环境的数据库读取，同 ID 的 v1/v2 投影归入一条清单记录。 | 服务在线时可软删 thread。在具备绑定和运行时的 Windows 执行端，可单独清理独占的原生会话，或联合清理 thread 与已绑定历史。peer 委派及未解决的跨线程、工作流和反馈引用会阻挡完整删除。[远程架构](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/docs/internals/05_remote.md) · [远程委派](https://github.com/pingdotgg/t3code/blob/bf961f8121c6336915ecf7b3f97ce6e68ab38fd7/apps/server/src/peer/RemoteDelegation.ts) |
 | Paseo 0.17.4 | `server-id` 标识 daemon。agent 注册文件保存 provider 的恢复句柄，`paseo.parent-server-id` 定位父 agent 所在服务器。 | 服务在线时可删除 agent 注册与时间线。在具备绑定和运行时的 Windows 执行端，可单独清理独占的原生会话，或联合清理注册记录、原生历史和计划列出的桌面副本。[daemon 存储](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/agent/agent-storage.ts) · [删除请求](https://github.com/getpaseo/paseo/blob/2b3559b107243306986176b80beb0e779f9fe53e/packages/server/src/server/session.ts) |
-| Orca 1.4.277 | 结构化会话由执行机的 journal 持有。控制端的 `runtime:<environmentId>` 分区通过配对端点公钥定位该 profile。两端有 journal 时还须匹配工作区、账号 home 和完整句柄链。 | 已验证的 Windows Codex 组合可清执行端原生记录、journal 和恢复副本。Claude 结构化会话可清已证明独占的转录，共享或分叉的转录按原样保留。执行端完成后，控制端可清对应结构化标签、布局、已识别 profile 恢复副本及归属吻合的 journal。旧 SSH 终端、WSL、未配对主机及其它 provider 只报告可见元数据。[执行主机](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/execution-host/execution-host.ts) · [配对环境](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-catalog/runtime-environments.ts) · [执行端公钥](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-store/runtime-e2ee-keypair-file.ts) · [结构化启动](https://github.com/stablyai/orca/blob/v1.4.277/src/main/runtime/agent-session/launch/structured-agent-launch-composition.ts) |
+| Orca 1.4.277 | 桌面端或 `orca serve` 都可以提供完整的 Remote Orca Server。执行端持有项目、账号、journal 和结构化会话。控制端用配对公钥定位 `runtime:<environmentId>` 的本地视图。SSH 工作树的 Agent 与 git 在 SSH 主机运行，控制端继续持有 Orca 会话界面。 | 可以独立清理一个配对环境的本机副本。双端计划核对执行端完成回执，再清理控制端。Windows 上已验证的 Codex、Claude 会话支持相应的原生清理。SSH、WSL 和注册的其他 provider 按其实际主机及句柄盘点。[运行模式](https://github.com/stablyai/orca/blob/v1.4.277/docs/site/content/docs/ways-to-run.mdx) · [执行主机](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/execution-host/execution-host.ts) · [配对环境](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/remote-runtime/host-catalog/runtime-environments.ts) |
+| Herdr 0.9.5 | 客户端可同时查看多台 SSH 主机。每个后台 server 持有自己的终端和布局，窗格用会话 ID 或路径记录如何恢复 Agent。 | 在持有该会话的机器上盘点 Herdr profile。Windows 原生清理还需用 `--herdr-bindings` 将所选窗格绑定到实际 provider 存储。断开 SSH 后后台终端仍可运行。[多机运行方式](https://github.com/herdrdev/herdr/blob/v0.9.5/README.md) · [服务端会话视图](https://github.com/herdrdev/herdr/blob/v0.9.5/src/app/api/session.rs) · [Agent 恢复引用](https://github.com/herdrdev/herdr/blob/v0.9.5/src/agent_resume.rs) |
 
 SSH worker 使用执行端权威 checkout 的锁、计划和收据。远程计划绑定 SSH alias、物理存储身份、
 产品实例、原生目录和批准摘要。源自 Windows 绑定的完整 writer 仍要求执行端具备相应运行时。
@@ -577,24 +578,25 @@ SID 残留复核，后续另一个合法会话删除不改变原有完成结论�
 
 ### Orca：已接入只读清单与保护
 
+`remote records --client orca` 在 `runtime` 中返回实例锁记载的角色和版本，`desktop` 和 `orcad` 都可持有该 profile。旧锁缺少角色时返回空值。每条会话另列 `execution_route`、`workspace_id`、provider 和传输方式。远端用户配对的是整套 Orca runtime。Orca 源码中的 environment provider 负责配置计算环境，结构化 Agent provider 则负责启动 Agent 及恢复会话。[实例锁](https://github.com/stablyai/orca/blob/v1.4.277/src/main/orcad/instance-lock/orcad-instance-lock-record.ts) · [环境 provider](https://github.com/stablyai/orca/blob/v1.4.277/src/main/environment-providers/environment-provider-driver.ts) · [ACP 启动注册表](https://github.com/stablyai/orca/blob/v1.4.277/src/main/acp/launch/acp-launch-registry.ts)
+
+Orca 自带的 `agentSession.delete` 要求 owner 权限，会处理同一 chat 的整条 `/clear` 链，记录永久删除标记，并保留 provider 的原生转录。群组、管理 Agent 的 Home 和仍有调度职责的会话受上游保护。管理器的控制端单独清理只核验指定副本，双端原生清理的完成范围则由已冻结的实际文件和回执决定。[产品删除实现](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/chat-deletion/orca-chat-delete.ts) · [journal 删除标记](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/agent-session-journal/journal-deleted-chats.ts)
+
 `OrcaAdapter` 是独立的类型化 metadata adapter，通过 `records --client orca`
 使用公共清单。v1.4.277 优先读取 domain 库（SQLite `user_version=2`），仅在该库及其侧文件均缺失时读取 `agent-session-journal.db`（v4）。两者均须使用 record `schemaVersion=2`。盘点只在同一读事务核对并读取 `agent_session_records`、`agent_session_tabs` 和 `agent_session_store_meta` 的元数据。[当前 record 契约](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/agent-session/lifecycle/agent-session-record.ts)
 
 每个合法 record 的 handle chain 全部保留，最后一项为 current，其余为 history；
 record 不依赖当前 tab 是否存在。`session_tabs_recorded` 缺失时显式报告覆盖未知，
 已记录的空 tabs 不清除 record 引用，也不证明进程已停。
-Orca 的 fork/history 是 frontend 元数据，不变成原生 parent 边；正常 Codex 子记录
-仍按原生父链证据分类。依据：[handle chain](https://github.com/stablyai/orca/blob/efbf651c7bb2eec778daf1844f8228e70809ec9f/src/shared/agent-session-provider-handle.ts)、
-[tab 恢复状态](https://github.com/stablyai/orca/blob/efbf651c7bb2eec778daf1844f8228e70809ec9f/src/main/runtime/agent-session-record-rows.ts)。
+Orca 记录的 fork/history 描述前端恢复关系。管理器另外核对 Codex 的原生父链。Codex 和 Claude 的持久化句柄分别记录 thread ID 和 session ID／leaf UUID。注册的 ACP 等适配器用 `transport`、`agent` 和 `nativeId` 标识会话。清单保留它们的命名空间，省略不透明的恢复游标。OpenCode 的 managed profile ID 或 unmanaged 标记只描述账号类型，定位原生文件还需要该执行端的存储证据。[句柄编码](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/agent-session/lifecycle/provider-handles/agent-session-provider-handle-encoding.ts) · [账号定位](https://github.com/stablyai/orca/blob/v1.4.277/src/shared/agent-session/lifecycle/accounts/agent-session-account-home.ts) · [标签恢复](https://github.com/stablyai/orca/blob/v1.4.277/src/main/runtime/agent-session/records/agent-session-record-rows.ts)
 
-发现限于默认、`ORCA_USER_DATA_PATH`、显式 `--orca-root`，以及已知 native home 的
-精确 `codex-accounts/<id>/home` 布局和可观察 marker。账号归属还要求普通 marker 内容
+显式 `--orca-root` 选择指定的 profile。自动发现分别检查桌面端的默认目录或 `ORCA_USER_DATA_PATH`，以及独立 orcad 的 `ORCA_USER_DATA`、`$XDG_DATA_HOME/Orca` 或 `~/.orca`。两端可指向同一目录。CLI 启动 `orca serve` 时会把选定的 userData 传给 orcad。已知 native home 还可通过
+精确的 `codex-accounts/<id>/home` 布局及 marker 反查 profile。账号归属还要求普通 marker 内容
 与 ID 一致、canonical containment、普通 home/sessions 目录且不落入 system home。
 runtime home 必须由已知 profile 中本机 `accountHome` 明确关联，目录名称不足以证明。
 host 必须为 `local`、WSL distro 必须为空，foreign-OS/相对/远端 locator 不交给本机
 catalog。未知或失败引用保留 opaque locator 与来源错误，不补默认 home。
-依据：[默认路径](https://github.com/stablyai/orca/blob/efbf651c7bb2eec778daf1844f8228e70809ec9f/src/main/codex/codex-home-paths.ts)、
-[账号归属](https://github.com/stablyai/orca/blob/efbf651c7bb2eec778daf1844f8228e70809ec9f/src/main/codex-accounts/host-codex-managed-home-ownership.ts)。
+[独立 daemon 路径](https://github.com/stablyai/orca/blob/v1.4.277/src/main/orcad/host-runtime/orcad-app-paths.ts) · [serve 启动参数](https://github.com/stablyai/orca/blob/v1.4.277/src/cli/runtime/serve/startup/serve-orcad-launch.ts) · [账号归属](https://github.com/stablyai/orca/blob/v1.4.277/src/main/codex-accounts/managed-homes/host-codex-managed-home-ownership.ts)
 
 多个已证明 Codex homes 分别盘点并保留 store-qualified identity，多个 profile 共享
 catalog pass。Orca 清单不读取 Codex Desktop 私有 sqlite/global-state；不同逻辑 store
@@ -683,16 +685,13 @@ voice history 和全局日志不属于单条记录清理范围。支持依据是
 
 ### Orca：精确原生删除的限定组合
 
-原生删除组合限 Windows、本机 journal4/record2、明确 managed account home、
-显式选择的 Codex 原生记录及其必须后代。未被完整前端操作覆盖的 current/history/restore
-引用或 bridge 仍阻挡。runtime home 与 Claude/Pi 缺少原生写入资格。配对执行机上的管理器可按上述限定组合处理其本机记录，再由控制端清理对应的前端副本。[配对执行机操作](operation-cli.md#orca-配对执行机的结构化会话)
+Codex 原生删除要求 Windows、本机 domain v2 或 journal v4、record v2、已核实的 managed account home，以及显式选中的原生记录及其必须后代。保存的启动账号与创立账号发生变化时，清单列出两处 home，管理器保留两边的历史。其他未覆盖的恢复引用也会阻挡本次删除。结构化 Claude 使用独立的转录及游标检查。[Codex 启动时的账号选择](https://github.com/stablyai/orca/blob/v1.4.277/src/main/codex/structured/launch/codex-structured-launch-resolution.ts) · [配对执行机操作](operation-cli.md#orca-配对执行机的结构化会话)
 调用 `delete plan --client orca --record-id ID --engine codex` 时，协调器逐目标冻结并核查
 资格；品牌、目录名和 marker 不独立授予写权限。
 
 选择普通本机 structured-chat 的 frontend session ID（可加 `orca:` 前缀），并显式
 指定 `--codex-bin` 后，可生成包含原生链及 `delete_orca_frontend` 的完整计划。
-适配依据为 Orca 固定源码
-[`efbf651c`](https://github.com/stablyai/orca/tree/efbf651c7bb2eec778daf1844f8228e70809ec9f)。
+截至 2026-11-26，核对的稳定版是 v1.4.277，源码提交为 `1c61fb73`。管理器接受符合已验证接口和存储结构的构建，单次批准绑定实际使用的可执行文件和数据目录。[Orca 发布版](https://github.com/stablyai/orca/releases/tag/v1.4.277)
 完整操作先删除 current/history 对应的原生会话，再清理共享 journal、旧 JSON
 records/tabs、根及各 profile 的 `orca-data.json`、bak/export、profile-state v3
 数据库和已识别 backup、属于所选会话的旧单会话 journal。界面分组、选中项、pane

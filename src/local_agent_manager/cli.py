@@ -538,6 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--cindy-controller-only", action="store_true",
                         help="只清本机 Cindy 控制端的指定远程任务，保留执行机的记录")
     delete.add_argument("--orca-remote-plan", type=Path, help="配对执行机生成的 Orca 会话计划 JSON")
+    delete.add_argument("--orca-controller-only", nargs=2, metavar=("ENVIRONMENT_ID", "WORKSPACE_ID"),
+                        help="只清本机 Orca 对指定配对环境和工作区的会话副本，执行机可离线")
     delete.add_argument("--magpie-bindings", type=Path,
         help="将显式配置及原生会话映射中的 Magpie 列表、缓存、网关历史与回收站纳入冻结计划")
     delete.add_argument(
@@ -1548,7 +1550,7 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
-            if (scope or {}).get("cindy_controller_only"):
+            if (scope or {}).get("cindy_controller_only") or (scope or {}).get("orca_controller_only"):
                 operation_kwargs["scope"] = scope
             if (scope or {}).get("paseo_only"):
                 operation_kwargs["scope"] = scope
@@ -1749,6 +1751,14 @@ def _run_delete_operation(
             scope = _operation_scope(args, require_selection=False)
         else:
             scope = _operation_scope(args, require_selection=True)
+        if args.orca_controller_only:
+            if (verb not in {"plan", "apply"} or args.orca_remote_plan or args.cindy_remote_plan or args.cindy_controller_only
+                    or args.magpie_bindings or args.t3code_bindings or args.paseo_bindings or args.handoff
+                    or args.paseo_only or args.t3code_only or scope.get("client") not in (None, "orca")
+                    or scope.get("engines") or scope.get("projects") or scope.get("all_projects")
+                    or verb == "plan" and (scope.get("client") != "orca" or len(args.orca_root) != 1 or len(scope["record_ids"]) != 1)):
+                raise ValueError("--orca-controller-only requires a separate Orca plan for one profile, environment, workspace and session")
+            scope["orca_controller_only"] = args.orca_controller_only
         if args.cindy_controller_only:
             if (verb not in {"plan", "apply"} or args.cindy_remote_plan or args.magpie_bindings or args.handoff
                     or args.paseo_only or args.t3code_only or args.orca_remote_plan
@@ -2005,7 +2015,8 @@ def main(
             coordinator=coordinator,
         )
 
-    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only or args.t3code_only or args.cindy_controller_only):
+    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only or args.t3code_only
+                                     or args.cindy_controller_only or args.orca_controller_only):
         return _run_delete_operation(
             args,
             supplied_adapters=adapters,

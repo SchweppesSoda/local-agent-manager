@@ -49,20 +49,24 @@ def invocation_policy(binary: Path, digest: str) -> dict:
                                for path in files]}
 
 
-def runtime_host_identity() -> dict:
-    if os.name != "nt":
-        raise ValueError("Orca runtime requires Windows")
+def windows_machine_guid() -> str:
     import winreg
-    from ctypes import wintypes
-    session = wintypes.DWORD()
-    if not ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)):
-        raise ctypes.WinError(ctypes.get_last_error())
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
                        winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
         guid = winreg.QueryValueEx(key, "MachineGuid")[0]
     if not isinstance(guid, str) or not guid:
         raise ValueError("Orca runtime machine identity unavailable")
-    return {"machine_id_sha256": hashlib.sha256(guid.encode()).hexdigest(), "session_id": session.value}
+    return guid
+
+
+def runtime_host_identity() -> dict:
+    if os.name != "nt":
+        raise ValueError("Orca runtime requires Windows")
+    from ctypes import wintypes
+    session = wintypes.DWORD()
+    if not ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return {"machine_id_sha256": hashlib.sha256(windows_machine_guid().encode()).hexdigest(), "session_id": session.value}
 
 
 def runtime_instance_stopped(value) -> bool:

@@ -102,9 +102,12 @@ def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=()
         if errors:
             raise ValueError("orca_journal_inventory_incomplete")
         return [{"record_id": r.session_id, "engine": r.provider, "execution_host": r.host, "wsl_distro": r.wsl_distro,
+                 "execution_route": r.execution_route, "workspace_id": r.workspace_id,
+                 "provider_transport": r.handles[-1].transport if r.handles else None,
                  "provider_home": r.home_locator, "native_ids": [h.native_id for h in r.handles],
-                 **({"launched_home": r.launched_home, "leaf_uuids": [h.leaf_uuid for h in r.handles]}
-                    if r.provider == "claude" else {})} for r in records]
+                 **({"account_locator": r.account_locator} if r.account_locator else {}),
+                 **({"launched_home": r.launched_home} if r.launched_home or r.provider == "claude" else {}),
+                 **({"leaf_uuids": [h.leaf_uuid for h in r.handles]} if r.provider == "claude" else {})} for r in records]
     if client == "cindy":
         from .cindy_references import build_cindy_reference_catalog
         catalog = build_cindy_reference_catalog(root)
@@ -301,7 +304,8 @@ def _validate(q, *, executor_only=False):
         required.add("clients_closed")
         if "controller_approval" in q:
             required.add("controller_approval")
-    local = (q.get("destination") == LOCAL_OWNER and q.get("client") in {"t3code", "paseo", "native", "pi", "claude"}
+    local = (q.get("destination") == LOCAL_OWNER and (q.get("client") in {"t3code", "paseo", "native", "pi", "claude"}
+             or q.get("client") == "orca" and verb == "records")
              and not {"cindy_hosted", "controller_approval"}.intersection(q))
     if (set(q) != required or q["protocol"] != PROTOCOL or verb not in VERBS or q["client"] not in CLIENTS
             or not isinstance(q["destination"], str) or not (local or HOST.fullmatch(q["destination"]))
@@ -408,6 +412,9 @@ def dispatch(q, *, executor_only=False, provider_source=None):
         records = _records(client, root, agent_dir=agent_dir)
         if owner != _owner(client, root, q.get("pi_agent_dir"), cindy_ssh_layout=cindy_ssh_layout):
             raise ValueError("remote_owner_changed")
+        if client == "orca":
+            from .orca_runtime_guard import runtime_observation
+            common["runtime"] = runtime_observation(root)
         return 0, {**common, "goal_status": "complete", "records": records}
     if q["owner"] != owner["store_id"]:
         raise ValueError("remote_owner_changed")
@@ -426,6 +433,14 @@ def dispatch(q, *, executor_only=False, provider_source=None):
             from .daemon_records import require_native_route
             for record in matches:
                 require_native_route(record)
+        if client == "orca":
+            record, = matches
+            if record["execution_route"] != "local" or record["wsl_distro"] is not None:
+                raise ValueError("orca_execution_host_session_required")
+            if record["engine"] not in {"codex", "claude"}:
+                raise ValueError("orca_provider_native_binding_unverified")
+            if record["engine"] == "codex" and record.get("launched_home", record["provider_home"]) != record["provider_home"]:
+                raise ValueError("orca_codex_account_transition_unverified")
         args = _scope(client, root, record_id, frontend_only)
         orca_codex = client == "orca" and matches[0]["engine"] == "codex"
         if (orca_codex or client == "native" and "cindy_hosted" in q) and not q["codex_bin"]:
@@ -682,7 +697,7 @@ def add_arguments(parser):
         sub.add_argument("--progress", action="store_true", help="在标准错误输出请求阶段及结果计数")
         destination = sub.add_mutually_exclusive_group(required=True)
         destination.add_argument("--ssh-host", help="已信任的 OpenSSH 主机别名")
-        destination.add_argument("--local", action="store_true", help="在当前电脑操作 T3、Paseo 或独立原生存储")
+        destination.add_argument("--local", action="store_true", help="在当前电脑操作 T3、Paseo 或独立原生存储，也可盘点 Orca journal")
         destination.add_argument("--cindy-executor-only", action="store_true",
                                  help="直接在本机清理 Cindy 执行端记录，控制端可离线")
         clients = CLIENTS if verb == "records" else tuple(c for c in CLIENTS if c != "cindy")
@@ -776,7 +791,7 @@ def _check_controller_plan(path, request):
         expected = proof["verify_request"]
     else:
         proof = orca_remote.frozen(doc)
-        if not proof:
+        if not proof or "request" not in proof["remote_owner"]:
             raise ValueError("controller_remote_binding_required")
         expected = proof["remote_owner"]["request"]
     if any(expected[k] != request[k] for k in ("client", "destination", "root", "owner", "operation_id", "approval")):

@@ -305,35 +305,27 @@ def _hooks(root, native_ids, known_tabs=(), *, require_empty=False):
 
 
 def _runtime_metadata(root):
-    result = []
-    for relative in ("orca-runtime.json", "orcad.lock"):
-        if not _exists(root, relative):
-            result.append({"path": relative, "absent": True})
-            continue
+    from .orca_runtime_guard import instance_lock, lock_evidence
+    relative = "orca-runtime.json"
+    runtime = {"path": relative, "absent": True}
+    if _exists(root, relative):
         observed, raw = frozen_files.read_file(root, relative, content=True)
         value = mapping(decode(raw))
-        if not journal.integer(value.get("pid"), 1):
+        if (not journal.integer(value.get("pid"), 1)
+                or set(value) - {"runtimeId", "pid", "transports", "transport", "authToken", "startedAt"}
+                or not text(value.get("runtimeId")) or not journal.integer(value.get("startedAt"), 1)
+                or value.get("authToken") is not None and not text(value["authToken"])):
             fail("runtime_metadata_unverified")
-        if relative == "orca-runtime.json":
-            if (set(value) - {"runtimeId", "pid", "transports", "transport", "authToken", "startedAt"}
-                    or not text(value.get("runtimeId")) or not journal.integer(value.get("startedAt"), 1)
-                    or value.get("authToken") is not None and not text(value["authToken"])):
-                fail("runtime_metadata_unverified")
-            transports = value.get("transports", [value.get("transport")])
-            if not isinstance(transports, list) or not transports:
-                fail("runtime_metadata_unverified")
-            for transport in transports:
-                transport = mapping(transport)
-                if (set(transport) != {"kind", "endpoint"} or transport["kind"] not in {"unix", "named-pipe", "websocket"}
-                        or not text(transport["endpoint"])):
-                    fail("runtime_metadata_unverified")
-        elif (set(value) != {"pid", "startedAtMs", "identity", "version", "acquiredAt", "nonce"}
-                or any(not text(value[key]) for key in ("identity", "version", "nonce"))
-                or not text(value["acquiredAt"])
-                or value["startedAtMs"] is not None and not journal.integer(value["startedAtMs"], 1)):
+        transports = value.get("transports", [value.get("transport")])
+        if not isinstance(transports, list) or not transports:
             fail("runtime_metadata_unverified")
-        result.append({**observed, "pid": value["pid"]})
-    return result
+        for transport in transports:
+            transport = mapping(transport)
+            if (set(transport) != {"kind", "endpoint"} or transport["kind"] not in {"unix", "named-pipe", "websocket"}
+                    or not text(transport["endpoint"])):
+                fail("runtime_metadata_unverified")
+        runtime = {**observed, "pid": value["pid"]}
+    return [runtime, lock_evidence(instance_lock(root))]
 
 
 def freeze(root, selected, *, timestamp=None, frozen=None, remote_owner=None, claude_history=None):

@@ -6,6 +6,7 @@ import hashlib
 from urllib.parse import unquote
 
 from .orca_journal_cleanup import decode, encode, fail, operation, record_references, text
+from .orca_metadata import canonical_execution_host
 
 _WORKSPACE_FIELDS = set("""
 activeRepoId activeWorkspaceKey activeWorkspaceExecutionHostId activeWorktreeId activeTabId
@@ -90,7 +91,7 @@ def _layout(value, removed, depth=0):
 
 
 def _tab_owner(tab, namespace):
-    return tab.get("executionHostId", namespace)
+    return canonical_execution_host(tab.get("executionHostId", namespace))
 
 
 def workspace(value, selected, known_tabs, native_ids, *, namespace="local", remote=None):
@@ -111,6 +112,9 @@ def workspace(value, selected, known_tabs, native_ids, *, namespace="local", rem
                 if remote and worktree != remote["workspace"]:
                     fail("remote_tab_workspace_mismatch")
                 if remote and remote.get("provider") == "claude" and tab.get("agentSessionAgent") != "claude":
+                    fail("remote_tab_provider_unverified")
+                if (remote and remote.get("controller_only") and remote["provider"] and "agentSessionAgent" in tab
+                        and tab["agentSessionAgent"] != remote["provider"]):
                     fail("remote_tab_provider_unverified")
                 removed_tabs.add(tab["id"])
                 worktree_tabs.setdefault(worktree, set()).add(tab["id"])
@@ -201,7 +205,8 @@ def _paired_snapshot(snapshots, remote):
             fail("remote_snapshot_replacement_unverified")
         if not selected:
             continue
-        if (worktree != remote["workspace"] or any(t.get("agent") != remote.get("provider", "codex") for t in selected)
+        provider = remote.get("provider", "codex")
+        if (worktree != remote["workspace"] or any(not text(t.get("agent")) or provider and t["agent"] != provider for t in selected)
                 or state.get("agentSessionsUnverifiable")):
             fail("remote_snapshot_binding_unverified")
         removed = {t["id"] for t in selected}
@@ -261,9 +266,11 @@ def ui_state(value, selected, known_tabs=(), native_ids=(), *, remote=None):
         merge(removed_tabs, tabs); merge(removed_groups, groups)
     if "workspaceSessionsByHostId" in value:
         hosts = mapping(value["workspaceSessionsByHostId"])
-        if target_host in hosts:
-            hosts[target_host], tabs, groups = clean_workspace(mapping(hosts[target_host]), target_host)
-            merge(removed_tabs, tabs); merge(removed_groups, groups)
+        for key in hosts:
+            if canonical_execution_host(key) == target_host:
+                hosts[key], tabs, groups = clean_workspace(mapping(hosts[key]), target_host)
+                merge(removed_tabs, tabs)
+                merge(removed_groups, groups)
     retained_panes, remote_tabs, remote_groups = set(), {}, {}
     def observe_retained(state, *, foreign=False):
         for worktree, entries in mapping(mapping(state).get("unifiedTabs", {})).items():

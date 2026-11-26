@@ -121,6 +121,16 @@ def default_orca_root(*, appdata: Path | None = None, environ: Mapping[str, str]
     return base / "orca"
 
 
+def default_orcad_root(*, environ: Mapping[str, str] | None = None) -> Path:
+    """The standalone Node host resolves its data root independently of Electron."""
+    env = os.environ if environ is None else environ
+    if env.get("ORCA_USER_DATA"):
+        return local_orca_path(env["ORCA_USER_DATA"])
+    if env.get("XDG_DATA_HOME"):
+        return local_orca_path(env["XDG_DATA_HOME"]) / "Orca"
+    return Path.home() / ".orca"
+
+
 def reverse_account_profile(home: Path) -> Path | None:
     # The exact known layout plus an observed marker limits reverse discovery.
     # A runtime-home basename alone is never an ownership proof.

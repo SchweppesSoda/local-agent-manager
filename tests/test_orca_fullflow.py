@@ -71,6 +71,7 @@ class OrcaFullflowTests(unittest.TestCase):
         self.assertTrue(_native_absent(self.home, [CURRENT_ID]))
 
     def test_frontend_only_full_apply_and_cold_verify(self):
+        self.use_domain_journal()
         self.native_gone()
         plan = self.plan()
         self.assertEqual(plan.get("goal_status"), "ready", plan)
@@ -145,6 +146,24 @@ class OrcaFullflowTests(unittest.TestCase):
         self.assertEqual(set(frontend[0]["impact"]["external_action_payload"]["requires_action_ids"]), {a["action_id"] for a in native})
         self.assertEqual([path.read_bytes() for path in self.rollouts], before)
         self.assertNotIn("ORCA_PRIVATE_OPTIONS_SENTINEL", json.dumps(result))
+
+    def use_domain_journal(self):
+        legacy = self.root / "agent-session-journal.db"
+        schema = (Path(__file__).parent / "fixtures/orca-domain-v2.sql").read_text(encoding="utf-8")
+        with closing(sqlite3.connect(legacy)) as old, closing(sqlite3.connect(self.root / "agent-session-domain.db")) as db:
+            db.executescript(schema)
+            for table, fields in (("agent_session_records", "?,?"), ("agent_session_tabs", "?,?,?"), ("agent_session_store_meta", "?,?")):
+                db.executemany(f"INSERT INTO {table} VALUES ({fields})", old.execute(f"SELECT * FROM {table}"))
+            db.commit()
+        legacy.unlink()
+
+    def test_codex_domain_v2_journal_freezes_all_native_handles(self):
+        self.use_domain_journal()
+        plan = self.plan()
+        self.assertEqual(plan["goal_status"], "ready", plan["blockers"])
+        self.assertEqual({a["target"]["thread_id"] for a in plan["actions"] if a["kind"] == "delete_conversation"}, {CURRENT_ID, HISTORY_ID})
+        evidence = next(a for a in plan["actions"] if a["kind"] == "delete_orca_frontend")["impact"]["external_action_payload"]["orca_frontend_evidence"]
+        self.assertEqual(evidence["journal"]["relative"], "agent-session-domain.db")
 
     def test_reference_ticket_is_exact_and_never_converts_unselected_or_changed_bindings(self):
         from dataclasses import replace
