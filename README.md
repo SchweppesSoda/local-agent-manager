@@ -156,6 +156,7 @@ healthy/native 记录及其已冻结的 frontend reference closure，以及 Cind
 Agent 在本机调用远程模型 API 时，按本机前端与原生存储清理。Agent 在另一台机器运行时，
 可用 `remote records` 经已信任的 SSH 主机盘点，由执行机上的管理器生成和执行精确计划。
 Cindy 可关联 SSH、同账号设备和直接共享 provider 的单条任务，并核验同账号 Pi 的控制端备份。
+当 A 的 Cindy 调用 B 的 provider，可在 B 离线时只清 A 的任务与消息，也可在 A 离线时只清 B 上能独立确认归属的原生历史及任务索引。共享授权保留。双端清理继续先核验 B 的完成回执，再清 A。[Cindy 单端清理命令](docs/operation-cli.md#cindy-单端清理)
 同一来宾的多条任务可按控制端绑定和各自的原生工作目录区分。配对的 Orca runtime 可按结构化会话 ID 清执行端 journal、相应 Codex 记录或独占的 Claude 转录，以及控制端对应的恢复标签和 journal 副本。共用的 Claude 转录会完整保留。
 T3 和 Paseo 按各自服务器身份核验。云服务历史仍遵循适配器的 `remote_delete=false` 能力边界。
 见[远程记录命令与完成范围](docs/operation-cli.md#remote-provider-records)。逐项修改命令

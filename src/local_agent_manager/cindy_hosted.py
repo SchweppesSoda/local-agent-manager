@@ -17,6 +17,7 @@ from .providers.t3 import strict_json
 
 BACKUP_HEADER_BYTES = 16 * 1024
 BACKUP_BODY_BYTES = 16 * 1024 * 1024
+HOST_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}")
 
 
 def _hash(value):
@@ -96,15 +97,32 @@ def device_id(profile):
     return physical
 
 
-def _peer(profile, controller, sid, native_id, retired_key=None):
+def guest_index(profile):
     try:
         _, raw = frozen_files.read_file(profile, "remote-agent/guest-sessions.json", content=True,
                                         limit=frozen_files.MAX_REWRITE_BYTES)
     except FileNotFoundError:
         raw = b"{}"
     index = strict_json(raw.decode("utf-8"))
+    if not isinstance(index, dict):
+        raise ValueError("cindy_guest_index_invalid")
+    return index
+
+
+def guest_identity(peer):
+    parts = strict_json(peer.rstrip("~"))
+    if (not isinstance(parts, list) or len(parts) != 5 or parts[0] != "provider-share" or parts[2] != "guest"
+            or not isinstance(parts[4], str) or not re.fullmatch(r"[a-f0-9]{64}", parts[4])
+            or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", v)
+                   for v in (parts[1], parts[3]))
+            or json.dumps(parts, separators=(",", ":")).ljust(129, "~") != peer):
+        raise ValueError("cindy_guest_controller_mismatch")
+    return parts[1], parts[4]
+
+
+def _peer(profile, controller, sid, native_id, retired_key=None, *, recorded_host=None):
     candidates = []
-    for key, row in index.items():
+    for key, row in guest_index(profile).items():
         peer = row["controller"]
         relay = row.get("relay")
         scope = peer + ("\0relay:" + relay if relay else "")
@@ -113,10 +131,10 @@ def _peer(profile, controller, sid, native_id, retired_key=None):
         hosts, natives = row.get("hostSessionIds", []), row.get("nativeIds", [])
         if any(not isinstance(v, list) or any(not isinstance(x, str) or not x for x in v) for v in (hosts, natives)):
             raise ValueError("cindy_guest_index_invalid")
-        host_id = host_session_id(scope, sid)
+        host_id = recorded_host or host_session_id(scope, sid)
         forks = row.get("forkWorkspaces", {})
         if (any(possible_reference(v, native_id) for v in forks) or
-                any(host_id in values or host_session_id(controller, sid) in values for values in forks.values())
+                any(host_id in values or sid and host_session_id(controller, sid) in values for values in forks.values())
                 or any(possible_reference(v, native_id) for v in row.get("members", {}))):
             raise ValueError("cindy_hosted_fork_or_relay_reference")
         has_native = any(locator_matches(v, native_id) for v in natives)
@@ -132,13 +150,10 @@ def _peer(profile, controller, sid, native_id, retired_key=None):
                 or set(row) - {"controller", "hostSessionIds", "nativeIds", "attachmentRunIds", "members", "forkWorkspaces",
                                 "relayDevices", "forgetPending", "cleanupEpoch"} or not peer.startswith('["provider-share",')):
             raise ValueError("cindy_guest_session_ownership_ambiguous")
-        parts = strict_json(peer.rstrip("~"))
-        if (not isinstance(parts, list) or len(parts) != 5 or parts[0] != "provider-share"
-                or parts[2] != "guest" or parts[4] != controller
-                or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", part) for part in (parts[1], parts[3]))
-                or json.dumps(parts, separators=(",", ":")).ljust(129, "~") != peer):
+        share_id, guest_device = guest_identity(peer)
+        if guest_device != controller:
             raise ValueError("cindy_guest_controller_mismatch")
-        candidates.append((peer, "share:" + parts[1], row))
+        candidates.append((peer, "share:" + share_id, row))
     if len(candidates) > 1:
         raise ValueError("cindy_guest_session_ownership_ambiguous")
     return candidates[0] if candidates else (controller, None, None)
@@ -249,23 +264,29 @@ def _claude_home(profile, native):
     return homes[0] if homes else (Path.home() / ".claude", None)
 
 
+def matches_shadow(record, shadow):
+    cwds = record.get("cwds", ())
+    return bool(cwds) and all(isinstance(v, str) and is_local_absolute_locator(v)
+                              and Path(v) == Path(os.path.abspath(v)) and Path(v).is_relative_to(shadow) for v in cwds)
+
+
 def observe(request, owner, native_locator, *, record=None, approved=None, retired=None):
     """Only the executor interprets executor paths. Shadows may be gone after close."""
     from .remote_records import directory_identity
-    profile, sid, controller = Path(request["profile"]), request["task_id"], request["controller_device"]
+    profile, sid, controller = Path(request["profile"]), request.get("task_id"), request["controller_device"]
     profile_id = directory_identity(profile)
     device = device_id(profile)
     if device == controller:
         raise ValueError("cindy_execution_device_not_distinct")
-    peer, share, row = _peer(profile, controller, sid, native_locator, (retired or {}).get("guest_key"))
-    host_id = host_session_id(peer, sid)
+    recorded = request.get("host_session_id")
+    if recorded is not None and (sid is not None or not HOST_SESSION_ID.fullmatch(recorded)):
+        raise ValueError("cindy_hosted_session_id_invalid")
+    peer, share, row = _peer(profile, controller, sid, native_locator, (retired or {}).get("guest_key"), recorded_host=recorded)
+    host_id = recorded or host_session_id(peer, sid)
     peer_dir = _hash(peer)[:16]
     shadow = profile / "remote-agent" / "workspaces" / peer_dir / host_id / "fs"
-    if record is not None:
-        cwds = record["cwds"]
-        if not cwds or any(not isinstance(v, str) or not is_local_absolute_locator(v)
-                or Path(v) != Path(os.path.abspath(v)) or not Path(v).is_relative_to(shadow) for v in cwds):
-            raise ValueError("cindy_native_shadow_workspace_mismatch")
+    if record is not None and not matches_shadow(record, shadow):
+        raise ValueError("cindy_native_shadow_workspace_mismatch")
     result = {**request, "profile_id": profile_id, "host_device": device, "execution_host": share or "device:" + device,
               "host_session_id": host_id, "workspace_root": str(shadow)}
     guest_home = profile / "remote-agent" / "guest-homes" / peer_dir
@@ -385,7 +406,11 @@ def controller_account(proof):
 def backup(proof):
     """Bind a single published Pi checkpoint to its controller account, task and device."""
     hosted = proof.get("hosted")
-    if not hosted or not hosted["execution_host"].startswith("device:") or proof["verify_request"]["client"] != "pi":
+    if hosted:
+        host, engine = hosted["execution_host"], proof["verify_request"]["client"]
+    else:
+        host, engine = proof.get("execution_host", ""), proof.get("engine")
+    if not host.startswith("device:") or engine != "pi":
         return None
     profile = Path(proof["profile_root"])
     relative = f"owners/{controller_account(proof)[:20]}/native-history-backups/{_hash(proof['session_id'])}.backup"
@@ -400,7 +425,8 @@ def backup(proof):
     manifest, revision = meta["manifest"], meta["revision"]
     if (type(meta.get("version")) is not int or meta["version"] != 1 or meta.get("sessionId") != proof["session_id"]
             or not isinstance(meta.get("anchor"), str) or not meta["anchor"] or type(meta.get("savedAt")) is not int
-            or not locator_matches(revision.get("nativeId"), proof["native_id"]) or revision.get("fromDevice") != hosted["host_device"]
+            or not isinstance(revision.get("nativeId"), str) or not revision["nativeId"]
+            or not locator_matches(revision["nativeId"], proof["native_id"]) or revision.get("fromDevice") != host.removeprefix("device:")
             or manifest.get("nativeId") != revision.get("nativeId") or manifest.get("kind") != "pi" or "state" in manifest
             or type(manifest.get("bytes")) is not int or not 0 < len(body) == manifest["bytes"] <= BACKUP_BODY_BYTES
             or manifest.get("sha256") != hashlib.sha256(body).hexdigest()):

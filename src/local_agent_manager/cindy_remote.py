@@ -14,6 +14,31 @@ from .operation_store import strict_json_load
 from .record_identity import canonical_path, project_selector_matches
 from .sqlite_utils import connect_readonly
 
+CONTROLLER_ONLY = "cindy_controller_only"
+
+
+def _controller_identity(database, session_id, profile_root):
+    database = Path(database)
+    profile = Path(profile_root) if profile_root is not None else database.parent
+    return {"database": str(database), "database_id": remote._owner("cindy", database)["store_id"],
+            "profile_root": str(profile), "profile_id": remote.directory_identity(profile), "session_id": session_id}
+
+
+def controller_proof(database, session_id, profile_root=None):
+    """Freeze only the controller's own task and locally attributable checkpoint."""
+    proof = _controller_identity(database, session_id, profile_root)
+    with closing(connect_readonly(Path(database))) as db:
+        row = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+        if row is None or not execution_host(row).startswith(("device:", "share:", "ssh:")):
+            raise ValueError("cindy_controller_only_exact_remote_task_required")
+        proof.update(completion_scope=CONTROLLER_ONLY, execution_host=execution_host(row),
+                     engine=backend_for_agent_kind(row["agent_kind"]), native_id=row["sdk_session_id"])
+        guard_row(db, row, proof)
+    backup = cindy_hosted.backup(proof)
+    if backup:
+        proof["backup"] = backup
+    return proof
+
 
 def selected_nonlocal_tasks(rows, scope):
     """Match the same task selectors without resolving an SSH cwd on this computer."""
@@ -53,16 +78,11 @@ def from_remote_plan(path, database, session_id, profile_root=None):
     if owner["client"] == "pi":
         request["pi_agent_dir"] = owner["agent_dir"]
     remote._validate(request)
-    database = Path(database)
-    profile = Path(profile_root) if profile_root is not None else database.parent
-    # Distinguish the process owner (Electron userData) from an external custom DB.
-    profile_id = remote.directory_identity(profile)
-    proof = {"database": str(database), "database_id": remote._owner("cindy", database)["store_id"],
-            "profile_root": str(profile), "profile_id": profile_id,
-            "session_id": session_id, "native_id": plan["native_locator"], "verify_request": request}
+    proof = _controller_identity(database, session_id, profile_root)
+    proof.update(native_id=plan["native_locator"], verify_request=request)
     if "cindy_hosted" in plan:
         hosted = plan["cindy_hosted"]
-        if hosted["controller_device"] != cindy_hosted.device_id(profile) or hosted["task_id"] != session_id:
+        if hosted["controller_device"] != cindy_hosted.device_id(Path(proof["profile_root"])) or hosted["task_id"] != session_id:
             raise ValueError("cindy_hosted_controller_mismatch")
         proof.update(hosted=hosted, native_record_id=plan["record_id"])
         if hosted["execution_host"].startswith("device:") and "account_scope" in hosted:
@@ -125,20 +145,31 @@ def _require_settled_turn(row):
 
 def guard_row(db, row, proof):
     """Checked again in the SQLite write transaction, including newly parked history."""
-    sid, request = row["id"], proof["verify_request"]
-    hosted = proof.get("hosted")
-    host = hosted["execution_host"] if hosted else "ssh:" + request["destination"]
-    if hosted and (sid != hosted["task_id"] or cindy_hosted.device_id(Path(proof["profile_root"])) != hosted["controller_device"]
-            or host != "device:" + hosted["host_device"] and not host.startswith("share:")):
-        raise ValueError("cindy_hosted_controller_mismatch")
+    sid = row["id"]
+    if proof.get("completion_scope") == CONTROLLER_ONLY:
+        host, engine = proof["execution_host"], proof["engine"]
+        if not host.startswith(("device:", "share:", "ssh:")) or "verify_request" in proof or "hosted" in proof:
+            raise ValueError("cindy_controller_only_scope_invalid")
+        if "parent_session_id" in row.keys() and db.execute(
+                "SELECT 1 FROM sessions WHERE parent_session_id=? AND id<>? LIMIT 1", (sid, sid)).fetchone():
+            raise ValueError("cindy_controller_task_has_children")
+    else:
+        request, hosted = proof["verify_request"], proof.get("hosted")
+        host = hosted["execution_host"] if hosted else "ssh:" + request["destination"]
+        engine = {"native": "codex", "claude": "claude", "pi": "pi"}.get(request["client"])
+        if hosted and (sid != hosted["task_id"] or cindy_hosted.device_id(Path(proof["profile_root"])) != hosted["controller_device"]
+                or host != "device:" + hosted["host_device"] and not host.startswith("share:")):
+            raise ValueError("cindy_hosted_controller_mismatch")
+        if not row["sdk_session_id"] or db.execute(
+                "SELECT 1 FROM messages WHERE session_id=? AND role='agent_switch' LIMIT 1", (sid,)).fetchone():
+            raise ValueError("cindy_ssh_binding_unverified")
     database = Path(db.execute("PRAGMA database_list").fetchone()[2])
     _require_settled_turn(row)
     if (sid != proof["session_id"] or remote.directory_identity(Path(proof["profile_root"])) != proof["profile_id"]
             or remote._owner("cindy", database)["store_id"] != proof["database_id"]
             or database != Path(proof["database"]) or execution_host(row) != host
-            or not cindy_hosted.locator_matches(row["sdk_session_id"], proof["native_id"]) or not row["sdk_session_id"]
-            or backend_for_agent_kind(row["agent_kind"]) != {"native": "codex", "claude": "claude", "pi": "pi"}.get(request["client"])
-            or db.execute("SELECT 1 FROM messages WHERE session_id=? AND role='agent_switch' LIMIT 1", (sid,)).fetchone()):
+            or not cindy_hosted.locator_matches(row["sdk_session_id"], proof["native_id"])
+            or backend_for_agent_kind(row["agent_kind"]) != engine):
         raise ValueError("cindy_ssh_binding_unverified")
 
 
@@ -146,16 +177,27 @@ def frozen(document):
     proofs = [e["remote_native"] for a in document.get("actions", ())
               for e in a.get("impact", {}).get("frontend_session_evidence", ()) if e.get("remote_native")]
     if not proofs:
+        if document.get("scope", {}).get("cindy_controller_only") and document.get("goal_status") == "ready":
+            raise ValueError("cindy_controller_only_evidence_required")
         return None
     proof, = proofs
     action, = document["actions"]
     scope = document["scope"]
-    request = proof["verify_request"]
-    remote._validate(request)
+    local = proof.get("completion_scope") == CONTROLLER_ONLY
+    if local != (scope.get("cindy_controller_only") is True):
+        raise ValueError("cindy_controller_only_scope_mismatch")
+    if local:
+        if ("verify_request" in proof or "hosted" in proof or scope.get("paseo_only") or scope.get("t3code_only")
+                or action["impact"]["external_action_payload"].get("completion_scope") != CONTROLLER_ONLY):
+            raise ValueError("cindy_controller_only_scope_invalid")
+    else:
+        request = proof["verify_request"]
+        remote._validate(request)
+        if request["verb"] != "verify" or request["client"] not in {"native", "claude", "pi"}:
+            raise ValueError("cindy_ssh_invalid_native_receipt")
     if (scope["client"] != "cindy" or scope["record_ids"] != [proof["session_id"]] or scope["engines"]
             or scope["projects"] or scope["all_projects"] or action["kind"] != "delete_frontend_session"
             or action["target"]["thread_id"] != proof["session_id"]
-            or request["verb"] != "verify" or request["client"] not in {"native", "claude", "pi"}
             or action["impact"]["owner_client"] != "cindy" or action["impact"]["owner_process_root"] != proof["profile_root"]
             or action["impact"]["frontend_session_database_paths"] != [proof["database"]]):
         raise ValueError("cindy_ssh_exact_frontend_scope_required")
@@ -231,12 +273,15 @@ def context_for(coordinator, proof, *, allow_absent):
             raise ValueError("cindy_ssh_task_missing")
     # Check all DB namespaces of this userData root before handing the owner
     # its native operation. A second current or parked binding can still resume it.
-    guard_references(proof, selected_absent=row is None)
+    local = proof.get("completion_scope") == CONTROLLER_ONLY
+    if not local:
+        guard_references(proof, selected_absent=row is None)
     if "backup" in proof:
         current = cindy_hosted.backup(proof)
         if row is not None and current != proof["backup"] or row is None and not current.get("absent"):
             raise ValueError("cindy_native_history_backup_changed_or_remaining")
-    verify_native(proof, planning=not allow_absent)
+    if not local:
+        verify_native(proof, planning=not allow_absent)
     root = database.parent
     storage = StorageLocation(storage_id_for_path(root), "Cindy remote task database", root, scan_status=ScanStatus.OK)
     base = coordinator.service.prepare_report(ScanReport(), active_adapters=(), platforms=("cindy",))
@@ -245,10 +290,15 @@ def context_for(coordinator, proof, *, allow_absent):
         evidence, = build_cindy_session_delete_evidence([{"database": str(database), "session_id": sid,
             "expected_status": row["status"], "explicitly_selected": True, "remote_native": proof}])
         digest = remote._digest(evidence.to_dict())
+        payload = {"frontend_session_id": sid}
+        if local:
+            payload["completion_scope"] = CONTROLLER_ONLY
+        else:
+            payload["remote_operation_id"] = proof["verify_request"]["operation_id"]
         impact = ActionImpact(frontend_session_database_paths=(str(database),), frontend_session_evidence=(evidence.to_dict(),),
             owner_client="cindy", owner_process_root=str(profile), resource_path=str(database),
             external_engine=backend_for_agent_kind(row["agent_kind"]), external_storage_root=str(root),
-            external_action_payload={"frontend_session_id": sid, "remote_operation_id": proof["verify_request"]["operation_id"]})
+            external_action_payload=payload)
         actions = (CandidateAction("delete_frontend_session:" + digest[:32], ActionKind.DELETE_FRONTEND_SESSION,
             TargetRef(storage.storage_id, sid), RiskLevel.HIGH, True, None, impact, digest,
             requires_explicit_selection=True, resource_kind="frontend_session"),)

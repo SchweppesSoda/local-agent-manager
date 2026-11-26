@@ -459,7 +459,9 @@ SSH worker 使用执行端权威 checkout 的锁、计划和收据。远程计�
 
 Cindy 同账号托管的 Codex 会话以执行端账号目录下该线程的位置索引为准。只有索引中的 rollout、SQLite home 与原生计划一致时，才会将该条索引纳入删除。共享 Codex 使用来宾专属 home。Claude 根据历史原生 ID 查找订阅账号配置目录，Pi 根据执行端 profile 确定 Agent 目录及普通或来宾会话目录。[Codex 线程定位](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-host/codex-thread-locations.ts) · [Claude 历史账号](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/subscription-accounts/store.ts) · [Pi 会话目录](https://github.com/makecindy/cindy/blob/v0.1.146/packages/maker-core/src/agents/pi/index.ts)
 
-Cindy 的来宾索引独立登记宿主任务和原生定位符，恢复权限按整个来宾授权检查。分叉会把新原生 ID 登到源任务并保存祖先工作目录。组内中转另存执行成员，直接委派也有独立所有者。管理器只在直接来宾的全部控制端绑定和原生工作目录能逐条对应时，移除目标的宿主任务 ID 与原生定位符，保留同一授权的其余字段。[执行端登记、恢复与中转](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [控制端分叉](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-orchestration/fork.ts)
+Cindy 的来宾索引独立登记宿主任务和原生定位符，恢复权限按整个来宾授权检查。分叉会把新原生 ID 登到源任务并保存祖先工作目录。组内中转另存执行成员，直接委派也有独立所有者。双端清理要求直接来宾的全部控制端绑定和原生工作目录能逐条对应，再移除目标的宿主任务 ID 与原生定位符，保留同一授权的其余字段。[执行端登记、恢复与中转](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/remote-agent/host/runHost.ts) · [控制端分叉](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/maker-orchestration/fork.ts)
+
+单端计划只核对所选电脑上的记录。控制端按数据库物理身份、完整任务 ID、执行位置和会话行核对本机删除范围。其他任务仍以它为父任务时会阻挡。执行端按设备或直接来宾身份、原生存储与历史中的影子工作目录唯一匹配。来宾索引按宿主任务 ID 和原生定位符分别更新。设备名缓存只提供候选设备 ID。共享成员登记、分享可用性配置和工作文件均在任务删除范围之外。[单端命令](operation-cli.md#cindy-单端清理) · [Cindy 设备缓存](https://github.com/makecindy/cindy/blob/v0.1.146/apps/desktop/src/main/device-link/settings-store.ts)
 
 Orca v1.4.277 的执行端先打开 `agent-session-domain.db`。Claude 计划要求已识别的 domain v2 表、触发器和已释放的本机租约。若旧 journal 并存、所选会话还有退休原件或导入关系、附件托管或连接器待发记录，计划会指出相应证据缺口。两个数据库之间可能还有待导入内容。[执行端数据库选择](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/agent-session-journal/database/journal-host-database.ts) · [domain 表](https://github.com/stablyai/orca/blob/v1.4.277/src/main/native-chat/agent-session-journal/database/journal-domain-schema-001.ts)
 

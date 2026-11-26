@@ -1,7 +1,7 @@
 """Run a bounded record request in the authoritative checkout on the owning host."""
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, nullcontext
 import hashlib
 import io
 import json
@@ -87,7 +87,7 @@ def _owner(client, root, pi_agent_dir=None):
     return identity
 
 
-def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=()):
+def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=(), all_workspaces=False):
     if client == "orca":
         from .orca_metadata import journal_name, read_orca_journal
         journal = frozen_files.checked_path(root, journal_name(root))
@@ -167,7 +167,7 @@ def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=()
     from .cindy_hosted import locator_key
     locators = set(map(locator_key, hosted_locators))
     def need_workspace(identifier, locator):
-        return hosted_id == identifier or locator_key(locator) in locators
+        return all_workspaces or hosted_id == identifier or locator_key(locator) in locators
     if client == "native":
         return [{"record_id": item.thread_id, **({"cwds": [r.cwd for r in item.rollouts], "rollouts": [str(r.path) for r in item.rollouts]}
                  if need_workspace(item.thread_id, item.thread_id) else {})} for item in catalog.records
@@ -188,9 +188,9 @@ def _records(client, root, *, agent_dir=None, hosted_id=None, hosted_locators=()
                 frozen_files._plain(frozen_files.checked_path(root, path.relative_to(root).as_posix()).lstat())
                 values = set()
                 _read_transcript(path, working_dirs=values)
-                if not values:
+                if not values and not all_workspaces:
                     raise ValueError("cindy_claude_workspace_missing")
-                cwds.extend(values)
+                cwds.extend(values or [None])
             record["cwds"] = cwds
         records.append(record)
     return records
@@ -301,16 +301,17 @@ def _physical_scope(doc, owner):
             "record_id": record_id, "native_ids": native_ids}
 
 
-def _validate(q):
+def _validate(q, *, executor_only=False):
     verb = q.get("verb")
     required = {"protocol", "verb", "destination", "client", "root"}
     if "cindy_hosted" in q:
         required.add("cindy_hosted")
         h = q["cindy_hosted"]
+        selector = "host_session_id" if executor_only and isinstance(h, dict) and "host_session_id" in h else "task_id"
         if (verb != "plan" or q.get("client") not in {"pi", "claude", "native"}
-                or not isinstance(h, dict) or set(h) != {"task_id", "profile", "controller_device"}
+                or not isinstance(h, dict) or set(h) != {selector, "profile", "controller_device"}
                 or not isinstance(h["profile"], str) or any(ord(c) < 32 for c in h["profile"])
-                or not isinstance(h["task_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", h["task_id"])
+                or not isinstance(h[selector], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", h[selector])
                 or not isinstance(h["controller_device"], str) or not HASH.fullmatch(h["controller_device"])):
             raise ValueError("cindy_hosted_request_invalid")
     if "pi_agent_dir" in q:
@@ -372,14 +373,24 @@ def _recheck_hosted(stored, owner, coverage, verb, receipt, approval):
         if Path(stored["pi_locator"]) != Path(locator):
             raise ValueError("cindy_hosted_native_file_mismatch")
         locator = coverage["native_locator"] = stored["pi_locator"]
-    claim = {k: hosted[k] for k in ("profile", "task_id", "controller_device")}
+    selector = "task_id" if "task_id" in hosted else "host_session_id"
+    claim = {k: hosted[k] for k in ("profile", selector, "controller_device")}
     record = None
-    if verb == "apply":
+    executor_only = stored.get("cindy_executor_only") is True
+    if verb == "apply" or executor_only and verb == "verify":
         selected, = coverage["native_ids"]
-        rows = [r for r in _records(client, Path(owner["root"]), agent_dir=owner.get("agent_dir"), hosted_id=selected)
-                if r["record_id"] == selected]
-        if rows:
-            record, = rows
+        rows = _records(client, Path(owner["root"]), agent_dir=owner.get("agent_dir"),
+                        hosted_id=selected, all_workspaces=executor_only)
+        matches = [r for r in rows if r["record_id"] == selected]
+        if executor_only:
+            from .cindy_executor import records_in_shadow
+            if matches != records_in_shadow(rows, Path(hosted["workspace_root"])):
+                raise ValueError("cindy_executor_task_changed")
+        if matches:
+            record, = matches
+    if executor_only:
+        from .cindy_executor import guard_local_references
+        guard_local_references(hosted, owner, coverage["record_id"], locator)
     retired = None
     if "host_index" in stored:
         change = stored["host_index"]
@@ -392,9 +403,12 @@ def _recheck_hosted(stored, owner, coverage, verb, receipt, approval):
         raise ValueError("cindy_hosted_session_binding_changed")
 
 
-def dispatch(q):
-    _validate(q)
+def dispatch(q, *, executor_only=False):
+    _validate(q, executor_only=executor_only)
     verb, client, root = q["verb"], q["client"], Path(q["root"])
+    if executor_only and (client not in {"native", "claude", "pi"} or "controller_approval" in q
+                          or verb == "plan" and "cindy_hosted" not in q):
+        raise ValueError("cindy_executor_only_scope_invalid")
     owner = _owner(client, root, q.get("pi_agent_dir"))
     agent_dir = Path(owner["agent_dir"]) if client == "pi" else None
     common = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner}
@@ -430,6 +444,7 @@ def dispatch(q):
         operation = result["operation_id"]
     else:
         operation = q["operation_id"]
+        matches, runtime = (), None
     path = manager_state_base() / PLANS_DIRECTORY / (validate_operation_id(operation) + ".json")
     doc = strict_json_load(path)
     digest = plan_sha256(doc)
@@ -440,13 +455,43 @@ def dispatch(q):
             or doc.get("goal_status") != "ready" or doc.get("blockers") or not doc.get("actions")):
         raise ValueError("remote_frozen_scope_invalid")
     coverage = _physical_scope(doc, owner)
+    envelope = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner,
+                "operation_id": operation, "plan_sha256": digest}
+    if executor_only:
+        envelope["cindy_executor_only"] = True
+    if client == "orca":
+        envelope["authority"] = coverage["authority"]
+    envelope_path = path.parent / "remote-bindings" / path.name
+    stored = None if verb == "plan" else strict_json_load(envelope_path)
+    lock = nullcontext()
+    if stored is not None:
+        if q["approval"] != _digest(stored):
+            raise ValueError("remote_plan_approval_mismatch")
+        if bool(stored.get("cindy_executor_only")) != executor_only or any(stored.get(k) != v for k, v in envelope.items()):
+            raise ValueError("remote_operation_owner_mismatch")
+        if verb == "apply" and "cindy_hosted" in stored:
+            # Two tasks may share the same index. Serialize its before-state
+            # check through native completion and the durable index receipt.
+            from .mutation_guard import frozen_operation_roots, mutation_roots
+            profile = Path(stored["cindy_hosted"]["profile"])
+            if directory_identity(profile) != stored["cindy_hosted"]["profile_id"]:
+                raise ValueError("cindy_executor_profile_changed")
+            lock = mutation_roots((*frozen_operation_roots(doc), profile))
+    with lock:
+        return _bound_result(q, envelope, stored, path, doc, coverage, matches, runtime)
+
+
+def _bound_result(q, envelope, stored, path, doc, coverage, matches, runtime):
+    owner = envelope["owner"]
+    client, root, verb = owner["client"], Path(owner["root"]), q["verb"]
+    operation, digest, scope = doc["operation_id"], doc["plan_sha256"], doc["scope"]
+    record_id, = scope["record_ids"]
+    agent_dir = Path(owner["agent_dir"]) if client == "pi" else None
+    common = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner}
+    executor_only = envelope.get("cindy_executor_only") is True
     envelope_path = path.parent / "remote-bindings" / path.name
     index_receipt = envelope_path.parent / "host-index" / path.name
     frozen_args = ["--operation-id", operation, "--plan", str(path)]
-    envelope = {"protocol": PROTOCOL, "destination": q["destination"], "owner": owner,
-                "operation_id": operation, "plan_sha256": digest}
-    if client == "orca":
-        envelope["authority"] = coverage["authority"]
     if owner != _owner(client, root, q.get("pi_agent_dir")):
         raise ValueError("remote_owner_changed")
     if verb == "plan":
@@ -464,16 +509,14 @@ def dispatch(q):
                     raise ValueError("cindy_hosted_native_file_mismatch")
                 envelope["pi_locator"] = coverage["native_locator"] = native_path
             hosted = observe(q["cindy_hosted"], owner, coverage["native_locator"], record=matches[0])
+            if executor_only:
+                from .cindy_executor import guard_local_references
+                guard_local_references(hosted, owner, record_id, coverage["native_locator"])
             envelope["cindy_hosted"] = hosted
             if "guest_key" in hosted or "thread_location" in hosted:
                 envelope["host_index"] = index_change(hosted, coverage["native_locator"])
         write_new_json(envelope_path, envelope)
     else:
-        stored = strict_json_load(envelope_path)
-        if q["approval"] != _digest(stored):
-            raise ValueError("remote_plan_approval_mismatch")
-        if any(stored.get(k) != v for k, v in envelope.items()):
-            raise ValueError("remote_operation_owner_mismatch")
         runtime = stored.get("codex_runtime")
         envelope["codex_runtime"] = runtime
         try:
@@ -494,6 +537,7 @@ def dispatch(q):
                 raise
             goal = "completed_with_residuals" if completed_batches(prior, digest) else "unknown"
             return 1, {**common, "operation_id": operation, "approval": q["approval"], "goal_status": goal,
+                       **({"completion_scope": "cindy_executor_only"} if executor_only else {}),
                        "error": str(exc), "result": {**prior, "goal_status": goal, "goal_satisfied": False}}
         if stored != envelope:
             raise ValueError("remote_operation_owner_mismatch")
@@ -503,6 +547,8 @@ def dispatch(q):
                **({"handle_chain_sha256": envelope["handle_chain_sha256"]} if client == "orca" else {}),
                **({"cindy_hosted": envelope["cindy_hosted"]} if "cindy_hosted" in envelope else {}),
                **({"codex_runtime": runtime} if runtime else {})}
+    if executor_only:
+        binding["completion_scope"] = "cindy_executor_only"
     if "host_index" in envelope:
         change = envelope["host_index"]
         if change["kind"] == "remove":
@@ -527,7 +573,7 @@ def dispatch(q):
             from .frontend_session_cleanup import _require_client_closed
             if not q["clients_closed"]:
                 raise ValueError("cindy_executor_clients_closed_required")
-            if not q.get("controller_approval"):
+            if not executor_only and not q.get("controller_approval"):
                 raise ValueError("cindy_hosted_controller_plan_required")
             _require_client_closed(Path(envelope["cindy_hosted"]["profile"]), running_related_clients, owner_client="cindy")
         mode = bool(scope.get("paseo_only") or scope.get("t3code_only"))
@@ -591,14 +637,14 @@ def dispatch(q):
     return code, {**binding, "goal_status": result["goal_status"], "result": result}
 
 
-def worker(stdin, stdout):
+def worker(stdin, stdout, *, executor_only=False):
     request = None
     try:
         raw = stdin.read(64 * 1024 + 1)
         if len(raw) > 64 * 1024:
             raise ValueError("remote_request_too_large")
         request = strict_json(raw.decode("utf-8"))
-        code, reply = dispatch(request)
+        code, reply = dispatch(request, executor_only=executor_only)
     except (OSError, ValueError, RuntimeError, sqlite3.Error, KeyError, TypeError, AttributeError, RecursionError) as exc:
         code = 1
         reply = {"protocol": PROTOCOL, "error": str(exc),
@@ -622,7 +668,10 @@ def add_arguments(parser):
     for verb in VERBS:
         sub = subs.add_parser(verb)
         sub.add_argument("--progress", action="store_true", help="在标准错误输出请求阶段及结果计数")
-        sub.add_argument("--ssh-host", required=True, help="已信任的 OpenSSH 主机别名")
+        destination = sub.add_mutually_exclusive_group(required=True)
+        destination.add_argument("--ssh-host", help="已信任的 OpenSSH 主机别名")
+        destination.add_argument("--cindy-executor-only", action="store_true",
+                                 help="直接在本机清理 Cindy 执行端记录，控制端可离线")
         clients = CLIENTS if verb == "records" else tuple(c for c in CLIENTS if c != "cindy")
         sub.add_argument("--client", required=True, choices=clients)
         sub.add_argument("--pi-agent-dir", help="执行端独立配置的 Pi Agent 目录")
@@ -630,7 +679,7 @@ def add_arguments(parser):
         if verb != "records":
             sub.add_argument("--owner", required=True, help="remote records 返回的 owner.store_id")
         if verb == "plan":
-            sub.add_argument("--record-id", help="完整记录 ID；提供控制端 Cindy 数据库时可由任务 ID 定位")
+            sub.add_argument("--record-id", help="完整记录 ID，Cindy 托管任务也可用 --cindy-task 定位")
             sub.add_argument("--frontend-only", action="store_true", help="仅执行 T3 或 Paseo 自带的前端删除")
             sub.add_argument("--bindings", help="执行端 T3 或 Paseo 原生存储绑定清单的绝对路径")
             sub.add_argument("--codex-bin", help="执行端实际使用的 Codex 程序绝对路径")
@@ -638,6 +687,7 @@ def add_arguments(parser):
             sub.add_argument("--cindy-db", type=Path, help="读取任务原生定位符的控制机 Cindy 数据库")
             sub.add_argument("--cindy-host-profile", help="执行机 Cindy userData 的绝对路径")
             sub.add_argument("--cindy-controller-profile", type=Path, help="控制机 Cindy userData 的绝对路径")
+            sub.add_argument("--cindy-controller-device", help="仅执行端模式下已知的控制设备 ID，同账号任务用此 ID 核对工作目录")
         if verb in {"apply", "status", "verify"}:
             sub.add_argument("--operation-id", required=True)
             sub.add_argument("--approval", required=True, help="remote plan 返回的主机与计划批准摘要")
@@ -662,14 +712,20 @@ def _ssh(host, payload):
         return result.returncode, stream.read()
 
 
-def exchange(request):
+def exchange(request, *, executor_only=False):
     verb = request["verb"]
     try:
-        _validate(request)
+        _validate(request, executor_only=executor_only)
     except (ValueError, RuntimeError, TypeError, KeyError) as exc:
         return 1, {"goal_status": "blocked", "error": str(exc), "destination": request.get("destination")}
     try:
-        code, raw = _ssh(request["destination"], canonical_json_bytes(request))
+        payload = canonical_json_bytes(request)
+        if executor_only:
+            stream = io.BytesIO()
+            code = worker(io.BytesIO(payload), stream, executor_only=True)
+            raw = stream.getvalue()
+        else:
+            code, raw = _ssh(request["destination"], payload)
         reply = strict_json(raw.decode("utf-8"))
         if (not isinstance(reply, dict) or reply.get("protocol") != PROTOCOL
                 or reply.get("request_sha256") != _digest(request) or reply.get("destination") != request["destination"]
@@ -699,7 +755,7 @@ def _check_controller_plan(path, request):
         raise ValueError("approved_controller_plan_and_closed_clients_required")
     if doc["scope"]["client"] == "cindy":
         proof = cindy_remote.frozen(doc)
-        if not proof:
+        if not proof or "verify_request" not in proof:
             raise ValueError("controller_remote_binding_required")
         expected = proof["verify_request"]
     else:
@@ -717,17 +773,32 @@ def _check_controller_plan(path, request):
 
 
 def run(args, output, errors):
-    request = {"protocol": PROTOCOL, "destination": args.ssh_host, "verb": args.remote_verb,
+    executor_only = args.cindy_executor_only
+    request = {"protocol": PROTOCOL, "destination": "local-executor" if executor_only else args.ssh_host, "verb": args.remote_verb,
                "client": args.client, "root": args.root}
     for name in ("owner", "record_id", "frontend_only", "bindings", "codex_bin", "operation_id", "approval", "clients_closed"):
         if hasattr(args, name):
             request[name] = getattr(args, name)
     if args.pi_agent_dir is not None:
         request["pi_agent_dir"] = args.pi_agent_dir
+    if executor_only and (args.client not in {"native", "claude", "pi"} or getattr(args, "controller_plan", None)
+                          or getattr(args, "cindy_controller_profile", None) or getattr(args, "cindy_db", None)):
+        raise ValueError("cindy_executor_only_uses_local_provider_and_profile")
+    if not executor_only and getattr(args, "cindy_controller_device", None):
+        raise ValueError("cindy_controller_device_requires_executor_only")
     if getattr(args, "controller_plan", None):
         request["controller_approval"] = _check_controller_plan(args.controller_plan, request)
     task = None
-    if any(getattr(args, key, None) for key in ("cindy_task", "cindy_host_profile", "cindy_controller_profile", "cindy_db")):
+    if executor_only and args.remote_verb == "plan":
+        from .cindy_executor import select
+        if not args.cindy_host_profile or args.frontend_only or args.bindings:
+            raise ValueError("cindy_executor_local_host_profile_required")
+        owner = _owner(args.client, Path(args.root), args.pi_agent_dir)
+        if args.owner != owner["store_id"]:
+            raise ValueError("remote_owner_changed")
+        request["record_id"], request["cindy_hosted"] = select(Path(args.cindy_host_profile), owner,
+            task_id=args.cindy_task, record_id=args.record_id, controller_device=args.cindy_controller_device)
+    elif any(getattr(args, key, None) for key in ("cindy_task", "cindy_host_profile", "cindy_controller_profile", "cindy_db")):
         from .cindy_hosted import device_id
         if not all((args.cindy_task, args.cindy_host_profile, args.cindy_controller_profile)):
             raise ValueError("cindy_hosted_task_and_both_profiles_required")
@@ -753,7 +824,7 @@ def run(args, output, errors):
     stage = "inventory" if args.remote_verb == "records" else args.remote_verb
     if progress:
         progress(stage=stage, status="started", operation_id=request.get("operation_id"))
-    code, reply = exchange(request)
+    code, reply = exchange(request, executor_only=executor_only)
     if task is not None and not code:
         from .cindy_hosted import locator_matches
         if (reply["cindy_hosted"]["execution_host"] != task.execution_host

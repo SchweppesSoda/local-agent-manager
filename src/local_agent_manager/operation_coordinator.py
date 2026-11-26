@@ -193,7 +193,14 @@ class OperationCoordinator:
                         or normalized_scope["engines"] or normalized_scope["projects"] or normalized_scope["all_projects"]):
                     raise OperationCoordinatorError("orca_remote_exact_frontend_scope_required")
                 orca_pair = from_plan(orca_remote_plan, Path(orca_roots[0]), normalized_scope["record_ids"][0])
-            if cindy_remote_plan is not None:
+            if normalized_scope.get("cindy_controller_only"):
+                from .cindy_remote import controller_proof
+                if (client_name != "cindy" or not _unused.get("cindy_db") or len(normalized_scope["record_ids"]) != 1
+                        or normalized_scope["engines"] or cindy_remote_plan or magpie_bindings
+                        or normalized_scope.get("paseo_only") or normalized_scope.get("t3code_only")):
+                    raise OperationCoordinatorError("cindy_controller_only_exact_task_required")
+                remote_proof = controller_proof(_unused["cindy_db"], normalized_scope["record_ids"][0], _unused.get("cindy_root"))
+            elif cindy_remote_plan is not None:
                 from .cindy_remote import from_remote_plan
                 if (not _unused.get("cindy_db") or client_name != "cindy" or len(normalized_scope["record_ids"]) != 1
                         or normalized_scope["engines"] or magpie_bindings is not None):
@@ -1742,6 +1749,7 @@ class OperationCoordinator:
             "client": normalized_client,
             **({"paseo_only": True} if raw.get("paseo_only") is True else {}),
             **({"t3code_only": True} if raw.get("t3code_only") is True else {}),
+            **({"cindy_controller_only": True} if raw.get("cindy_controller_only") is True else {}),
             "projects": tuple(dict.fromkeys(
                 str(value).strip()
                 for value in (projects or raw.get("projects", ()))
@@ -4181,7 +4189,7 @@ class OperationCoordinator:
         # supplied is compared against the immutable plan, not just client;
         # this prevents a valid hash from being replayed against another
         # project, record, or engine by a stale CLI invocation.
-        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only", "t3code_only"):
+        for key in ("client", "projects", "all_projects", "record_ids", "engines", "paseo_only", "t3code_only", "cindy_controller_only"):
             value = requested.get(key)
             if key == "all_projects":
                 if value is not True:

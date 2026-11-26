@@ -228,12 +228,15 @@ def guard_cindy_session_rows(
         _guard_non_cascade_references(db, ids)
     for item in evidence:
         if item.remote_native:
-            from .cindy_remote import guard_references, verify_native
+            from .cindy_remote import CONTROLLER_ONLY, guard_references, verify_native
             from .cindy_hosted import backup
-            guard_references(item.remote_native)
+            joint = item.remote_native.get("completion_scope") != CONTROLLER_ONLY
+            if joint:
+                guard_references(item.remote_native)
             if backup(item.remote_native) != item.remote_native.get("backup"):
                 raise FrontendSessionGuardError("cindy_native_history_backup_changed")
-            verify_native(item.remote_native)
+            if joint:
+                verify_native(item.remote_native)
     return current
 
 

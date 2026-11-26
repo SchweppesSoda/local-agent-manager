@@ -535,6 +535,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_arguments(delete, progress=True)
     _add_operation_scope_arguments(delete)
     delete.add_argument("--cindy-remote-plan", type=Path, help="执行机生成的原生删除计划 JSON，控制端写入前核验其完成回执")
+    delete.add_argument("--cindy-controller-only", action="store_true",
+                        help="只清本机 Cindy 控制端的指定远程任务，保留执行机的记录")
     delete.add_argument("--orca-remote-plan", type=Path, help="配对执行机生成的 Orca 会话计划 JSON")
     delete.add_argument("--magpie-bindings", type=Path,
         help="将显式配置及原生会话映射中的 Magpie 列表、缓存、网关历史与回收站纳入冻结计划")
@@ -1516,7 +1518,7 @@ def _run_operation_backend(
             agy_options.update(t3code_roots=tuple(args.t3code_root), paseo_roots=tuple(args.paseo_root))
 
     try:
-        if (supplied_adapters is None and (scope or {}).get("client") == "cindy"
+        if (supplied_adapters is None and (scope or {}).get("client") == "cindy" and not scope.get("cindy_controller_only")
                 and (getattr(args, "cindy_db", None) or getattr(args, "cindy_root", None))):
             supplied_adapters = _create_default_adapters(args)
         if verb == "plan":
@@ -1546,6 +1548,8 @@ def _run_operation_backend(
             }
             if progress_callback is not None:
                 operation_kwargs["progress_callback"] = progress_callback
+            if (scope or {}).get("cindy_controller_only"):
+                operation_kwargs["scope"] = scope
             if (scope or {}).get("paseo_only"):
                 operation_kwargs["scope"] = scope
                 operation_kwargs["paseo_roots"] = tuple(args.paseo_root or ())
@@ -1745,6 +1749,14 @@ def _run_delete_operation(
             scope = _operation_scope(args, require_selection=False)
         else:
             scope = _operation_scope(args, require_selection=True)
+        if args.cindy_controller_only:
+            if (verb not in {"plan", "apply"} or args.cindy_remote_plan or args.magpie_bindings or args.handoff
+                    or args.paseo_only or args.t3code_only or args.orca_remote_plan
+                    or scope.get("client") not in (None, "cindy") or scope.get("engines")
+                    or scope.get("projects") or scope.get("all_projects")
+                    or verb == "plan" and (scope.get("client") != "cindy" or not args.cindy_db or len(scope["record_ids"]) != 1)):
+                raise ValueError("--cindy-controller-only requires a separate Cindy plan for one task and its database")
+            scope["cindy_controller_only"] = True
         if getattr(args, "action_id", None) or getattr(args, "session_id", None) or getattr(args, "thread_id", None):
             raise ValueError("delete plan/apply/run 使用 --record-id，不使用旧 action/session/thread selector")
         if args.paseo_only:
@@ -1993,7 +2005,7 @@ def main(
             coordinator=coordinator,
         )
 
-    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only or args.t3code_only):
+    if args.command == "delete" and (getattr(args, "delete_action", None) or args.paseo_only or args.t3code_only or args.cindy_controller_only):
         return _run_delete_operation(
             args,
             supplied_adapters=adapters,

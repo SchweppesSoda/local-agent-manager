@@ -68,7 +68,7 @@ def orca_worker_fixture():
         return remote.worker(sys.stdin.buffer, sys.stdout.buffer)
 
 
-def hosted_codex_worker_fixture(root, binary):
+def hosted_codex_server(root, binary):
     from types import SimpleNamespace
     def server(*, codex_home, codex_binary, **_):
         assert (Path(codex_home), Path(codex_binary)) == (root, binary)
@@ -81,6 +81,11 @@ def hosted_codex_worker_fixture(root, binary):
                 db.commit()
             Path(rollout).unlink()
         return nullcontext(SimpleNamespace(delete_thread=delete_thread))
+    return server
+
+
+def hosted_codex_worker_fixture(root, binary):
+    server = hosted_codex_server(root, binary)
     with patch("local_agent_manager.cli.main", side_effect=lambda argv, **kw: main(argv, **kw, app_server_factory=server)):
         return remote.worker(sys.stdin.buffer, sys.stdout.buffer)
 
@@ -130,9 +135,10 @@ class RemoteRecordsTests(unittest.TestCase):
             raise subprocess.TimeoutExpired("test-worker", 1)
         return result.returncode, result.stdout
 
-    def invoke(self, verb, *extra, ok=True):
+    def invoke(self, verb, *extra, ok=True, executor_only=False):
         output = io.StringIO()
-        code = main(["remote", verb, "--ssh-host", self.host, "--client", self.client,
+        destination = ["--cindy-executor-only"] if executor_only else ["--ssh-host", self.host]
+        code = main(["remote", verb, *destination, "--client", self.client,
                      "--root", str(self.root), *extra], stdout=output, stderr=io.StringIO())
         value = json.loads(output.getvalue())
         self.assertEqual(code == 0, ok, value)
@@ -236,6 +242,235 @@ class RemoteRecordsTests(unittest.TestCase):
                                 "--record-id", sid, "--cindy-remote-plan", str(saved))
         return "--operation-id", local["operation_id"], "--plan", local["plan_path"], "--plan-sha256", local["plan_sha256"]
 
+    def shared_pi_pair(self):
+        sid, database, path, native, options, index = self.hosted_pi(share=True)
+        data = json.loads(index.read_bytes())
+        row = next(iter(data.values()))
+        sibling = "second-guest-task"
+        other_host = cindy_hosted.host_session_id(row["controller"], sibling)
+        other = self.pi_file(self.root, "sibling")
+        record = json.loads(other.read_bytes())
+        workspaces = Path(json.loads(path.read_bytes())["cwd"]).parents[2]
+        record["cwd"] = str(workspaces / other_host / "fs" / "work")
+        other.write_text(json.dumps(record) + "\n")
+        row["hostSessionIds"].append(other_host)
+        row["nativeIds"].insert(0, str(other))
+        row["attachmentRunIds"] = ["aaaaaaaa-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+        index.write_text(json.dumps(data))
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("INSERT INTO sessions(id,status,agent_kind,sdk_session_id,agent_device_id) VALUES(?,?,?,?,?)",
+                       (sibling, "active", "pi", str(other), "share:share-one"))
+            db.execute("INSERT INTO messages(id,session_id,role,content) VALUES(?,?,?,?)", ("keep", sibling, "user", "KEEP"))
+            db.commit()
+        return sid, database, path, native, index, sibling, other, options
+
+    def sharing_files(self, host, peer):
+        owner_dir = host / "owners" / hashlib.sha256(b"executor-owner").hexdigest()[:20]
+        owner_dir.mkdir(parents=True)
+        files = {
+            host / "device-link-settings.json": {"remoteControlEnabled": True, "revokedControllers": []},
+            owner_dir / "provider-share-availability.json": {"shares": {"share-one": "pi"}},
+            owner_dir / "provider-share-standby-members.json": {"members": {peer: {"joinedAt": 1730000000000}}},
+        }
+        for path, content in files.items():
+            path.write_text(json.dumps(content, indent=2), encoding="utf-8")
+        return {path: path.read_bytes() for path in files}
+
+    def clean_on_executor_by_native(self, host, database, native, *options):
+        controller_bytes = database.read_bytes()
+        offline = database.parent.rename(self.base / "offline-controller")
+        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        with patch.object(remote, "_ssh", side_effect=AssertionError("unexpected SSH")):
+            owner = self.invoke("records", executor_only=True)["owner"]["store_id"]
+            plan = self.invoke("plan", "--owner", owner, "--record-id", native, "--cindy-host-profile", str(host),
+                               *options, executor_only=True)
+            args = ("--owner", owner, "--operation-id", plan["operation_id"], "--approval", plan["approval"])
+            self.assertEqual(self.invoke("apply", *args, "--clients-closed", executor_only=True)["goal_status"], "complete")
+            self.assertEqual(self.invoke("verify", *args, executor_only=True)["goal_status"], "complete")
+        self.assertEqual((offline / database.name).read_bytes(), controller_bytes)
+
+    def test_controller_only_deletes_exact_rows_with_executor_offline(self):
+        sid, database, path, _, index, sibling, other, _ = self.shared_pi_pair()
+        host = index.parent.parent
+        peer = next(iter(json.loads(index.read_bytes()).values()))["controller"]
+        grants = self.sharing_files(host, peer)
+        before = [f.read_bytes() for f in (path, other, index)]
+        offline = host.rename(self.base / "offline-executor")
+        self.transport.side_effect = AssertionError("A contacted the offline executor")
+        select = ("--client", "cindy", "--cindy-db", str(database), "--record-id", sid)
+        self.controller("delete", "plan", "--client", "cindy", "--cindy-db", str(database),
+                        "--record-id", sid[:-1], "--cindy-controller-only", ok=False)
+        self.controller("delete", "plan", *select, ok=False)
+        plan = self.controller("delete", "plan", *select, "--cindy-controller-only")
+        self.assertTrue(plan["scope"]["cindy_controller_only"])
+        self.assertEqual([a["kind"] for a in plan["actions"]], ["delete_frontend_session"])
+        op = ("--operation-id", plan["operation_id"], "--plan", plan["plan_path"])
+        apply = ("delete", "apply", *op, "--plan-sha256", plan["plan_sha256"], "--clients-closed")
+        self.controller("delete", "apply", *op, "--clients-closed", ok=False)
+        with closing(sqlite3.connect(database)) as db:
+            db.execute("UPDATE sessions SET parent_session_id=? WHERE id=?", (sid, sibling))
+            db.commit()
+            self.assertFalse(self.controller(*apply, ok=False)["mutation_started"])
+            db.execute("UPDATE sessions SET parent_session_id=NULL WHERE id=?", (sibling,))
+            db.commit()
+        self.assertEqual(self.controller(*apply)["goal_status"], "complete")
+        self.assertEqual(self.controller("operation", "verify", *op)["goal_status"], "complete")
+        with closing(sqlite3.connect(database)) as db:
+            self.assertIsNone(db.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone())
+            self.assertEqual(db.execute("SELECT id FROM messages WHERE session_id=?", (sid,)).fetchall(), [])
+            self.assertEqual(db.execute("SELECT sdk_session_id FROM sessions WHERE id=?", (sibling,)).fetchone(), (str(other),))
+            self.assertEqual(db.execute("SELECT content FROM messages WHERE session_id=?", (sibling,)).fetchone(), ("KEEP",))
+        offline.rename(host)
+        self.assertEqual([f.read_bytes() for f in (path, other, index)], before)
+        self.assertEqual({p: p.read_bytes() for p in grants}, grants)
+        self.transport.assert_not_called()
+
+    def test_executor_only_deletes_one_direct_guest_and_recovers_without_controller(self):
+        sid, database, path, native, index, _, other, _ = self.shared_pi_pair()
+        host = index.parent.parent
+        expected_index = json.loads(index.read_bytes())
+        guest = next(iter(expected_index.values()))
+        guest["hostSessionIds"].remove(cindy_hosted.host_session_id(guest["controller"], sid))
+        guest["nativeIds"].remove(str(path))
+        kept = other.read_bytes()
+        grants = self.sharing_files(host, guest["controller"])
+        controller_bytes = database.read_bytes()
+        offline = database.parent.rename(self.base / "offline-controller")
+        self.transport.side_effect = AssertionError("B contacted the offline controller")
+        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        def local(verb, *args, ok=True):
+            return self.invoke(verb, *args, executor_only=True, ok=ok)
+        owner = local("records")["owner"]["store_id"]
+        options = ("--owner", owner, "--cindy-host-profile", str(host))
+        local("plan", *options, "--cindy-task", sid, "--record-id", "sibling", ok=False)
+        local("plan", *options, "--cindy-task", sid, "--cindy-db", str(database), ok=False)
+        alias = self.pi_file(self.root, "unindexed")
+        duplicate = {**json.loads(path.read_bytes()), "id": "unindexed"}
+        alias.write_text(json.dumps(duplicate) + "\n")
+        local("plan", *options, "--record-id", native, ok=False)
+        alias.unlink()
+        selected = local("plan", *options, "--record-id", native)
+        self.assertEqual(selected["cindy_hosted"]["host_session_id"], cindy_hosted.host_session_id(guest["controller"], sid))
+        plan = local("plan", *options, "--cindy-task", sid)
+        self.assertEqual(plan["record_id"], native)
+        self.assertEqual(plan["completion_scope"], "cindy_executor_only")
+        op = ("--owner", owner, "--operation-id", plan["operation_id"], "--approval", plan["approval"])
+        local("apply", *op, ok=False)
+        self.assertTrue(path.exists())
+        original = index.read_bytes(), index.stat()
+        changed = json.loads(original[0])
+        next(iter(changed.values()))["forkWorkspaces"] = {str(other): [selected["cindy_hosted"]["host_session_id"]]}
+        index.write_text(json.dumps(changed))
+        local("apply", *op, "--clients-closed", ok=False)
+        self.assertTrue(path.exists())
+        index.write_bytes(original[0])
+        os.utime(index, ns=(original[1].st_atime_ns, original[1].st_mtime_ns))
+        with patch.object(cindy_hosted.frozen_files, "apply_rewrite", side_effect=OSError("interrupted before index")):
+            partial = local("apply", *op, "--clients-closed", ok=False)
+        self.assertEqual(partial["goal_status"], "completed_with_residuals")
+        self.assertEqual(partial["result"]["batches"][0]["status"], "complete")
+        self.assertFalse(path.exists())
+        self.assertEqual(index.read_bytes(), original[0])
+        local("verify", *op, ok=False)
+        alias.write_text(json.dumps(duplicate) + "\n")
+        conflict = local("apply", *op, "--clients-closed", ok=False)
+        self.assertEqual(conflict["result"]["batches"][0]["status"], "complete")
+        self.assertEqual(conflict["completion_scope"], "cindy_executor_only")
+        self.assertEqual(index.read_bytes(), original[0])
+        alias.unlink()
+        self.assertEqual(local("apply", *op, "--clients-closed")["goal_status"], "complete")
+        self.assertEqual(local("verify", *op)["goal_status"], "complete")
+        self.assertEqual(json.loads(index.read_bytes()), expected_index)
+        self.assertEqual(other.read_bytes(), kept)
+        self.assertEqual({p: p.read_bytes() for p in grants}, grants)
+        self.assertEqual((offline / database.name).read_bytes(), controller_bytes)
+        self.transport.assert_not_called()
+
+    def test_last_guest_task_on_executor_after_controller_only_cleanup(self):
+        sid, database, path, native, _, index = self.hosted_pi(share=True)
+        host = index.parent.parent
+        expected = json.loads(index.read_bytes())
+        guest = next(iter(expected.values()))
+        grants = self.sharing_files(host, guest["controller"])
+        guest.update(hostSessionIds=[], nativeIds=[])
+        offline = host.rename(self.base / "offline-executor")
+        with patch.object(remote, "_ssh", side_effect=AssertionError("unexpected SSH")):
+            plan = self.controller("delete", "plan", "--client", "cindy", "--cindy-db", str(database),
+                                   "--record-id", sid, "--cindy-controller-only")
+            op = ("--operation-id", plan["operation_id"], "--plan", plan["plan_path"])
+            self.controller("delete", "apply", *op, "--plan-sha256", plan["plan_sha256"], "--clients-closed")
+            self.controller("operation", "verify", *op)
+        offline.rename(host)
+        self.clean_on_executor_by_native(host, database, native)
+        self.assertFalse(path.exists())
+        self.assertEqual(json.loads(index.read_bytes()), expected)
+        self.assertEqual({p: p.read_bytes() for p in grants}, grants)
+
+    def test_single_end_approvals_cannot_be_used_for_joint_cleanup(self):
+        sid, database, path, native, options, index = self.hosted_pi(share=True)
+        self.host = "local-executor"  # Deliberately collide with the local destination label.
+        joint, joint_args = self.plan(native, *options)
+        select = ("delete", "plan", "--client", "cindy", "--cindy-db", str(database), "--record-id", sid)
+        controller = self.controller(*select, "--cindy-controller-only")
+        with patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64):
+            standalone = self.invoke("plan", "--owner", joint["owner"]["store_id"], "--cindy-host-profile",
+                                     str(index.parent.parent), "--cindy-task", sid, executor_only=True)
+        provider_plan = self.base / "executor-only.json"
+        provider_plan.write_text(json.dumps(standalone), encoding="utf-8")
+        self.controller(*select, "--cindy-remote-plan", str(provider_plan), ok=False)
+        self.invoke("apply", *joint_args, "--controller-plan", controller["plan_path"], "--clients-closed", ok=False)
+        self.invoke("apply", *joint_args, "--clients-closed", executor_only=True, ok=False)
+        offline_args = ("--owner", standalone["owner"]["store_id"], "--operation-id", standalone["operation_id"],
+                        "--approval", standalone["approval"])
+        self.invoke("apply", *offline_args, "--clients-closed", ok=False)
+        self.assertTrue(path.is_file())
+        with closing(sqlite3.connect(database)) as db:
+            self.assertTrue(db.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone())
+
+    def test_executor_only_rechecks_local_and_parked_native_references(self):
+        sid, database, path, _, _, index = self.hosted_pi(share=True)
+        database.parent.rename(self.base / "offline-controller")
+        host = index.parent.parent
+        local_db, (local_sid,) = cindy_fixture.FrontendSessionCleanupTests()._database(host, 1)
+        local_db = local_db.rename(host / "cindy-owner.db")
+        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        owner = self.invoke("records", executor_only=True)["owner"]["store_id"]
+        options = ("plan", "--owner", owner, "--cindy-host-profile", str(host), "--cindy-task", sid)
+        with closing(sqlite3.connect(local_db)) as db:
+            db.execute("ALTER TABLE sessions ADD COLUMN agent_device_id TEXT")
+            db.execute("UPDATE sessions SET agent_kind='pi',sdk_session_id=? WHERE id=?", (str(path), local_sid))
+            db.commit()
+            self.invoke(*options, executor_only=True, ok=False)
+            db.execute("UPDATE sessions SET agent_device_id=? WHERE id=?", ("d" * 64, local_sid))
+            db.commit()
+            plan = self.invoke(*options, executor_only=True)
+            op = ("--owner", owner, "--operation-id", plan["operation_id"], "--approval", plan["approval"])
+            switch = {"fromAgentKind": "pi", "fromAgentDeviceId": None, "fromSdkSessionId": str(path)}
+            db.execute("INSERT INTO messages(id,session_id,role,content) VALUES(?,?,?,?)",
+                       ("switch", local_sid, "agent_switch", json.dumps(switch)))
+            db.commit()
+            self.invoke("apply", *op, "--clients-closed", executor_only=True, ok=False)
+        self.assertTrue(path.is_file())
+        self.transport.assert_not_called()
+
+    def test_executor_only_recognizes_cached_same_account_device_with_controller_offline(self):
+        sid, database, path, _, _, _ = self.hosted_pi()
+        host = self.root.parents[1]
+        database.parent.rename(self.base / "offline-controller")
+        cached = host / "device-link-settings.json"
+        cached.write_text(json.dumps({"lastKnownDeviceNames": {"c" * 64: "A", "f" * 64: "other PC"}}))
+        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        self.transport.side_effect = AssertionError("unexpected SSH")
+        owner = self.invoke("records", executor_only=True)["owner"]["store_id"]
+        plan = self.invoke("plan", "--owner", owner, "--cindy-host-profile", str(host), "--cindy-task", sid, executor_only=True)
+        self.assertEqual(plan["cindy_hosted"]["controller_device"], "c" * 64)
+        op = ("--owner", owner, "--operation-id", plan["operation_id"], "--approval", plan["approval"])
+        self.invoke("apply", *op, "--clients-closed", executor_only=True)
+        self.assertEqual(self.invoke("verify", *op, executor_only=True)["goal_status"], "complete")
+        self.assertFalse(path.exists())
+        self.assertTrue((self.root / "project/keeper.jsonl").is_file())
+        self.transport.assert_not_called()
+
     def test_hosted_codex_uses_recorded_rollout_and_removes_exact_thread_location(self):
         from tests.support import create_thread_index, write_rollout
         sid, database, host, _, fs, options = self.hosted_devices()
@@ -285,6 +520,12 @@ class RemoteRecordsTests(unittest.TestCase):
         self.assertTrue(self.invoke("verify", *op, ok=False)["result"]["modified"])
 
     def test_shared_codex_deletes_only_one_guest_rollout(self):
+        self.run_shared_codex(executor_only=False)
+
+    def test_executor_only_shared_codex_by_native_id(self):
+        self.run_shared_codex(executor_only=True)
+
+    def run_shared_codex(self, *, executor_only):
         from tests.support import create_thread_index, write_rollout
         sid, database, host, peer, fs, options = self.hosted_devices(share=True)
         self.client = "native"
@@ -312,17 +553,28 @@ class RemoteRecordsTests(unittest.TestCase):
         binary = self.base / "codex.exe"
         binary.write_bytes(b"fixture")
         binary.chmod(0o700)
-        plan, op = self.plan(native_ids[0], "--codex-bin", str(binary), *options)
-        local = self.approve_cindy_controller(sid, database, plan)
-        self.invoke("apply", *op, "--controller-plan", local[3], "--clients-closed")
-        self.assertEqual(self.invoke("verify", *op)["goal_status"], "complete")
-        self.assertEqual(self.controller("delete", "apply", *local, "--clients-closed")["goal_status"], "complete")
+        if executor_only:
+            server = hosted_codex_server(self.root, binary)
+            with patch("local_agent_manager.cli.main", side_effect=lambda argv, **kw: main(argv, **kw, app_server_factory=server)):
+                self.clean_on_executor_by_native(host, database, native_ids[0], "--codex-bin", str(binary))
+        else:
+            plan, op = self.plan(native_ids[0], "--codex-bin", str(binary), *options)
+            local = self.approve_cindy_controller(sid, database, plan)
+            self.invoke("apply", *op, "--controller-plan", local[3], "--clients-closed")
+            self.assertEqual(self.invoke("verify", *op)["goal_status"], "complete")
+            self.assertEqual(self.controller("delete", "apply", *local, "--clients-closed")["goal_status"], "complete")
         self.assertFalse(rollouts[0].exists())
         self.assertTrue(rollouts[1].is_file())
         self.assertEqual(json.loads(guest_path.read_bytes())[guest_key],
                          dict(guest, nativeIds=[native_ids[1]], hostSessionIds=[hosts[1]]))
 
     def test_shared_claude_requires_bound_account_home_and_shadow(self):
+        self.run_shared_claude(executor_only=False)
+
+    def test_executor_only_shared_claude_by_native_id(self):
+        self.run_shared_claude(executor_only=True)
+
+    def run_shared_claude(self, *, executor_only):
         sid, database, host, peer, fs, options = self.hosted_devices(share=True)
         self.client = "claude"
         tid = "22222222-2222-4222-8222-222222222222"
@@ -369,17 +621,19 @@ class RemoteRecordsTests(unittest.TestCase):
         owners = json.loads(pool.read_bytes())
         owners["bindings"]["anthropic:native:" + native] = {"providerId": "anthropic", "accountId": account}
         pool.write_text(json.dumps(owners))
-        plan, args = self.plan(tid, *options)
-        controller_op = self.approve_cindy_controller(sid, database, plan)
-        self.invoke("apply", *args, "--clients-closed", "--controller-plan", controller_op[3])
-        self.assertEqual(self.controller("delete", "apply", *controller_op, "--clients-closed")["goal_status"], "complete")
+        if executor_only:
+            self.clean_on_executor_by_native(host, database, tid)
+        else:
+            plan, args = self.plan(tid, *options)
+            controller_op = self.approve_cindy_controller(sid, database, plan)
+            self.invoke("apply", *args, "--clients-closed", "--controller-plan", controller_op[3])
+            self.assertEqual(self.controller("delete", "apply", *controller_op, "--clients-closed")["goal_status"], "complete")
         self.assertTrue(copy.exists())
         self.assertFalse(path.exists())
         self.assertTrue(other_file.is_file())
         self.assertEqual(next(iter(json.loads(index.read_bytes()).values()))["nativeIds"], [native])
 
-    def test_hosted_device_pi_pairs_checkpoint_and_checks_both_owners(self):
-        sid, database, path, identifier, options, _ = self.hosted_pi()
+    def controller_pi_checkpoint(self, sid, database, path):
         backup_dir = database.parent / "owners" / hashlib.sha256(b"owner").hexdigest()[:20] / "native-history-backups"
         backup_dir.mkdir(parents=True)
         backup = backup_dir / (hashlib.sha256(sid.encode()).hexdigest() + ".backup")
@@ -391,6 +645,34 @@ class RemoteRecordsTests(unittest.TestCase):
         backup.write_bytes(checkpoint)
         other = backup_dir / ("a"*64 + ".backup")
         other.write_bytes(b"keeper")
+        return backup, checkpoint, other
+
+    def test_controller_only_checks_checkpoint_without_executor(self):
+        sid, database, path, _, _, index = self.hosted_pi()
+        backup, checkpoint, other = self.controller_pi_checkpoint(sid, database, path)
+        host = index.parent.parent
+        offline = host.rename(self.base / "offline-executor")
+        self.transport.side_effect = AssertionError("unexpected SSH")
+        plan = self.controller("delete", "plan", "--client", "cindy", "--cindy-db", str(database),
+                               "--record-id", sid, "--cindy-controller-only")
+        self.assertNotIn("PRIVATE", json.dumps(plan))
+        op = ("--operation-id", plan["operation_id"], "--plan", plan["plan_path"])
+        apply = ("delete", "apply", *op, "--plan-sha256", plan["plan_sha256"], "--clients-closed")
+        original = backup.stat()
+        backup.write_bytes(checkpoint[:-1])
+        self.assertFalse(self.controller(*apply, ok=False)["mutation_started"])
+        backup.write_bytes(checkpoint)
+        os.utime(backup, ns=(original.st_atime_ns, original.st_mtime_ns))
+        self.assertEqual(self.controller(*apply)["goal_status"], "complete")
+        self.assertEqual(self.controller("operation", "verify", *op)["goal_status"], "complete")
+        self.assertFalse(backup.exists())
+        self.assertEqual(other.read_bytes(), b"keeper")
+        self.assertTrue((offline / path.relative_to(host)).is_file())
+        self.transport.assert_not_called()
+
+    def test_hosted_device_pi_pairs_checkpoint_and_checks_both_owners(self):
+        sid, database, path, identifier, options, _ = self.hosted_pi()
+        backup, checkpoint, other = self.controller_pi_checkpoint(sid, database, path)
         owner = self.invoke("records")["owner"]["store_id"]
         plan = self.invoke("plan", "--owner", owner, *options)
         self.assertEqual(plan["record_id"], identifier)
@@ -431,7 +713,7 @@ class RemoteRecordsTests(unittest.TestCase):
         self.controller("operation", "verify", *op, ok=False)
 
     def test_shared_pi_never_pairs_guest_arrays_by_position(self):
-        sid, database, path, identifier, options, index = self.hosted_pi(share=True)
+        sid, database, path, identifier, index, sibling, other, options = self.shared_pi_pair()
         stored = json.loads(index.read_bytes())
         row = next(iter(stored.values()))
         row["hostSessionIds"].append("aaaaaaaa-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
@@ -439,22 +721,8 @@ class RemoteRecordsTests(unittest.TestCase):
         owner = self.invoke("records")["owner"]["store_id"]
         self.invoke("plan", "--owner", owner, "--record-id", identifier, *options, ok=False)
         row["hostSessionIds"].pop()
-        sibling = "second-guest-task"
-        peer = row["controller"]
-        sibling_host = cindy_hosted.host_session_id(peer, sibling)
+        sibling_host = cindy_hosted.host_session_id(row["controller"], sibling)
         selected_host = row["hostSessionIds"][0]
-        other = self.pi_file(self.root, "sibling")
-        sibling_data = json.loads(other.read_bytes())
-        workspaces = Path(json.loads(path.read_bytes())["cwd"]).parents[2]
-        sibling_data["cwd"] = str(workspaces / sibling_host / "fs" / "work")
-        other.write_text(json.dumps(sibling_data) + "\n")
-        row["hostSessionIds"].append(sibling_host)
-        row["nativeIds"].insert(0, str(other))
-        row["attachmentRunIds"] = ["aaaaaaaa-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
-        with closing(sqlite3.connect(database)) as db:
-            db.execute("INSERT INTO sessions(id,status,agent_kind,sdk_session_id,agent_device_id) VALUES(?,?,?,?,?)",
-                       (sibling, "active", "pi", str(other), "share:share-one"))
-            db.commit()
         row["forkWorkspaces"] = {str(other): [selected_host]}
         index.write_text(json.dumps(stored))
         self.invoke("plan", "--owner", owner, *options, ok=False)

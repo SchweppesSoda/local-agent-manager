@@ -107,8 +107,12 @@ and unknown Magpie children use the same status/verify and no-replay contract.
    an old plan. Report residuals only from authoritative discovery evidence;
    otherwise report the capability boundary. `remote_delete=false` limits the adapter to its local stores.
    An SSH operation requires a separately approved plan in the execution host's own checkout.
-   Its receipt covers the named physical stores on that host. A Cindy controller plan may read back
-   that receipt to authorize its own local frontend transaction.
+   Its receipt covers the named physical stores on that host. Joint Cindy cleanup verifies the
+   executor's successful native receipt before the controller can commit its frontend transaction.
+   For a single-end request, use an explicit controller-only or executor-only plan on the selected
+   machine. The peer may be offline. Each approval covers one task and its frozen local dependencies.
+   The executor must prove ownership from its own stores. Neither single-end receipt authorizes the
+   peer transaction. See [Cindy single-end cleanup](operation-cli.md#cindy-单端清理).
 
 Keep the record, or delete the whole verified record and every approved copy;
 never offer `repair_index_path` or `quarantine_artifacts`. Shared-file rollback

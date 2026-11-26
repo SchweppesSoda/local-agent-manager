@@ -13,7 +13,7 @@ whose exact row status is `deleted`.
 
 先确定 Agent 进程在哪里运行。本机启动的 Agent 即使使用远程模型 API，也按原命令
 `records --client …` 和 `delete plan` 选择本机存储。另一台机器上的 Agent 由该机的管理器
-执行盘点与清理。两端均需安装支持 `remote` 的版本，SSH 非交互会话须能找到
+执行盘点与清理。采用 SSH 协调时，两端均需安装支持 `remote` 的版本，SSH 非交互会话须能找到
 `local-agent-manager`。使用已信任且指向正确账号的 OpenSSH 别名。路径填写执行机上的绝对路径。
 各客户端的归属字段见[远程执行与记录归属](adapters.md#远程执行与记录归属)。
 
@@ -108,6 +108,41 @@ Codex 和 Claude 分别使用 `--client native`、`--client claude` 和各自实
 直接分享支持同一来宾的多条任务。仍用上面的 `--cindy-task $task` 选择一条。执行机按每份原生历史中的工作目录，把来宾索引的每个原生定位符对应到唯一的影子任务。控制机再用分享、设备、各任务 ID 以及当前 SDK 绑定独立重建这组关系。`cindy_hosted.guest_bindings` 列出多任务对应关系，`guest_index` 只列本次要移除的两个条目。两端核验完成后，其余任务、原生会话、分享授权、附件和工作文件均保留。
 
 共享索引的两个数组可各自增删或去重，顺序不能用于配对。原生工作目录缺失、两个定位符落在同一任务、分叉、历史切换、设备迁移、中转或未结束的回合都会阻挡相应计划。若原生批次已完成、来宾索引尚未写完，用原 `remote status` 和 `remote verify` 查看回执与残留。索引仍符合冻结的写前或写后状态时，原 `remote apply` 可完成索引步骤。
+
+### Cindy 单端清理
+
+假设 A 的 Cindy 使用 B 的 provider。只清一端时，在所选电脑上运行管理器并关闭该机相关客户端和托管进程。另一台可以关机。单端计划的批准和完成回执只覆盖本机列出的记录。要一次清理两端，沿用上节的配对计划。
+
+**只清 A 的 Cindy 任务。** 用 A 上的任务数据库和完整 Cindy 任务 ID 建立计划。执行后移除所选任务的会话行、消息和已核实的本地依赖。同账号 Pi 若有已发布的本机检查点，还会核对任务、来源设备和正文摘要，再删除该检查点。A 的任务入口随之删除，B 仍保有原生历史。
+
+```powershell
+$a = local-agent-manager delete plan --client cindy --cindy-root '<A 的 Cindy userData>' --cindy-db '<A 的任务数据库>' --record-id '<完整 Cindy 任务 ID>' --cindy-controller-only --json | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $a.goal_status -ne 'ready') { throw '请核对 A 上的任务及其依赖。' }
+$a.actions
+$operation = @('--operation-id', $a.operation_id, '--plan', $a.plan_path)
+local-agent-manager delete apply @operation --plan-sha256 $a.plan_sha256 --clients-closed --json
+if ($LASTEXITCODE -ne 0) { throw '用原操作查询 A 上的 operation status 和 verify。' }
+local-agent-manager operation verify @operation --json
+```
+
+**只清 B 的原生历史。** 以下以 Pi 为例。在 B 提供 Cindy profile、原生会话目录和 Agent 目录。可用 `remote records` 列出的完整原生 ID 选择，也可以将 `--record-id` 换成 `--cindy-task '<完整 Cindy 任务 ID>'`。Claude 用 `--client claude` 和实际配置根，Codex 用 `--client native` 和实际 home，两者均省略 `--pi-agent-dir`。Codex 计划另需 `--codex-bin '<B 的 Codex 可执行文件>'`。
+
+```powershell
+$target = @('--cindy-executor-only', '--client', 'pi', '--root', '<B 的 Pi session 目录>', '--pi-agent-dir', '<B 的 Pi Agent 目录>')
+$inv = local-agent-manager remote records @target | ConvertFrom-Json
+$inv.records
+$b = local-agent-manager remote plan @target --owner $inv.owner.store_id --cindy-host-profile '<B 的 Cindy userData>' --record-id '<完整原生 ID>' | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $b.goal_status -ne 'ready') { throw '请核对 B 上的账号、来宾索引与原生工作目录。' }
+$b | Select-Object completion_scope, record_id, native_locator, guest_index, thread_location_to_remove
+$operation = @('--owner', $b.owner.store_id, '--operation-id', $b.operation_id, '--approval', $b.approval)
+local-agent-manager remote apply @target @operation --clients-closed
+if ($LASTEXITCODE -ne 0) { throw '用原操作查询 B 上的 remote status 和 verify。' }
+local-agent-manager remote verify @target @operation
+```
+
+B 从本机证据识别同账号设备或直接分享的任务。同账号模式可用本机缓存的控制设备 ID，也可在 `remote plan` 显式传入 `--cindy-controller-device '<A 的设备 ID>'`。两种方式都须与原生记录的影子工作目录吻合。直接分享还须用来宾索引逐条核对任务与原生历史。分叉、中转、工作目录冲突或有其他本机任务引用所选历史时，计划或执行会阻挡。
+
+B 的 `complete` 表示所选原生记录及计划列出的任务索引已清理。其他任务、共享成员登记、附件和工作文件均保留。A 上仍可看到原任务和消息，依赖已删原生历史的续接会受影响。若 B 的原生批次已完成、任务索引写入中断，可用原操作查询状态并补完索引。
 
 ### Orca 配对执行机的结构化会话
 
