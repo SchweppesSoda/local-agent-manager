@@ -275,6 +275,10 @@ class ColdCliRehearsal(unittest.TestCase):
             command = 'status' if phase == 'status' else 'verify'
             code, result = self.call(phase, ['operation', command, *self.common])
             self.assertEqual(code, 0, result); self.assertTrue(result['goal_satisfied'], result)
+        self.assert_mixed_preserved()
+        self.assertEqual(self.call('apply-completed-no-replay', ['delete','apply', *self.common, '--clients-closed', '--authorized-plan-sha256', plan['plan_sha256']])[1]['goal_status'], 'complete')
+
+    def assert_mixed_preserved(self):
         local_storage(self.desktop, inspect=True, thread_id=CHILDREN[0])
         with closing(sqlite3.connect(self.root/'userdata/statev2.sqlite')) as db:
             self.assertEqual(db.execute(f'SELECT thread_id FROM {V2}threads').fetchall(), [(KEEP,)])
@@ -292,7 +296,6 @@ class ColdCliRehearsal(unittest.TestCase):
             self.assertEqual(db.execute('SELECT * FROM threads').fetchone(), self.kept_native_row)
         self.assertFalse((self.claude/'projects/synthetic'/(CLAUDE+'.jsonl')).exists())
         self.assertFalse(any(p.exists() for p in self.native_paths[:-1]))
-        self.assertEqual(self.call('apply-completed-no-replay', ['delete','apply', *self.common, '--clients-closed', '--authorized-plan-sha256', plan['plan_sha256']])[1]['goal_status'], 'complete')
         (self.evidence/'preservation.json').write_text(json.dumps({'target_t3_remaining': 0, 'native_targets_remaining': 0,
              'unchanged_files': len(after), 'shared_session_and_keeper_binding_preserved': True, 'audit_preserved': True,
              'fts_cold_reopen_verified': True, 'leveldb_cold_reopen_verified': True,
