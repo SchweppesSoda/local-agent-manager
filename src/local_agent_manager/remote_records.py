@@ -24,7 +24,7 @@ PROTOCOL = "lam.remote-records.v1"
 CLIENTS = ("cindy", "t3code", "paseo", "orca", "native", "pi", "claude")
 HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}", re.ASCII)
 HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
-VERBS = ("records", "plan", "apply", "status", "verify")
+VERBS = ("records", "plan", "apply", "status", "verify", "doctor")
 REPLY_LIMIT = 16 * 1024 * 1024
 LOCAL_OWNER = "@local"
 
@@ -290,7 +290,7 @@ def _validate(q, *, executor_only=False):
         if (q.get("client") != "pi" or not isinstance(q["pi_agent_dir"], str)
                 or not q["pi_agent_dir"] or any(ord(c) < 32 for c in q["pi_agent_dir"])):
             raise ValueError("remote_pi_agent_directory_invalid")
-    if verb != "records":
+    if verb not in {"records", "doctor"}:
         required.add("owner")
     if verb == "plan":
         required.update(("record_id", "frontend_only", "bindings", "codex_bin"))
@@ -304,7 +304,7 @@ def _validate(q, *, executor_only=False):
         required.add("clients_closed")
         if "controller_approval" in q:
             required.add("controller_approval")
-    local = (q.get("destination") == LOCAL_OWNER and (q.get("client") in {"t3code", "paseo", "native", "pi", "claude"}
+    local = (q.get("destination") == LOCAL_OWNER and verb != "doctor" and (q.get("client") in {"t3code", "paseo", "native", "pi", "claude"}
              or q.get("client") == "orca" and verb == "records")
              and not {"cindy_hosted", "controller_approval"}.intersection(q))
     if (set(q) != required or q["protocol"] != PROTOCOL or verb not in VERBS or q["client"] not in CLIENTS
@@ -320,7 +320,7 @@ def _validate(q, *, executor_only=False):
             raise ValueError("remote_scope_invalid")
     if "operation_id" in q:
         validate_operation_id(q["operation_id"])
-    if verb != "records" and q["client"] == "cindy":
+    if verb not in {"records", "doctor"} and q["client"] == "cindy":
         raise ValueError("select_the_provider_on_its_execution_host")
     if verb == "plan" and q["bindings"] is not None:
         if (q["client"] not in {"paseo", "t3code"} or q["frontend_only"]
@@ -385,6 +385,9 @@ def _recheck_hosted(stored, owner, coverage, verb, receipt, approval):
 def dispatch(q, *, executor_only=False, provider_source=None):
     _validate(q, executor_only=executor_only)
     verb, client, root = q["verb"], q["client"], Path(q["root"])
+    if verb == "doctor":
+        from .remote_doctor import inspect_store
+        return inspect_store(q, root)
     if executor_only and (client not in {"native", "claude", "pi"} or "controller_approval" in q
                           or verb == "plan" and "cindy_hosted" not in q):
         raise ValueError("cindy_executor_only_scope_invalid")
@@ -693,19 +696,21 @@ def worker(stdin, stdout, *, executor_only=False, local_owner=False):
 def add_arguments(parser):
     subs = parser.add_subparsers(dest="remote_verb", required=True)
     for verb in VERBS:
-        sub = subs.add_parser(verb)
+        help_text = {"help": "只读核对 SSH、远端管理器、协议与指定存储"} if verb == "doctor" else {}
+        sub = subs.add_parser(verb, **help_text)
         sub.add_argument("--progress", action="store_true", help="在标准错误输出请求阶段及结果计数")
         destination = sub.add_mutually_exclusive_group(required=True)
         destination.add_argument("--ssh-host", help="已信任的 OpenSSH 主机别名")
-        destination.add_argument("--local", action="store_true", help="在当前电脑操作 T3、Paseo 或独立原生存储，也可盘点 Orca journal")
-        destination.add_argument("--cindy-executor-only", action="store_true",
-                                 help="直接在本机清理 Cindy 执行端记录，控制端可离线")
-        clients = CLIENTS if verb == "records" else tuple(c for c in CLIENTS if c != "cindy")
+        if verb != "doctor":
+            destination.add_argument("--local", action="store_true", help="在当前电脑操作 T3、Paseo 或独立原生存储，也可盘点 Orca journal")
+            destination.add_argument("--cindy-executor-only", action="store_true",
+                                     help="直接在本机清理 Cindy 执行端记录，控制端可离线")
+        clients = CLIENTS if verb in {"records", "doctor"} else tuple(c for c in CLIENTS if c != "cindy")
         sub.add_argument("--client", required=True, choices=clients)
         sub.add_argument("--pi-agent-dir", help="执行端独立配置的 Pi Agent 目录")
         sub.add_argument("--root", required=True, help="执行端的绝对路径，Cindy 填数据库文件，其他客户端填存储目录")
         if verb != "records":
-            sub.add_argument("--owner", required=True, help="remote records 返回的 owner.store_id")
+            sub.add_argument("--owner", required=verb != "doctor", help="remote records 返回的 owner.store_id")
         if verb == "plan":
             sub.add_argument("--record-id", help="完整记录 ID，Cindy 托管任务也可用 --cindy-task 定位")
             mode = sub.add_mutually_exclusive_group()
@@ -726,17 +731,20 @@ def add_arguments(parser):
             sub.add_argument("--controller-plan", type=Path, help="在发出执行端删除前重查已批准的控制端会话")
 
 
-def _ssh(host, payload):
+def _ssh(host, payload, *, command="local-agent-manager remote-worker", timeout=None, limit=REPLY_LIMIT):
     # Paths and locators never enter a shell command on either host.
-    command = ["ssh", "-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes",
-               "-oClearAllForwardings=yes", "-oForwardAgent=no", "-oConnectTimeout=15",
-               "-oServerAliveInterval=15", "-oServerAliveCountMax=3",
-               "--", host, "local-agent-manager remote-worker"]
+    arguments = ["ssh", "-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes",
+                 "-oClearAllForwardings=yes", "-oForwardAgent=no", "-oConnectTimeout=15",
+                 "-oServerAliveInterval=15", "-oServerAliveCountMax=3"]
+    if timeout is not None:
+        arguments.append("-oUpdateHostKeys=no")
+    arguments.extend(["--", host, command])
     with tempfile.TemporaryFile() as stream:
         # A healthy, large database operation can run for minutes. SSH
         # keepalives detect a lost connection without interrupting that writer.
-        result = subprocess.run(command, input=payload, stdout=stream, stderr=subprocess.DEVNULL, check=False)
-        if stream.tell() > REPLY_LIMIT + 1:
+        result = subprocess.run(arguments, input=payload, stdout=stream, stderr=subprocess.DEVNULL,
+                                check=False, timeout=timeout)
+        if stream.tell() > limit + 1:
             raise ValueError("remote_response_too_large")
         stream.seek(0)
         return result.returncode, stream.read()
@@ -755,6 +763,9 @@ def exchange(request, *, executor_only=False):
             code = worker(io.BytesIO(payload), stream, executor_only=executor_only,
                           local_owner=request["destination"] == LOCAL_OWNER)
             raw = stream.getvalue()
+        elif verb == "doctor":
+            from .remote_doctor import OUTPUT_LIMIT, TIMEOUT
+            code, raw = _ssh(request["destination"], payload, limit=OUTPUT_LIMIT, timeout=TIMEOUT)
         else:
             code, raw = _ssh(request["destination"], payload)
         reply = strict_json(raw.decode("utf-8"))
@@ -804,16 +815,16 @@ def _check_controller_plan(path, request):
 
 
 def run(args, output, errors):
-    executor_only = args.cindy_executor_only
+    executor_only = getattr(args, "cindy_executor_only", False)
     if args.ssh_host == LOCAL_OWNER:
         raise ValueError("remote_ssh_alias_invalid")
-    destination = LOCAL_OWNER if args.local else "local-executor" if executor_only else args.ssh_host
+    destination = LOCAL_OWNER if getattr(args, "local", False) else "local-executor" if executor_only else args.ssh_host
     request = {"protocol": PROTOCOL, "destination": destination, "verb": args.remote_verb,
                "client": args.client, "root": args.root}
     if getattr(args, "provider_only", False):
         request["provider_only"] = True
     for name in ("owner", "record_id", "frontend_only", "bindings", "codex_bin", "operation_id", "approval", "clients_closed"):
-        if hasattr(args, name):
+        if hasattr(args, name) and not (name == "owner" and args.remote_verb == "doctor"):
             request[name] = getattr(args, name)
     if args.pi_agent_dir is not None:
         request["pi_agent_dir"] = args.pi_agent_dir
@@ -860,7 +871,11 @@ def run(args, output, errors):
     stage = "inventory" if args.remote_verb == "records" else args.remote_verb
     if progress:
         progress(stage=stage, status="started", operation_id=request.get("operation_id"))
-    code, reply = exchange(request, executor_only=executor_only)
+    if args.remote_verb == "doctor":
+        from .remote_doctor import diagnose
+        code, reply = diagnose(request, args.owner)
+    else:
+        code, reply = exchange(request, executor_only=executor_only)
     if task is not None and not code:
         from .cindy_hosted import locator_matches
         if (reply["cindy_hosted"]["execution_host"] != task.execution_host

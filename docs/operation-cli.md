@@ -18,6 +18,19 @@ whose exact row status is `deleted`.
 直接在持有 T3、Paseo 或原生存储的机器上操作时，可在整组命令中使用 `--local`。
 各客户端的归属字段见[远程执行与记录归属](adapters.md#远程执行与记录归属)。
 
+<a id="remote-doctor"></a>
+
+首次连接、升级或更换数据目录后，可以先运行只读诊断。Pi 的 Agent 目录另行配置时，同时传入 `--pi-agent-dir`。已有盘点结果时可加 `--owner <store_id>` 比对之前观察到的存储。
+
+```powershell
+local-agent-manager remote doctor --ssh-host workstation --client t3code --root 'D:\T3Home'
+```
+
+JSON 的 `checks` 按 `ssh`、`manager`、`protocol`、`store` 记录结果。第一项要求非交互 SSH shell 返回指定标记，第二项调用远端命令的 `--version`，第三项核对 worker 协议与本次请求，第四项使用盘点入口的物理身份规则。协议核对后可见执行机主机名，存储核对后可见实际根目录和 `owner.store_id`。存储变化时可查看这次观察到的身份。成功返回 0，失败返回 1，后续步骤显示 `not_checked`。旧管理器返回 `worker_diagnostic_unsupported` 时，可在执行机更新管理器再检查。诊断仅读取身份元数据，操作批准仍由 `remote plan` 单独生成。
+
+`remote_manager_not_runnable` 表示该 SSH shell 已应答，但调用管理器失败，可检查执行账号在非交互 shell 中的 PATH。
+`store_identity_changed` 会附上这次观察到的身份，便于核对机器、实例与数据根目录。
+
 以下为 PowerShell 示例。盘点返回 `owner.store_id` 及前端或原生记录 ID。一次计划选一个完整 ID。
 核对计划列出的 `completion_scope`、实际存储和受影响记录，包括 Codex 的后代或前端关联记录。
 

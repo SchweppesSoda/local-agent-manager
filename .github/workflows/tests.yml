@@ -105,6 +105,12 @@ jobs:
         # -t . is the standard package-discovery spelling.
         run: python -m unittest discover -s tests -t . -v
 
+      - name: Check remote diagnosis and recovery over loopback OpenSSH
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          python -m pip install --disable-pip-version-check "asyncssh==2.24.1"
+          python -m tests.remote_ssh_acceptance
+
       - name: Set up pinned Rust fingerprint oracle
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: rustup toolchain install 1.92.0 --profile minimal

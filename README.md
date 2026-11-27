@@ -155,6 +155,7 @@ healthy/native 记录及其已冻结的 frontend reference closure，以及 Cind
 声称 `records` 已统一覆盖全部异常类型。live reference 会 fail closed 并使动作不可选。
 Agent 在本机调用远程模型 API 时，按本机前端与原生存储清理。Agent 在另一台机器运行时，
 可用 `remote records` 经已信任的 SSH 主机盘点，由执行机上的管理器生成和执行精确计划。
+首次连接或排障时，[远程诊断](docs/operation-cli.md#remote-doctor)命令 `remote doctor` 逐步核对 SSH、远端管理器、协议及指定存储的身份。
 Cindy 可关联 SSH、同账号设备和直接共享 provider 的单条任务，并核验同账号 Pi 的控制端备份。
 当 A 的 Cindy 调用 B 的 provider，可在 B 离线时只清 A 的任务与消息，也可在 A 离线时只清 B 上能独立确认归属的原生历史及任务索引。共享授权保留。双端清理继续先核验 B 的完成回执，再清 A。[Cindy 单端清理命令](docs/operation-cli.md#cindy-单端清理)
 同一来宾的多条任务可按控制端绑定和各自的原生工作目录区分。
