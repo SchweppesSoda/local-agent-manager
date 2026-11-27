@@ -1,5 +1,5 @@
 """Exercise daemon and provider scopes through the public CLI and temporary stores."""
-from contextlib import closing, nullcontext
+from contextlib import ExitStack, closing, nullcontext
 import io
 import json
 import os
@@ -19,16 +19,18 @@ from local_agent_manager.t3code_store import SCHEMA_CONTRACTS
 
 class DaemonProviderTests(unittest.TestCase):
     def setUp(self):
-        self.base = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.contexts = ExitStack()
+        self.addCleanup(self.contexts.close)
+        self.base = Path(self.contexts.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.home = self.base / "provider"
         self.home.mkdir()
-        self.enterContext(patch.dict(os.environ, {key: str(self.base / key) for key in
+        self.contexts.enter_context(patch.dict(os.environ, {key: str(self.base / key) for key in
             ("APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME",
              "PASEO_HOME", "T3CODE_HOME", "PI_CODING_AGENT_DIR")}))
-        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=[]))
-        self.policy = self.enterContext(patch("local_agent_manager.t3code_provider_settings.has_provider_policy",
+        self.contexts.enter_context(patch("local_agent_manager.office_runtime.processes", return_value=[]))
+        self.policy = self.contexts.enter_context(patch("local_agent_manager.t3code_provider_settings.has_provider_policy",
                                               return_value=False))
-        self.ssh = self.enterContext(patch.object(remote_records, "_ssh", side_effect=self.worker))
+        self.ssh = self.contexts.enter_context(patch.object(remote_records, "_ssh", side_effect=self.worker))
         self.destination = ["--local"]
 
     @staticmethod
@@ -216,7 +218,7 @@ class DaemonProviderTests(unittest.TestCase):
         self.destination = ["--ssh-host", "worker"]
         files = self.fixture("paseo")
         (self.root / "Paseo.exe").write_bytes(b"fixture")
-        self.enterContext(patch("local_agent_manager.paseo_daemon_delete._bundled_install", return_value=self.root))
+        self.contexts.enter_context(patch("local_agent_manager.paseo_daemon_delete._bundled_install", return_value=self.root))
         settings = self.root / "config.json"
         paseo.write(settings, {"version": 1, "agents": {"providers": {"claude": {"env": {
             "CLAUDE_CONFIG_DIR": str(self.home), "ANTHROPIC_BASE_URL": "https://PRIVATE"}}}}})
@@ -262,7 +264,7 @@ class DaemonProviderTests(unittest.TestCase):
         self.fixture("t3code")
         binary = self.root / "T3 Code (Nightly).exe"
         binary.write_bytes(b"fixture")
-        self.enterContext(patch("local_agent_manager.t3code_server_delete._bundled_install", return_value=self.root))
+        self.contexts.enter_context(patch("local_agent_manager.t3code_server_delete._bundled_install", return_value=self.root))
         plan = self.plan(automatic=True)
         self.assertEqual(Path(plan["provider_owner"]["root"]), self.home)
         self.policy.return_value = True
@@ -316,7 +318,7 @@ class DaemonProviderTests(unittest.TestCase):
         def server(*, codex_home, codex_binary, **_):
             self.assertEqual((Path(codex_home), Path(codex_binary)), (self.home, binary))
             return nullcontext(SimpleNamespace(delete_thread=delete))
-        self.enterContext(patch("local_agent_manager.cli.main",
+        self.contexts.enter_context(patch("local_agent_manager.cli.main",
             side_effect=lambda argv, **kw: main(argv, app_server_factory=server, **kw)))
         self.assertEqual(self.remote("apply", *args, "--clients-closed")["goal_status"], "complete")
         self.assertEqual(self.remote("verify", *args)["native_ids"], [paseo.NATIVE])

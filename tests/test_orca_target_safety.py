@@ -86,7 +86,9 @@ class OrcaTargetSafetyTests(unittest.TestCase):
         lock = {"pid": 27, "identity": "secret-identity", "startedAtMs": None,
                 "acquiredAt": "2026-11-26T00:00:00.000Z", "version": "1234.99.7", "role": "orcad",
                 "nonce": SENTINEL, "machineIdentity": "win32-machine-guid:" + guid}
-        self.enterContext(patch("local_agent_manager.orca_runtime.windows_machine_guid", return_value=guid.upper()))
+        machine_guid = patch("local_agent_manager.orca_runtime.windows_machine_guid", return_value=guid.upper())
+        machine_guid.start()
+        self.addCleanup(machine_guid.stop)
         path = self.profile / "orcad.lock"
         empty = self.freeze()
         path.write_text(json.dumps(lock))

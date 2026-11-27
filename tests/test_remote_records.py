@@ -7,7 +7,7 @@ from tests import test_t3code_server_delete as t3_fixture
 from tests import test_frontend_session_cleanup as cindy_fixture
 from tests import test_paseo_fullflow, test_t3code_fullflow, orca_support
 from tests.t3code_support import create_store, add_thread, insert, V2
-from contextlib import closing, nullcontext
+from contextlib import ExitStack, closing, nullcontext
 from contextvars import Context
 import io
 import hashlib
@@ -30,7 +30,6 @@ from local_agent_manager import cindy_hosted
 
 def orca_worker_fixture():
     """The SSH child uses a synthetic app-server and only the test's managed home."""
-    from contextlib import ExitStack
     from types import SimpleNamespace
     from uuid import uuid4
     root = Path(sys.argv[1])
@@ -92,6 +91,8 @@ def hosted_codex_worker_fixture(root, binary):
 
 class RemoteRecordsTests(unittest.TestCase):
     def setUp(self):
+        self.contexts = ExitStack()
+        self.addCleanup(self.contexts.close)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.base = Path(directory.name).resolve()
@@ -102,12 +103,12 @@ class RemoteRecordsTests(unittest.TestCase):
         env = {k: str(isolated / k.lower()) for k in (
             "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "CODEX_HOME", "PI_CODING_AGENT_DIR", "CLAUDE_CONFIG_DIR")}
         env.update(USERPROFILE=str(isolated), HOME=str(isolated), PASEO_HOME=str(isolated / "paseo"))
-        self.enterContext(patch.dict(os.environ, env))
+        self.contexts.enter_context(patch.dict(os.environ, env))
         Path(env["PI_CODING_AGENT_DIR"]).mkdir()
         self.client = "pi"
         self.host = "lab_owner"
         self.drop_after_dispatch = False
-        self.transport = self.enterContext(patch.object(remote, "_ssh", side_effect=self.ssh))
+        self.transport = self.contexts.enter_context(patch.object(remote, "_ssh", side_effect=self.ssh))
 
     def ssh(self, host, payload):
         self.assertEqual(host, self.host)
@@ -170,8 +171,8 @@ class RemoteRecordsTests(unittest.TestCase):
         host = self.base / "executor"
         controller.mkdir()
         host.mkdir()
-        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="c" * 64))
-        self.enterContext(patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()))
+        self.contexts.enter_context(patch.object(cindy_hosted, "_hardware_id", return_value="c" * 64))
+        self.contexts.enter_context(patch("local_agent_manager.codex_desktop_state.running_related_clients", return_value=()))
         def separate(hostname, payload):
             self.assertEqual(hostname, self.host)
             fail_index = getattr(self, "interrupt_index", False) and json.loads(payload)["verb"] == "apply"
@@ -213,7 +214,7 @@ class RemoteRecordsTests(unittest.TestCase):
         peer_dir = hashlib.sha256(peer.encode()).hexdigest()[:16]
         agent = host / "pi-agent-home"
         agent.mkdir()
-        self.enterContext(patch.dict(os.environ, {"PI_CODING_AGENT_DIR": str(agent)}))
+        self.contexts.enter_context(patch.dict(os.environ, {"PI_CODING_AGENT_DIR": str(agent)}))
         self.root = (host / "remote-agent/guest-homes" / peer_dir / "pi-sessions" if share else agent / "sessions")
         identifier = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         path = self.pi_file(self.root, identifier)
@@ -279,7 +280,7 @@ class RemoteRecordsTests(unittest.TestCase):
     def clean_on_executor_by_native(self, host, database, native, *options):
         controller_bytes = database.read_bytes()
         offline = database.parent.rename(self.base / "offline-controller")
-        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        self.contexts.enter_context(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
         with patch.object(remote, "_ssh", side_effect=AssertionError("unexpected SSH")):
             owner = self.invoke("records", executor_only=True)["owner"]["store_id"]
             plan = self.invoke("plan", "--owner", owner, "--record-id", native, "--cindy-host-profile", str(host),
@@ -337,7 +338,7 @@ class RemoteRecordsTests(unittest.TestCase):
         controller_bytes = database.read_bytes()
         offline = database.parent.rename(self.base / "offline-controller")
         self.transport.side_effect = AssertionError("B contacted the offline controller")
-        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        self.contexts.enter_context(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
         def local(verb, *args, ok=True):
             return self.invoke(verb, *args, executor_only=True, ok=ok)
         owner = local("records")["owner"]["store_id"]
@@ -433,7 +434,7 @@ class RemoteRecordsTests(unittest.TestCase):
         host = index.parent.parent
         local_db, (local_sid,) = cindy_fixture.FrontendSessionCleanupTests()._database(host, 1)
         local_db = local_db.rename(host / "cindy-owner.db")
-        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        self.contexts.enter_context(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
         owner = self.invoke("records", executor_only=True)["owner"]["store_id"]
         options = ("plan", "--owner", owner, "--cindy-host-profile", str(host), "--cindy-task", sid)
         with closing(sqlite3.connect(local_db)) as db:
@@ -459,7 +460,7 @@ class RemoteRecordsTests(unittest.TestCase):
         database.parent.rename(self.base / "offline-controller")
         cached = host / "device-link-settings.json"
         cached.write_text(json.dumps({"lastKnownDeviceNames": {"c" * 64: "A", "f" * 64: "other PC"}}))
-        self.enterContext(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
+        self.contexts.enter_context(patch.object(cindy_hosted, "_hardware_id", return_value="e" * 64))
         self.transport.side_effect = AssertionError("unexpected SSH")
         owner = self.invoke("records", executor_only=True)["owner"]["store_id"]
         plan = self.invoke("plan", "--owner", owner, "--cindy-host-profile", str(host), "--cindy-task", sid, executor_only=True)
@@ -837,7 +838,7 @@ class RemoteRecordsTests(unittest.TestCase):
         def server(*, codex_home, codex_binary, **_):
             self.assertEqual((Path(codex_home), Path(codex_binary)), (self.root, binary))
             return nullcontext(SimpleNamespace(delete_thread=delete_thread))
-        self.enterContext(patch("local_agent_manager.cli.main",
+        self.contexts.enter_context(patch("local_agent_manager.cli.main",
             side_effect=lambda argv, **kwargs: main(argv, **kwargs, app_server_factory=server)))
         plan, args = self.plan(tid, "--codex-bin", str(binary))
         self.assertEqual(plan["native_ids"], [tid])
@@ -949,8 +950,8 @@ class RemoteRecordsTests(unittest.TestCase):
         native = other_host_home / "sessions" / "history.jsonl"
         native.write_bytes(b"retained on peer")
         self.transport.side_effect = AssertionError("offline peer contacted")
-        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
-        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
         orca_support.create_profile(root, accounts=0)
         pairing = root / "orca-environments.json"
         def register(key):
@@ -1016,8 +1017,8 @@ class RemoteRecordsTests(unittest.TestCase):
         row["location"]["executionHostId"] = "runtime:peer"
         orca_support.replace_record(self.root, row)
         self.transport.side_effect = AssertionError("offline peer contacted")
-        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
-        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
         plan = self.controller("delete", "plan", "--client", "orca", "--orca-root", str(self.root), "--record-id", sid,
                                "--orca-controller-only", "peer", record["workspace_id"])
         self.assertFalse(plan["capabilities"]["unsupported:cc"]["native_delete"])
@@ -1101,8 +1102,8 @@ class RemoteRecordsTests(unittest.TestCase):
         self.assertTrue(local["capabilities"]["codex"]["frontend_session_delete"])
         self.assertFalse(self.controller(*apply, ok=False)["mutation_started"])
         self.assertEqual(json.loads(ui.read_bytes()), state)
-        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
-        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
         pair(base64.b64encode(b"x"*32).decode())
         self.invoke("apply", *owner_args, "--clients-closed", "--controller-plan", local["plan_path"], ok=False)
         self.assertTrue(all(p.is_file() for p in fixture.rollouts))
@@ -1132,8 +1133,8 @@ class RemoteRecordsTests(unittest.TestCase):
     def claude_pair(self, *, shared=False):
         self.client = "orca"
         self.transport.side_effect = self.orca_transport
-        self.enterContext(patch("local_agent_manager.office_runtime.processes", return_value=()))
-        self.enterContext(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.office_runtime.processes", return_value=()))
+        self.contexts.enter_context(patch("local_agent_manager.orca_target_safety._windows_process_snapshot", return_value=()))
         sid, native = "orca_claude_selected", "bd75030a-9dfa-4123-84e7-b8eb94dc151f"
         first, last = orca_support.HISTORY_ID, orca_support.CURRENT_ID
         root = self.base / "controller"
